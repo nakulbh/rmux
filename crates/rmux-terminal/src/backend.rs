@@ -62,6 +62,8 @@ pub struct PtyBackend {
     writer: Option<Box<dyn Write + Send>>,
     /// Cloned child killer for signaling.
     child_killer: Box<dyn ChildKiller + Send>,
+    /// Whether the child process has exited.
+    exited: bool,
 }
 
 impl PtyBackend {
@@ -123,6 +125,7 @@ impl PtyBackend {
             reader: Some(reader),
             writer: Some(writer),
             child_killer,
+            exited: false,
         })
     }
 
@@ -179,17 +182,18 @@ impl PtyBackend {
 
     /// Check if the child process is still running.
     pub fn is_alive(&self) -> bool {
-        // try_wait needs &mut self on Child trait, but we only have &self.
-        // We check via the child_killer which doesn't have a try_wait.
-        // For now, assume alive if we can't check.
-        true
+        !self.exited
     }
 
     /// Get the exit status if the process has exited.
     ///
     /// Returns `None` if the process is still running.
     pub fn try_wait(&mut self) -> Option<ExitStatus> {
-        self.child.try_wait().ok().flatten()
+        let status = self.child.try_wait().ok().flatten();
+        if status.is_some() {
+            self.exited = true;
+        }
+        status
     }
 
     /// Kill the child process.
@@ -200,7 +204,7 @@ impl PtyBackend {
 
 impl std::fmt::Debug for PtyBackend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PtyBackend").field("alive", &true).finish()
+        f.debug_struct("PtyBackend").field("alive", &self.is_alive()).finish()
     }
 }
 

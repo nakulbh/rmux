@@ -11,18 +11,16 @@ use alacritty_terminal::term::color::Colors;
 use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor, Processor, Rgb};
 use egui::Color32;
 
-/// Maximum scrollback lines in terminal history.
-pub const DEFAULT_SCROLLBACK_LIMIT: usize = 10_000;
-
 /// A size struct implementing [`Dimensions`] for terminal creation and resize.
 struct TermDimensions {
     cols: usize,
     rows: usize,
+    scrollback_limit: usize,
 }
 
 impl Dimensions for TermDimensions {
     fn total_lines(&self) -> usize {
-        self.rows + DEFAULT_SCROLLBACK_LIMIT
+        self.rows + self.scrollback_limit
     }
 
     fn screen_lines(&self) -> usize {
@@ -119,7 +117,8 @@ impl TermState {
     pub fn new(cols: u16, rows: u16, scrollback_limit: usize) -> Self {
         let config = Config { scrolling_history: scrollback_limit, ..Config::default() };
 
-        let dimensions = TermDimensions { cols: cols as usize, rows: rows as usize };
+        let dimensions =
+            TermDimensions { cols: cols as usize, rows: rows as usize, scrollback_limit };
 
         let term = alacritty_terminal::term::Term::new(config, &dimensions, VoidListener);
 
@@ -206,7 +205,11 @@ impl TermState {
     /// This feeds the resize through the terminal model,
     /// which handles reflow and scrollback adjustment.
     pub fn resize(&mut self, cols: u16, rows: u16) {
-        let dims = TermDimensions { cols: cols as usize, rows: rows as usize };
+        let dims = TermDimensions {
+            cols: cols as usize,
+            rows: rows as usize,
+            scrollback_limit: self.scrollback_limit,
+        };
         self.term.resize(dims);
         self.cols = cols;
         self.rows = rows;

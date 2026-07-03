@@ -20,6 +20,8 @@ pub enum PaneTreeError {
     CannotCloseLastPane,
     #[error("Operation requires a leaf node")]
     NotALeaf,
+    #[error("Invalid child index: {0}")]
+    InvalidChildIndex(usize),
 }
 
 /// A unique identifier for a terminal pane.
@@ -218,13 +220,15 @@ impl PaneNode {
     fn close_pane_impl(&mut self, target_pane: PaneId) -> Result<bool, PaneTreeError> {
         match self {
             Self::Split { children, sizes, .. } => {
-                for (i, child) in children.iter().enumerate() {
-                    if child.is_leaf() && child.pane_id() == Some(target_pane) {
-                        children.remove(i);
-                        let count = children.len() as f32;
-                        *sizes = vec![1.0 / count; children.len()];
-                        return Ok(true);
-                    }
+                // Find the index of the target leaf pane
+                let target_idx = children
+                    .iter()
+                    .position(|child| child.is_leaf() && child.pane_id() == Some(target_pane));
+                if let Some(i) = target_idx {
+                    children.remove(i);
+                    let count = children.len() as f32;
+                    *sizes = vec![1.0 / count; children.len()];
+                    return Ok(true);
                 }
 
                 for child in children.iter_mut() {
@@ -272,7 +276,7 @@ impl PaneNode {
         match self {
             Self::Split { id, sizes, children, .. } if *id == split_id => {
                 if child_index >= sizes.len() {
-                    return Err(PaneTreeError::PaneNotFound(PaneId(0)));
+                    return Err(PaneTreeError::InvalidChildIndex(child_index));
                 }
                 let new_size = (sizes[child_index] + delta).clamp(0.1, 0.9);
                 let diff = new_size - sizes[child_index];

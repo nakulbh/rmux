@@ -18,7 +18,7 @@ const WORKSPACE_BG: Color32 = Color32::from_rgb(20, 22, 28);
 /// This function recursively traverses the pane tree and renders each leaf
 /// as a terminal pane. Split nodes distribute the available area among their
 /// children according to their size ratios.
-pub fn render_pane_tree(ui: &mut egui::Ui, root: &mut PaneNode, active_pane: PaneId) {
+pub fn render_pane_tree(ui: &mut egui::Ui, root: &mut PaneNode, active_pane: &mut PaneId) {
     let available = ui.available_rect_before_wrap();
 
     if !ui.is_rect_visible(available) {
@@ -33,10 +33,11 @@ pub fn render_pane_tree(ui: &mut egui::Ui, root: &mut PaneNode, active_pane: Pan
 }
 
 /// Recursively render a single `PaneNode` within the given rectangle.
-fn render_node(ui: &mut egui::Ui, node: &mut PaneNode, rect: Rect, active_pane: PaneId) {
+fn render_node(ui: &mut egui::Ui, node: &mut PaneNode, rect: Rect, active_pane: &mut PaneId) {
     match node {
         PaneNode::Leaf { id, terminal } => {
-            render_leaf(ui, *id, terminal.as_mut(), rect, *id == active_pane);
+            let is_active = *id == *active_pane;
+            render_leaf(ui, *id, terminal.as_mut(), rect, is_active, active_pane);
         }
         PaneNode::Split { direction, children, sizes, .. } => {
             render_split(ui, direction, children, sizes, rect, active_pane);
@@ -47,17 +48,21 @@ fn render_node(ui: &mut egui::Ui, node: &mut PaneNode, rect: Rect, active_pane: 
 /// Render a leaf pane with its terminal.
 fn render_leaf(
     ui: &mut egui::Ui,
-    _id: PaneId,
+    id: PaneId,
     terminal: &mut Option<crate::ui::TerminalPane>,
     rect: Rect,
-    _is_active: bool,
+    is_active: bool,
+    active_pane: &mut PaneId,
 ) {
-    // Allocate a child UI for the terminal pane's region
     let mut child_ui =
         ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::default()));
 
     if let Some(pane) = terminal {
         pane.show(&mut child_ui);
+        // Update workspace-level active pane when this pane gains focus via click
+        if pane.has_focus() && !is_active {
+            *active_pane = id;
+        }
     } else {
         // Show a loading placeholder if terminal hasn't been spawned yet
         let painter = child_ui.painter();
@@ -79,7 +84,7 @@ fn render_split(
     children: &mut [PaneNode],
     sizes: &[f32],
     rect: Rect,
-    active_pane: PaneId,
+    active_pane: &mut PaneId,
 ) {
     let is_horizontal = direction.is_horizontal();
     let available_dimension = if is_horizontal { rect.width() } else { rect.height() };

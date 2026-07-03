@@ -188,12 +188,8 @@ impl RmuxApp {
     /// Render the workspace area in the central panel of the window.
     fn render_workspace(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
-            let active_pane = self.workspace_manager.active().active_pane;
-            workspace_view::render_pane_tree(
-                ui,
-                &mut self.workspace_manager.active_mut().root,
-                active_pane,
-            );
+            let ws = self.workspace_manager.active_mut();
+            workspace_view::render_pane_tree(ui, &mut ws.root, &mut ws.active_pane);
         });
     }
 }

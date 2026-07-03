@@ -230,12 +230,13 @@ impl TerminalPane {
                 }
             }
 
-            // Handle text input (for actual character typing)
+            // Handle text input (for actual character typing, paste, IME)
             if let egui::Event::Text(text) = event {
-                let bytes =
-                    self.input_mapper.map_char(text.chars().next().unwrap_or(' '), false, false);
-                if !bytes.is_empty() {
-                    self.backend.write(&bytes).ok();
+                for c in text.chars() {
+                    let bytes = self.input_mapper.map_char(c, false, false);
+                    if !bytes.is_empty() {
+                        self.backend.write(&bytes).ok();
+                    }
                 }
             }
         }
@@ -322,5 +323,10 @@ impl TerminalPane {
     #[allow(dead_code)]
     pub fn is_exited(&self) -> bool {
         self.exited
+    }
+
+    /// Whether this pane currently has keyboard focus.
+    pub fn has_focus(&self) -> bool {
+        self.has_focus
     }
 }

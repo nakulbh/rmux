@@ -497,7 +497,7 @@ rmux/
 | Phase | Status | Progress |
 |---|---|---|
 | Phase 0: Foundation | 🟢 Complete | 100% |
-| Phase 1: Terminal Pane | 🔴 Not started | 0% |
+| Phase 1: Terminal Pane | 🟢 Complete | 100% |
 | Phase 2: Workspaces | 🟢 Complete | 100% |
 | Phase 3: Notifications + API | ⬜ Blocked by Phase 2 | 0% |
 | Phase 4: Browser Pane | ⬜ Blocked by Phase 3 | 0% |
