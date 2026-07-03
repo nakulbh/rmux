@@ -76,14 +76,14 @@ cross-platform Rust application targeting Linux, macOS, and Windows with a stric
 
 ### Tasks
 
-- [ ] **0.1** Replace GPUI with `eframe` + `egui` in `Cargo.toml`
-- [ ] **0.2** Add dependencies: `alacritty_terminal`, `portable-pty`, `tokio`, `serde`, `serde_json`
-- [ ] **0.3** Create module structure (see [ARCHITECTURE.md](./ARCHITECTURE.md))
-- [ ] **0.4** Build a single `egui` window with a placeholder grid
-- [ ] **0.5** Add `tracing` + `tracing-subscriber` for structured logging
-- [ ] **0.6** Add `clap` for CLI argument parsing
-- [ ] **0.7** Set up `cargo fmt`, `cargo clippy`, `cargo test` in CI
-- [ ] **0.8** Add `justfile` or `makefile` with common tasks
+- [x] **0.1** Replace GPUI with `eframe` + `egui` in `Cargo.toml`
+- [x] **0.2** Add dependencies: `alacritty_terminal`, `portable-pty`, `tokio`, `serde`, `serde_json`
+- [x] **0.3** Create module structure (see [ARCHITECTURE.md](./ARCHITECTURE.md))
+- [x] **0.4** Build a single `egui` window with a placeholder grid
+- [x] **0.5** Add `tracing` + `tracing-subscriber` for structured logging
+- [x] **0.6** Add `clap` for CLI argument parsing
+- [x] **0.7** Set up `cargo fmt`, `cargo clippy`, `cargo test` in CI
+- [x] **0.8** Add `justfile` or `makefile` with common tasks
 
 ### Deliverables
 
@@ -496,7 +496,7 @@ rmux/
 
 | Phase | Status | Progress |
 |---|---|---|
-| Phase 0: Foundation | 🔴 Not started | 0% |
+| Phase 0: Foundation | 🟢 Complete | 100% |
 | Phase 1: Terminal Pane | ⬜ Blocked by Phase 0 | 0% |
 | Phase 2: Workspaces | ⬜ Blocked by Phase 1 | 0% |
 | Phase 3: Notifications + API | ⬜ Blocked by Phase 2 | 0% |

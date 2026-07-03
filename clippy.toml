@@ -1,0 +1,8 @@
+# clippy configuration for rmux
+# See: https://doc.rust-lang.org/clippy/configuration.html
+
+# Allow cognitive complexity up to 30 (default 25)
+cognitive-complexity-threshold = 30
+
+# Allow type complexity up to 300 (default 250)
+type-complexity-threshold = 300
