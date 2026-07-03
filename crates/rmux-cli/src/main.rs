@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! CLI tool for controlling a running rmux instance.
 //!
 //! Communicates with the rmux socket server via JSON-RPC

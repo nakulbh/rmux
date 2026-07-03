@@ -35,6 +35,7 @@
 4. **Write tests** for the task
 5. **Run verification** (see "Verification Checklist" below)
 6. **Mark the task done** in `docs/PLAN.md` (change `[ ]` to `[x]`)
+7. **Commit and push** after the implementation is complete
 
 ### Phase progression
 
@@ -75,7 +76,7 @@ Do NOT skip phases. Each phase depends on the previous one. Within a phase, task
 |---|---|---|
 | `rmux-app` | binary | Main application. Owns the egui window, event loop, and orchestrates all subsystems. |
 | `rmux-terminal` | library | Terminal emulation. Wraps `alacritty_terminal` + `portable-pty`. Owns PTY lifecycle, grid state, scrollback. |
-| `rmux-cli` | binary | CLI tool (`rmux` command). Connects to socket, sends commands, prints results. |
+| `rmux-cli` | binary | CLI tool (`rmux-cli` command). Connects to socket, sends commands, prints results. |
 | `rmux-api` | library | Socket server. JSON-RPC protocol, method dispatch, event streaming. |
 | `rmux-config` | library | Configuration loading/saving. `rmux.json` schema, Ghostty config import. |
 

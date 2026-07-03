@@ -26,8 +26,8 @@ impl RmuxApp {
 impl eframe::App for RmuxApp {
     /// Called each frame to update the UI.
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Request continuous repaints for terminal animation (will be needed later)
-        ctx.request_repaint();
+        // Throttle repaints to ~60fps (will be adjusted when real PTY output arrives)
+        ctx.request_repaint_after(std::time::Duration::from_millis(16));
 
         egui::CentralPanel::default().show(ctx, |ui| {
             draw_terminal_grid(ui, self.cell_width, self.cell_height);

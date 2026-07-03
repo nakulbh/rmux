@@ -1,13 +1,13 @@
-//! JSON-RPC line protocol types.
+//! JSON-based line protocol types.
 //!
 //! Defines the request/response/error structures for the
-//! newline-delimited JSON-RPC protocol used over the Unix socket.
+//! newline-delimited JSON protocol used over the Unix socket.
 //!
 //! Will be fully implemented in Phase 3.
 
 use serde::{Deserialize, Serialize};
 
-/// A JSON-RPC 2.0 request.
+/// A JSON-based request message.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct JsonRpcRequest {
     /// Request identifier (string or number).
@@ -19,7 +19,7 @@ pub struct JsonRpcRequest {
     pub params: serde_json::Value,
 }
 
-/// A JSON-RPC 2.0 response envelope.
+/// A JSON-based response envelope.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct JsonRpcResponse {
     /// Matches the request `id`.
@@ -34,7 +34,7 @@ pub struct JsonRpcResponse {
     pub error: Option<JsonRpcError>,
 }
 
-/// A JSON-RPC 2.0 error object.
+/// A JSON-based error object.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct JsonRpcError {
     /// Numeric error code.

@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Configuration management for rmux.
 //!
 //! Loads and saves the rmux configuration from platform-appropriate

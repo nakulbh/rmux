@@ -1,5 +1,6 @@
 [workspace]
 members = ["crates/*"]
+default-members = ["crates/rmux-app"]
 resolver = "2"
 
 [workspace.package]

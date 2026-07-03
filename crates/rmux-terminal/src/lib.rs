@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Terminal emulation library for rmux.
 //!
 //! Wraps `alacritty_terminal` (VTE parser + grid state) and `portable-pty`

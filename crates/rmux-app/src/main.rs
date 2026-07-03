@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! rmux — A cross-platform, memory-efficient terminal multiplexer GUI.
 //!
 //! # Architecture

@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Socket API server for rmux.
 //!
 //! Provides a JSON-RPC line protocol over a Unix domain socket
