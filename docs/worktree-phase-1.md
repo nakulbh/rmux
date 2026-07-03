@@ -57,4 +57,4 @@
 - [x] cargo test --workspace (22 unit tests + 3 doctests pass)
 - [x] cargo doc --no-deps --workspace
 - [x] grep -r "unsafe" crates/ --include="*.rs" (only forbid(unsafe_code) declarations)
-- [ ] git commit and push
+- [x] git commit and push
