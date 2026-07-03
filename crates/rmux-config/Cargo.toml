@@ -1,0 +1,14 @@
+[package]
+name = "rmux-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "rmux_config"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
