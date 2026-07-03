@@ -55,6 +55,9 @@ impl eframe::App for RmuxApp {
         // Process PTY output for all terminal panes
         self.workspace_manager.process_all_panes();
 
+        // Auto-close panes whose process has exited
+        self.workspace_manager.close_exited_panes();
+
         // Request continuous repaints for terminal updates (PTY output, cursor blink)
         ctx.request_repaint_after(std::time::Duration::from_millis(16));
 

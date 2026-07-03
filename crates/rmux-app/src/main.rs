@@ -80,15 +80,10 @@ fn main() -> Result<()> {
 }
 
 /// Load custom fonts for terminal rendering.
-fn setup_fonts(ctx: &egui::Context) {
-    let mut fonts = egui::FontDefinitions::default();
-
-    // Ensure monospace font is available for terminal grid
-    fonts.families.entry(egui::FontFamily::Monospace).or_default().push("Hack".to_owned());
-
-    fonts.families.entry(egui::FontFamily::Monospace).or_default().push("Fira Code".to_owned());
-
-    fonts.families.entry(egui::FontFamily::Monospace).or_default().push("monospace".to_owned());
-
-    ctx.set_fonts(fonts);
+///
+/// egui's default `FontDefinitions` already includes platform-appropriate
+/// monospace fonts (Menlo on macOS, Consolas on Windows, etc.). We use
+/// the defaults rather than pushing specific font names that may not be installed.
+fn setup_fonts(_ctx: &egui::Context) {
+    // No-op: use egui's default font definitions.
 }

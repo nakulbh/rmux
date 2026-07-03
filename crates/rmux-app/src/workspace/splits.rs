@@ -329,6 +329,22 @@ impl PaneNode {
             }
         }
     }
+
+    /// Collect pane IDs whose terminal process has exited.
+    pub fn collect_exited_panes(&self) -> Vec<PaneId> {
+        match self {
+            Self::Leaf { id, terminal } => {
+                if terminal.as_ref().as_ref().is_some_and(|t| t.is_exited()) {
+                    vec![*id]
+                } else {
+                    vec![]
+                }
+            }
+            Self::Split { children, .. } => {
+                children.iter().flat_map(|c| c.collect_exited_panes()).collect()
+            }
+        }
+    }
 }
 
 #[cfg(test)]

@@ -224,6 +224,14 @@ impl TerminalPane {
                     continue;
                 }
 
+                // Skip plain printable characters — Event::Text handles them.
+                // Only handle special keys (Enter, Tab, arrows, F-keys, etc.)
+                // and modified keys (Ctrl+A, Alt+char).
+                let name = key.name();
+                if name.len() == 1 && !modifiers.ctrl && !modifiers.command && !modifiers.alt {
+                    continue;
+                }
+
                 let bytes = self.map_key_to_terminal(key, modifiers);
                 if let Some(data) = bytes {
                     self.backend.write(&data).ok();

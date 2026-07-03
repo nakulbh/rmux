@@ -209,6 +209,55 @@ impl WorkspaceManager {
             workspace.process_pty_outputs();
         }
     }
+
+    /// Close all panes whose process has exited.
+    ///
+    /// If a pane was the last in its workspace, closes the entire workspace.
+    /// The last remaining workspace is never closed.
+    pub fn close_exited_panes(&mut self) {
+        let mut i = 0;
+        while i < self.workspaces.len() {
+            let workspace_id = self.workspaces[i].id;
+            let exited: Vec<PaneId> = self.workspaces[i].root.collect_exited_panes();
+
+            if exited.is_empty() {
+                i += 1;
+                continue;
+            }
+
+            let mut workspace_removed = false;
+            for pane_id in &exited {
+                match self.workspaces[i].close_pane(*pane_id) {
+                    Ok(()) => {
+                        tracing::debug!(pane_id = pane_id.0, "Closed exited pane");
+                    }
+                    Err(splits::PaneTreeError::CannotCloseLastPane) => {
+                        if self.workspaces.len() > 1 {
+                            tracing::info!(workspace_id = ?workspace_id, "Last pane exited, closing workspace");
+                            let _ = self.close_workspace(workspace_id);
+                            workspace_removed = true;
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(pane_id = pane_id.0, error = %e, "Failed to close exited pane");
+                    }
+                }
+            }
+
+            if !workspace_removed {
+                i += 1;
+            }
+        }
+    }
+
+    /// Rename a workspace by ID.
+    pub fn rename_workspace(&mut self, id: model::WorkspaceId, new_name: String) {
+        if let Some(ws) = self.workspaces.iter_mut().find(|w| w.id == id) {
+            ws.name = new_name;
+            tracing::debug!(workspace_id = ?id, "Renamed workspace");
+        }
+    }
 }
 
 impl Default for WorkspaceManager {

@@ -5,6 +5,7 @@
 //! The active workspace is highlighted. Clicking a tab switches to that workspace.
 
 use crate::workspace::WorkspaceManager;
+use crate::workspace::model::WorkspaceId;
 
 /// Dark background color for the sidebar.
 const SIDEBAR_BG: egui::Color32 = egui::Color32::from_rgb(25, 28, 35);
@@ -32,11 +33,15 @@ const ACCENT_COLOR: egui::Color32 = egui::Color32::from_rgb(70, 130, 250);
 pub struct SidebarView {
     /// Whether the sidebar is currently visible.
     pub visible: bool,
+    /// Index of the tab currently being renamed (None if not renaming).
+    editing_index: Option<usize>,
+    /// Temporary buffer for the rename text edit.
+    edit_buffer: String,
 }
 
 impl Default for SidebarView {
     fn default() -> Self {
-        Self { visible: true }
+        Self { visible: true, editing_index: None, edit_buffer: String::new() }
     }
 }
 
@@ -72,7 +77,7 @@ impl SidebarView {
     }
 
     /// Render the sidebar contents.
-    fn render_sidebar(&self, ui: &mut egui::Ui, manager: &mut WorkspaceManager) {
+    fn render_sidebar(&mut self, ui: &mut egui::Ui, manager: &mut WorkspaceManager) {
         // --- Background ---
         ui.visuals_mut().override_text_color = Some(TAB_TEXT_COLOR);
         let mut style = (*ui.ctx().style()).clone();
@@ -93,29 +98,41 @@ impl SidebarView {
         ui.add_space(8.0);
 
         // --- Tab list ---
-        let workspaces: Vec<_> = manager.list();
+        let workspaces: Vec<(WorkspaceId, String, usize)> = manager
+            .list()
+            .into_iter()
+            .map(|(id, name, count)| (id, name.to_string(), count))
+            .collect();
         let active_index = manager.active_index();
         let mut clicked_index: Option<usize> = None;
 
         egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
             ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
 
-            for (i, (_id, name, pane_count)) in workspaces.iter().enumerate() {
+            for (i, (id, name, pane_count)) in workspaces.iter().enumerate() {
                 let is_active = i == active_index;
+                let is_editing = self.editing_index == Some(i);
 
-                let tab_response = self.render_tab(ui, name, *pane_count, is_active);
+                let tab_response =
+                    self.render_tab(ui, name, *pane_count, is_active, is_editing, i, *id, manager);
 
-                // Detect click on this tab
-                if tab_response.clicked() {
+                // Detect single click for switching (only when not editing)
+                if tab_response.clicked() && !is_editing {
                     clicked_index = Some(i);
                 }
 
-                // Right-click context menu could go here in the future
+                // Detect double-click to start renaming
+                if tab_response.double_clicked() && !is_editing {
+                    self.editing_index = Some(i);
+                    self.edit_buffer = name.to_string();
+                }
             }
         });
 
         // Handle workspace switching
-        if let Some(index) = clicked_index {
+        if let Some(index) = clicked_index
+            && self.editing_index != Some(index)
+        {
             manager.switch_to(index);
         }
 
@@ -133,13 +150,19 @@ impl SidebarView {
 
     /// Render a single workspace tab.
     ///
-    /// Returns the response for click detection.
+    /// If `is_editing` is true, renders a `TextEdit` widget for inline rename.
+    /// Returns the response for click/double-click detection.
+    #[allow(clippy::too_many_arguments)]
     fn render_tab(
-        &self,
+        &mut self,
         ui: &mut egui::Ui,
         name: &str,
         pane_count: usize,
         is_active: bool,
+        is_editing: bool,
+        index: usize,
+        workspace_id: WorkspaceId,
+        manager: &mut WorkspaceManager,
     ) -> egui::Response {
         let bg_color = if is_active { TAB_BG_ACTIVE } else { TAB_BG_INACTIVE };
 
@@ -161,29 +184,62 @@ impl SidebarView {
                 painter.rect_filled(stripe_rect, 0.0, ACCENT_COLOR);
             }
 
-            // Tab label
-            let text_color = if is_active { TAB_TEXT_COLOR_ACTIVE } else { TAB_TEXT_COLOR };
-            let label_text = format!("{} ({})", name, pane_count);
-            let label_pos = egui::Pos2::new(rect.left() + 16.0, rect.center().y - 8.0);
+            if is_editing {
+                // Render a TextEdit widget for inline rename
+                let edit_rect = egui::Rect::from_min_max(
+                    egui::Pos2::new(rect.left() + 16.0, rect.center().y - 8.0),
+                    egui::Pos2::new(rect.right() - 16.0, rect.center().y + 8.0),
+                );
+                let edit_response = ui.put(
+                    edit_rect,
+                    egui::TextEdit::singleline(&mut self.edit_buffer)
+                        .desired_width(f32::INFINITY)
+                        .font(egui::TextStyle::Body)
+                        .text_color_opt(Some(TAB_TEXT_COLOR_ACTIVE)),
+                );
 
-            painter.text(
-                label_pos,
-                egui::Align2::LEFT_TOP,
-                label_text,
-                egui::FontId::proportional(12.5),
-                text_color,
-            );
+                // Request focus the first frame we enter edit mode
+                if !edit_response.has_focus() && self.editing_index == Some(index) {
+                    ui.memory_mut(|mem| mem.request_focus(edit_response.id));
+                }
 
-            // Pane icon/hint
-            let hint = if pane_count == 1 { "1 pane" } else { &format!("{pane_count} panes") };
-            let hint_pos = egui::Pos2::new(rect.left() + 16.0, rect.center().y + 4.0);
-            painter.text(
-                hint_pos,
-                egui::Align2::LEFT_TOP,
-                hint,
-                egui::FontId::proportional(10.0),
-                egui::Color32::from_rgb(120, 120, 130),
-            );
+                // Commit on Enter or Escape, or when focus is permanently lost
+                if edit_response.lost_focus() {
+                    let escape_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                    if escape_pressed {
+                        self.editing_index = None;
+                    } else if !edit_response.has_focus() {
+                        if !self.edit_buffer.is_empty() {
+                            manager.rename_workspace(workspace_id, self.edit_buffer.clone());
+                        }
+                        self.editing_index = None;
+                    }
+                }
+            } else {
+                // Tab label (static text)
+                let text_color = if is_active { TAB_TEXT_COLOR_ACTIVE } else { TAB_TEXT_COLOR };
+                let label_text = format!("{} ({})", name, pane_count);
+                let label_pos = egui::Pos2::new(rect.left() + 16.0, rect.center().y - 8.0);
+
+                painter.text(
+                    label_pos,
+                    egui::Align2::LEFT_TOP,
+                    label_text,
+                    egui::FontId::proportional(12.5),
+                    text_color,
+                );
+
+                // Pane count hint
+                let hint = if pane_count == 1 { "1 pane" } else { &format!("{pane_count} panes") };
+                let hint_pos = egui::Pos2::new(rect.left() + 16.0, rect.center().y + 4.0);
+                painter.text(
+                    hint_pos,
+                    egui::Align2::LEFT_TOP,
+                    hint,
+                    egui::FontId::proportional(10.0),
+                    egui::Color32::from_rgb(120, 120, 130),
+                );
+            }
         }
 
         response
