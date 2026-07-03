@@ -11,7 +11,15 @@
 //! - `renderer` — Convert terminal grid cells into egui paint commands
 //! - `input` — Map egui keyboard/mouse events to terminal escape sequences
 
-pub mod backend;
-pub mod input;
-pub mod renderer;
-pub mod state;
+mod backend;
+mod input;
+mod renderer;
+mod state;
+
+pub use backend::{PtyBackend, PtyError, PtyResult};
+pub use input::InputMapper;
+pub use renderer::TerminalRenderer;
+pub use state::{GridCell, GridSnapshot, TermState};
+
+// Re-export cursor shape from alacritty_terminal for convenience
+pub use alacritty_terminal::vte::ansi::CursorShape;
