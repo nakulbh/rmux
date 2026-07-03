@@ -18,6 +18,8 @@ use clap::Parser;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 mod app;
+mod ui;
+mod workspace;
 
 /// CLI arguments for the rmux terminal multiplexer.
 #[derive(Parser, Debug)]

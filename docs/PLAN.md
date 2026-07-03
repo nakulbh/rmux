@@ -149,37 +149,37 @@ cross-platform Rust application targeting Linux, macOS, and Windows with a stric
 
 ### Tasks
 
-- [ ] **2.1** Define `PaneNode` tree model:
+- [x] **2.1** Define `PaneNode` tree model:
   ```rust
   enum PaneNode {
       Leaf { pane: TerminalPane },
       Split { direction: SplitDirection, children: Vec<PaneNode>, sizes: Vec<f32> },
   }
   ```
-- [ ] **2.2** Implement `Workspace` model:
+- [x] **2.2** Implement `Workspace` model:
   - Each workspace owns a `PaneNode` tree
   - Track active pane, pane count, working directory
-- [ ] **2.3** Implement `WorkspaceManager`:
+- [x] **2.3** Implement `WorkspaceManager`:
   - Create/delete/rename workspaces
   - Switch active workspace
   - Persist workspace list
-- [ ] **2.4** Build `SidebarView` in egui:
+- [x] **2.4** Build `SidebarView` in egui:
   - Vertical tab list showing workspace name + pane count
   - Git branch display (read from cwd `.git/HEAD`)
   - Notification badge (unread count)
   - Highlight active workspace
-- [ ] **2.5** Implement split commands:
+- [x] **2.5** Implement split commands:
   - Split right / split down
   - Focus pane by direction (arrow keys)
   - Close pane
   - Resize split (drag divider)
-- [ ] **2.6** Implement keyboard shortcuts:
+- [x] **2.6** Implement keyboard shortcuts:
   - `Cmd+N` / `Ctrl+N`: new workspace
   - `Cmd+D` / `Ctrl+D`: split right
   - `Cmd+Shift+D` / `Ctrl+Shift+D`: split down
   - `Cmd+1..9` / `Ctrl+1..9`: switch workspace
   - `Opt+Cmd+Arrow` / `Alt+Ctrl+Arrow`: focus pane
-- [ ] **2.7** Add pane memory guardrails:
+- [x] **2.7** Add pane memory guardrails:
   - Hibernate offscreen/hidden panes (stop rendering, keep PTY alive)
   - Configurable `max_active_panes` (warn when exceeded)
 
@@ -498,7 +498,7 @@ rmux/
 |---|---|---|
 | Phase 0: Foundation | 🟢 Complete | 100% |
 | Phase 1: Terminal Pane | 🔴 Not started | 0% |
-| Phase 2: Workspaces | ⬜ Blocked by Phase 1 | 0% |
+| Phase 2: Workspaces | 🟢 Complete | 100% |
 | Phase 3: Notifications + API | ⬜ Blocked by Phase 2 | 0% |
 | Phase 4: Browser Pane | ⬜ Blocked by Phase 3 | 0% |
 | Phase 5: SSH + Sessions | ⬜ Blocked by Phase 4 | 0% |
