@@ -1,13 +1,13 @@
 //! Application state and main egui rendering logic.
 //!
 //! The `RmuxApp` struct owns the top-level application state including the
-//! workspace manager and sidebar view. It implements `eframe::App` to drive
-//! the UI and handles keyboard shortcuts for workspace and pane operations.
+//! workspace manager, sidebar view, and terminal panes. It implements
+//! `eframe::App` to drive the UI and handles keyboard shortcuts.
 
 use egui::Key;
 
 use crate::ui::sidebar::SidebarView;
-use crate::ui::workspace_view;
+use crate::ui::{TerminalPane, workspace_view};
 use crate::workspace::WorkspaceManager;
 
 /// The root application state.
@@ -22,9 +22,24 @@ pub struct RmuxApp {
 }
 
 impl RmuxApp {
-    /// Create a new application state with a default workspace.
+    /// Create a new application state with a default workspace and terminal pane.
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
-        let app = Self { workspace_manager: WorkspaceManager::new(), sidebar: SidebarView::new() };
+        let mut app =
+            Self { workspace_manager: WorkspaceManager::new(), sidebar: SidebarView::new() };
+
+        let pane_id = app.workspace_manager.active().active_pane;
+        let cols = 80u16;
+        let rows = 24u16;
+
+        match TerminalPane::spawn(cols, rows) {
+            Ok(terminal) => {
+                app.workspace_manager.active_mut().set_terminal(pane_id, terminal);
+            }
+            Err(e) => {
+                tracing::error!("Failed to spawn initial terminal pane: {e}");
+            }
+        }
+
         tracing::info!(
             workspaces = app.workspace_manager.workspace_count(),
             panes = app.workspace_manager.total_pane_count(),
@@ -37,8 +52,11 @@ impl RmuxApp {
 impl eframe::App for RmuxApp {
     /// Called each frame to update the UI.
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Request continuous repaints for future terminal animation
-        ctx.request_repaint();
+        // Process PTY output for all terminal panes
+        self.workspace_manager.process_all_panes();
+
+        // Request continuous repaints for terminal updates (PTY output, cursor blink)
+        ctx.request_repaint_after(std::time::Duration::from_millis(16));
 
         // Process keyboard shortcuts
         self.handle_keyboard_shortcuts(ctx);
@@ -78,14 +96,25 @@ impl RmuxApp {
             // Cmd/Ctrl+N: New workspace
             if mod_active && !shift_active && *key == Key::N {
                 let count = self.workspace_manager.workspace_count() + 1;
-                self.workspace_manager.create_workspace(format!("Workspace {count}"));
-                tracing::info!("Created workspace via keyboard shortcut");
+                let ws = self.workspace_manager.create_workspace(format!("Workspace {count}"));
+                let pane_id = self.workspace_manager.active().active_pane;
+                let cols = 80u16;
+                let rows = 24u16;
+                if let Ok(terminal) = TerminalPane::spawn(cols, rows) {
+                    self.workspace_manager.active_mut().set_terminal(pane_id, terminal);
+                }
+                tracing::info!(workspace_id = ws.0, "Created workspace");
             }
 
             // Cmd/Ctrl+D: Split right
             if mod_active && !shift_active && *key == Key::D {
                 match self.workspace_manager.split_active_right() {
                     Ok(new_id) => {
+                        let cols = 80u16;
+                        let rows = 24u16;
+                        if let Ok(terminal) = TerminalPane::spawn(cols, rows) {
+                            self.workspace_manager.active_mut().set_terminal(new_id, terminal);
+                        }
                         tracing::info!(pane_id = new_id.0, "Split right");
                     }
                     Err(e) => {
@@ -98,6 +127,11 @@ impl RmuxApp {
             if mod_active && shift_active && *key == Key::D {
                 match self.workspace_manager.split_active_down() {
                     Ok(new_id) => {
+                        let cols = 80u16;
+                        let rows = 24u16;
+                        if let Ok(terminal) = TerminalPane::spawn(cols, rows) {
+                            self.workspace_manager.active_mut().set_terminal(new_id, terminal);
+                        }
                         tracing::info!(pane_id = new_id.0, "Split down");
                     }
                     Err(e) => {
@@ -154,11 +188,12 @@ impl RmuxApp {
     /// Render the workspace area in the central panel of the window.
     fn render_workspace(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
-            let active_workspace = self.workspace_manager.active();
-            let root = active_workspace.root.clone();
-            let active_pane = active_workspace.active_pane;
-
-            workspace_view::render_pane_tree(ui, &root, active_pane);
+            let active_pane = self.workspace_manager.active().active_pane;
+            workspace_view::render_pane_tree(
+                ui,
+                &mut self.workspace_manager.active_mut().root,
+                active_pane,
+            );
         });
     }
 }

@@ -202,6 +202,13 @@ impl WorkspaceManager {
         let active = ws.active_pane_id();
         ws.close_pane(active)
     }
+
+    /// Process PTY output for all panes across all workspaces.
+    pub fn process_all_panes(&mut self) {
+        for workspace in &mut self.workspaces {
+            workspace.process_pty_outputs();
+        }
+    }
 }
 
 impl Default for WorkspaceManager {

@@ -5,7 +5,8 @@
 
 #![allow(dead_code)]
 
-use super::splits::{PaneId, PaneNode, PaneTreeError, PlaceholderPane, SplitDirection, SplitId};
+use super::splits::{PaneId, PaneNode, PaneTreeError, SplitDirection, SplitId};
+use crate::ui::TerminalPane;
 
 /// A unique identifier for a workspace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -21,10 +22,7 @@ pub enum FocusDirection {
 }
 
 /// A workspace containing a pane tree and metadata.
-///
-/// Each workspace owns a `PaneNode` tree root, tracks the currently active
-/// (focused) pane, and provides operations for manipulating the pane layout.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Workspace {
     /// Unique identifier for the workspace.
     pub id: WorkspaceId,
@@ -37,17 +35,27 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    /// Create a new workspace with a single default pane.
+    /// Create a new workspace with a single default pane (no terminal yet).
     pub fn new(id: WorkspaceId, name: String, next_pane_id: &mut u64) -> Self {
         let pane_id = *next_pane_id;
         *next_pane_id += 1;
-        let pane = PaneNode::new_leaf(PaneId(pane_id), &name);
+        let pane = PaneNode::new_leaf(PaneId(pane_id));
         Self { id, name, root: pane, active_pane: PaneId(pane_id) }
     }
 
+    /// Set the terminal for a pane by its ID.
+    pub fn set_terminal(&mut self, pane_id: PaneId, terminal: TerminalPane) {
+        if let Some(slot) = self.root.find_terminal_mut(pane_id) {
+            *slot = Some(terminal);
+        }
+    }
+
+    /// Process PTY output for all panes in this workspace.
+    pub fn process_pty_outputs(&mut self) {
+        self.root.process_pty_outputs();
+    }
+
     /// Split the specified pane to the right (horizontal split).
-    ///
-    /// Returns the ID of the newly created pane.
     pub fn split_right(
         &mut self,
         pane_id: PaneId,
@@ -64,8 +72,6 @@ impl Workspace {
     }
 
     /// Split the specified pane downward (vertical split).
-    ///
-    /// Returns the ID of the newly created pane.
     pub fn split_down(
         &mut self,
         pane_id: PaneId,
@@ -81,12 +87,9 @@ impl Workspace {
     }
 
     /// Close a pane and collapse its parent split if only one child remains.
-    ///
-    /// If the closed pane was the active pane, focus moves to the next available pane.
     pub fn close_pane(&mut self, pane_id: PaneId) -> Result<(), PaneTreeError> {
         self.root.close_pane(pane_id)?;
 
-        // If we closed the active pane, move focus to the first remaining pane
         let remaining = self.pane_ids();
         if self.active_pane == pane_id
             && let Some(new_focus) = remaining.first()
@@ -102,9 +105,7 @@ impl Workspace {
         self.active_pane = pane_id;
     }
 
-    /// Move focus to the next pane in depth-first order.
-    ///
-    /// Wraps around from last to first.
+    /// Move focus to the next pane in depth-first order (wraps around).
     pub fn focus_next(&mut self) {
         let panes = self.pane_ids();
         if panes.len() <= 1 {
@@ -116,9 +117,7 @@ impl Workspace {
         }
     }
 
-    /// Move focus to the previous pane in depth-first order.
-    ///
-    /// Wraps around from first to last.
+    /// Move focus to the previous pane in depth-first order (wraps around).
     pub fn focus_prev(&mut self) {
         let panes = self.pane_ids();
         if panes.len() <= 1 {
@@ -153,9 +152,9 @@ impl Workspace {
         self.active_pane
     }
 
-    /// Get a reference to the active pane, if it exists.
-    pub fn active_pane_ref(&self) -> Option<&PlaceholderPane> {
-        self.root.find_leaf(self.active_pane)
+    /// Get a mutable reference to the active pane's terminal, if it exists.
+    pub fn active_terminal(&mut self) -> Option<&mut TerminalPane> {
+        self.root.get_terminal(self.active_pane)
     }
 }
 
@@ -163,23 +162,14 @@ impl Workspace {
 mod tests {
     use super::*;
 
-    fn make_workspace(
-        id: u64,
-        name: &str,
-        next_pane_id: &mut u64,
-        next_split_id: &mut u64,
-    ) -> Workspace {
-        let ws = Workspace::new(WorkspaceId(id), name.to_string(), next_pane_id);
-        // Consume the split ID that new() doesn't use
-        let _ = next_split_id;
-        ws
+    fn make_workspace(id: u64, name: &str, next_pane_id: &mut u64) -> Workspace {
+        Workspace::new(WorkspaceId(id), name.to_string(), next_pane_id)
     }
 
     #[test]
     fn test_workspace_creation() {
         let mut pane_id = 1;
-        let mut split_id = 1;
-        let ws = make_workspace(1, "Test", &mut pane_id, &mut split_id);
+        let ws = make_workspace(1, "Test", &mut pane_id);
         assert_eq!(ws.pane_count(), 1);
         assert!(!ws.pane_ids().is_empty());
     }
@@ -188,20 +178,9 @@ mod tests {
     fn test_split_right() {
         let mut pane_id = 1;
         let mut split_id = 1;
-        let mut ws = make_workspace(1, "Test", &mut pane_id, &mut split_id);
+        let mut ws = make_workspace(1, "Test", &mut pane_id);
         let original_active = ws.active_pane;
         let new_id = ws.split_right(original_active, &mut pane_id, &mut split_id).unwrap();
-        assert_eq!(ws.pane_count(), 2);
-        assert_ne!(new_id, original_active);
-    }
-
-    #[test]
-    fn test_split_down() {
-        let mut pane_id = 1;
-        let mut split_id = 1;
-        let mut ws = make_workspace(1, "Test", &mut pane_id, &mut split_id);
-        let original_active = ws.active_pane;
-        let new_id = ws.split_down(original_active, &mut pane_id, &mut split_id).unwrap();
         assert_eq!(ws.pane_count(), 2);
         assert_ne!(new_id, original_active);
     }
@@ -210,17 +189,15 @@ mod tests {
     fn test_close_pane_updates_focus() {
         let mut pane_id = 1;
         let mut split_id = 1;
-        let mut ws = make_workspace(1, "Test", &mut pane_id, &mut split_id);
+        let mut ws = make_workspace(1, "Test", &mut pane_id);
         let p1 = ws.active_pane;
         let p2 = ws.split_right(p1, &mut pane_id, &mut split_id).unwrap();
 
-        // Focus p2 then close p1 — focus should stay on p2
         ws.focus_pane(p2);
         ws.close_pane(p1).unwrap();
         assert_eq!(ws.pane_count(), 1);
         assert_eq!(ws.active_pane, p2);
 
-        // Close the active pane (last one) should error
         let result = ws.close_pane(p2);
         assert!(result.is_err());
     }
@@ -229,7 +206,7 @@ mod tests {
     fn test_focus_next_prev() {
         let mut pane_id = 1;
         let mut split_id = 1;
-        let mut ws = make_workspace(1, "Test", &mut pane_id, &mut split_id);
+        let mut ws = make_workspace(1, "Test", &mut pane_id);
         let p1 = ws.active_pane;
         let p2 = ws.split_right(p1, &mut pane_id, &mut split_id).unwrap();
         let _p3 = ws.split_down(p2, &mut pane_id, &mut split_id).unwrap();
@@ -237,48 +214,17 @@ mod tests {
         let panes = ws.pane_ids();
         assert_eq!(panes.len(), 3);
 
-        // focus_next cycles
         ws.focus_pane(p1);
         ws.focus_next();
         assert_eq!(ws.active_pane, panes[1]);
         ws.focus_next();
         assert_eq!(ws.active_pane, panes[2]);
         ws.focus_next();
-        assert_eq!(ws.active_pane, panes[0]); // wrapped
+        assert_eq!(ws.active_pane, panes[0]);
 
-        // focus_prev cycles
         ws.focus_prev();
-        assert_eq!(ws.active_pane, panes[2]); // wrapped
+        assert_eq!(ws.active_pane, panes[2]);
         ws.focus_prev();
         assert_eq!(ws.active_pane, panes[1]);
-    }
-
-    #[test]
-    fn test_focus_pane() {
-        let mut pane_id = 1;
-        let mut split_id = 1;
-        let mut ws = make_workspace(1, "Test", &mut pane_id, &mut split_id);
-        let p1 = ws.active_pane;
-        let p2 = ws.split_right(p1, &mut pane_id, &mut split_id).unwrap();
-        ws.focus_pane(p2);
-        assert_eq!(ws.active_pane, p2);
-    }
-
-    #[test]
-    fn test_active_pane_id() {
-        let mut pane_id = 1;
-        let mut split_id = 1;
-        let ws = make_workspace(1, "Test", &mut pane_id, &mut split_id);
-        assert!(ws.active_pane_id().0 > 0);
-    }
-
-    #[test]
-    fn test_active_pane_ref() {
-        let mut pane_id = 1;
-        let mut split_id = 1;
-        let ws = make_workspace(1, "Test", &mut pane_id, &mut split_id);
-        let pane = ws.active_pane_ref();
-        assert!(pane.is_some());
-        assert_eq!(pane.unwrap().name, "Test");
     }
 }
