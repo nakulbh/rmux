@@ -14,3 +14,4 @@ portable-pty = { workspace = true }
 egui = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+anyhow = { workspace = true }

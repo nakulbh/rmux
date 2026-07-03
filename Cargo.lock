@@ -2804,6 +2804,7 @@ dependencies = [
  "clap",
  "eframe",
  "egui",
+ "rmux-terminal",
  "serde",
  "serde_json",
  "tracing",
@@ -2835,6 +2836,7 @@ name = "rmux-terminal"
 version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
+ "anyhow",
  "egui",
  "portable-pty",
  "thiserror 2.0.18",

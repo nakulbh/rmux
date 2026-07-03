@@ -104,30 +104,30 @@ cross-platform Rust application targeting Linux, macOS, and Windows with a stric
 
 ### Tasks
 
-- [ ] **1.1** Implement `PtyBackend` using `portable-pty`:
+- [x] **1.1** Implement `PtyBackend` using `portable-pty`:
   - Spawn shell (respect `$SHELL`, fallback to `/bin/sh`)
   - Read/write PTY
   - Handle resize events
-- [ ] **1.2** Implement `TermState` wrapping `alacritty_terminal::Term`:
+- [x] **1.2** Implement `TermState` wrapping `alacritty_terminal::Term`:
   - Feed PTY bytes through VTE parser
   - Maintain grid, scrollback, selection
   - Configurable `max_scrollback_lines` (default: 10_000)
-- [ ] **1.3** Implement `TerminalRenderer`:
+- [x] **1.3** Implement `TerminalRenderer`:
   - Convert `Term` grid cells → egui `PaintCmd` rects + glyphs
   - Render cursor, selection highlight, colors (16 + 256 + truecolor)
   - Font: monospace, configurable size
-- [ ] **1.4** Handle keyboard input:
+- [x] **1.4** Handle keyboard input:
   - Map egui `KeyEvent` → terminal escape sequences
   - Support Ctrl, Alt, Shift modifiers
   - Paste via bracket mode
-- [ ] **1.5** Handle mouse input:
+- [x] **1.5** Handle mouse input:
   - Click to position cursor
   - Scroll wheel → terminal scrollback
   - Selection (click-drag)
-- [ ] **1.6** Handle terminal resize:
+- [x] **1.6** Handle terminal resize:
   - Window resize → recalculate cols/rows → PTY resize
   - Debounce resize events
-- [ ] **1.7** Add basic ANSI color theme support:
+- [x] **1.7** Add basic ANSI color theme support:
   - Default 16-color palette
   - Read from config later
 
@@ -497,7 +497,7 @@ rmux/
 | Phase | Status | Progress |
 |---|---|---|
 | Phase 0: Foundation | 🟢 Complete | 100% |
-| Phase 1: Terminal Pane | 🔴 Not started | 0% |
+| Phase 1: Terminal Pane | 🟢 Complete | 100% |
 | Phase 2: Workspaces | ⬜ Blocked by Phase 1 | 0% |
 | Phase 3: Notifications + API | ⬜ Blocked by Phase 2 | 0% |
 | Phase 4: Browser Pane | ⬜ Blocked by Phase 3 | 0% |
