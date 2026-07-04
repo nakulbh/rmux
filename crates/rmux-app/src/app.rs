@@ -6,6 +6,7 @@
 
 use egui::Key;
 
+use crate::notifications::NotificationManager;
 use crate::ui::sidebar::SidebarView;
 use crate::ui::{TerminalPane, workspace_view};
 use crate::workspace::WorkspaceManager;
@@ -19,13 +20,18 @@ pub struct RmuxApp {
     workspace_manager: WorkspaceManager,
     /// The sidebar view for workspace tab navigation.
     sidebar: SidebarView,
+    /// Stores notifications and emits desktop notifications.
+    notifications: NotificationManager,
 }
 
 impl RmuxApp {
     /// Create a new application state with a default workspace and terminal pane.
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
-        let mut app =
-            Self { workspace_manager: WorkspaceManager::new(), sidebar: SidebarView::new() };
+        let mut app = Self {
+            workspace_manager: WorkspaceManager::new(),
+            sidebar: SidebarView::new(),
+            notifications: NotificationManager::with_system_notifier(),
+        };
 
         let pane_id = app.workspace_manager.active().active_pane;
         let cols = 80u16;
@@ -52,8 +58,18 @@ impl RmuxApp {
 impl eframe::App for RmuxApp {
     /// Called each frame to update the UI.
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Process PTY output for all terminal panes
-        self.workspace_manager.process_all_panes();
+        // Process PTY output for all terminal panes; collect any OSC
+        // notifications raised by pane output.
+        let osc_notifications = self.workspace_manager.process_all_panes();
+        for (workspace_id, pane_id, notification) in osc_notifications {
+            let id = self.notifications.add(
+                notification.title,
+                notification.body,
+                Some(pane_id),
+                Some(workspace_id),
+            );
+            tracing::debug!(id, pane_id, workspace_id, "OSC notification added");
+        }
 
         // Auto-close panes whose process has exited
         self.workspace_manager.close_exited_panes();

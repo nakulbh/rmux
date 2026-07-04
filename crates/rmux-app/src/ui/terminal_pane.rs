@@ -4,7 +4,9 @@
 //! a self-contained egui widget that can be placed in split layouts.
 
 use anyhow::Result;
-use rmux_terminal::{InputMapper, PtyBackend, PtyError, TermState, TerminalRenderer};
+use rmux_terminal::{
+    InputMapper, OscNotification, OscScanner, PtyBackend, PtyError, TermState, TerminalRenderer,
+};
 use std::sync::mpsc;
 
 /// The default font size for terminal text.
@@ -34,6 +36,10 @@ pub struct TerminalPane {
     input_mapper: InputMapper,
     /// Channel receiver for PTY output from background thread.
     pty_rx: mpsc::Receiver<Vec<u8>>,
+    /// Scanner that detects notification OSC sequences in the PTY output.
+    osc_scanner: OscScanner,
+    /// Notifications parsed from the output, waiting to be collected.
+    pending_notifications: Vec<OscNotification>,
     /// Whether this pane currently has keyboard focus.
     has_focus: bool,
     /// Whether to show the blinking cursor.
@@ -110,6 +116,8 @@ impl TerminalPane {
             renderer,
             input_mapper,
             pty_rx: rx,
+            osc_scanner: OscScanner::new(),
+            pending_notifications: Vec::new(),
             has_focus: false,
             show_cursor: true,
             name,
@@ -125,6 +133,7 @@ impl TerminalPane {
     /// Should be called once per frame before rendering.
     pub fn process_pty_output(&mut self) {
         while let Ok(data) = self.pty_rx.try_recv() {
+            self.pending_notifications.extend(self.osc_scanner.feed(&data));
             self.state.feed_bytes(&data);
         }
 
@@ -133,6 +142,13 @@ impl TerminalPane {
             self.exited = true;
             self.name.push_str(" [exited]");
         }
+    }
+
+    /// Take all notifications parsed from the PTY output since the last call.
+    ///
+    /// Returns them in arrival order and leaves the internal queue empty.
+    pub fn take_notifications(&mut self) -> Vec<OscNotification> {
+        std::mem::take(&mut self.pending_notifications)
     }
 
     /// Render the terminal pane in the egui UI.

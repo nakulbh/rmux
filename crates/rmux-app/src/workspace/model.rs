@@ -5,6 +5,8 @@
 
 #![allow(dead_code)]
 
+use rmux_terminal::OscNotification;
+
 use super::splits::{PaneId, PaneNode, PaneTreeError, SplitDirection, SplitId};
 use crate::ui::TerminalPane;
 
@@ -50,9 +52,10 @@ impl Workspace {
         }
     }
 
-    /// Process PTY output for all panes in this workspace.
-    pub fn process_pty_outputs(&mut self) {
-        self.root.process_pty_outputs();
+    /// Process PTY output for all panes in this workspace, collecting any
+    /// OSC notifications (tagged with their pane id) into `notifications`.
+    pub fn process_pty_outputs(&mut self, notifications: &mut Vec<(PaneId, OscNotification)>) {
+        self.root.process_pty_outputs(notifications);
     }
 
     /// Split the specified pane to the right (horizontal split).

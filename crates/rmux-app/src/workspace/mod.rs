@@ -13,6 +13,7 @@ pub mod model;
 pub mod splits;
 
 use model::{Workspace, WorkspaceId};
+use rmux_terminal::OscNotification;
 use splits::PaneId;
 
 /// The maximum number of panes before a warning is emitted.
@@ -204,10 +205,19 @@ impl WorkspaceManager {
     }
 
     /// Process PTY output for all panes across all workspaces.
-    pub fn process_all_panes(&mut self) {
+    ///
+    /// Returns any OSC notifications parsed from the output as
+    /// `(workspace_id, pane_id, notification)` triples, in arrival order.
+    pub fn process_all_panes(&mut self) -> Vec<(u64, u64, OscNotification)> {
+        let mut out = Vec::new();
+        let mut per_workspace = Vec::new();
         for workspace in &mut self.workspaces {
-            workspace.process_pty_outputs();
+            per_workspace.clear();
+            workspace.process_pty_outputs(&mut per_workspace);
+            let ws_id = workspace.id.0;
+            out.extend(per_workspace.drain(..).map(|(pane, n)| (ws_id, pane.0, n)));
         }
+        out
     }
 
     /// Close all panes whose process has exited.

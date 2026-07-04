@@ -5,6 +5,7 @@
 
 #![allow(dead_code)]
 
+use rmux_terminal::OscNotification;
 use thiserror::Error;
 
 use crate::ui::TerminalPane;
@@ -119,16 +120,19 @@ impl PaneNode {
         self.find_terminal_mut(target).and_then(|opt| opt.as_mut())
     }
 
-    pub fn process_pty_outputs(&mut self) {
+    /// Process PTY output for every pane in this subtree, collecting any
+    /// OSC notifications (tagged with their pane id) into `notifications`.
+    pub fn process_pty_outputs(&mut self, notifications: &mut Vec<(PaneId, OscNotification)>) {
         match self {
-            Self::Leaf { terminal, .. } => {
+            Self::Leaf { id, terminal } => {
                 if let Some(t) = terminal.as_mut() {
                     t.process_pty_output();
+                    notifications.extend(t.take_notifications().into_iter().map(|n| (*id, n)));
                 }
             }
             Self::Split { children, .. } => {
                 for child in children.iter_mut() {
-                    child.process_pty_outputs();
+                    child.process_pty_outputs(notifications);
                 }
             }
         }
