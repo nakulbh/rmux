@@ -4,6 +4,7 @@
 //! of the application window. Each tab shows the workspace name and pane count.
 //! The active workspace is highlighted. Clicking a tab switches to that workspace.
 
+use crate::notifications::NotificationManager;
 use crate::workspace::WorkspaceManager;
 use crate::workspace::model::WorkspaceId;
 
@@ -43,6 +44,8 @@ struct TabData {
     status: Option<String>,
     /// Progress in `0.0..=1.0` set via `sidebar.set_progress`.
     progress: Option<f32>,
+    /// Number of unread notifications for this workspace.
+    unread: usize,
 }
 
 /// The sidebar view renders workspace tabs and handles tab switching.
@@ -77,8 +80,16 @@ impl SidebarView {
     /// Render the sidebar inside an `egui::SidePanel`.
     ///
     /// This should be called from the main `update` loop. It draws the vertical
-    /// tab list and handles click events for workspace switching.
-    pub fn show(&mut self, ctx: &egui::Context, manager: &mut WorkspaceManager) {
+    /// tab list (with per-workspace unread badges) and handles click events
+    /// for workspace switching. `notification_panel_visible` is toggled by
+    /// the bell button in the bottom area.
+    pub fn show(
+        &mut self,
+        ctx: &egui::Context,
+        manager: &mut WorkspaceManager,
+        notifications: &NotificationManager,
+        notification_panel_visible: &mut bool,
+    ) {
         if !self.visible {
             return;
         }
@@ -89,12 +100,18 @@ impl SidebarView {
             .default_width(200.0)
             .resizable(false)
             .show(ctx, |ui| {
-                self.render_sidebar(ui, manager);
+                self.render_sidebar(ui, manager, notifications, notification_panel_visible);
             });
     }
 
     /// Render the sidebar contents.
-    fn render_sidebar(&mut self, ui: &mut egui::Ui, manager: &mut WorkspaceManager) {
+    fn render_sidebar(
+        &mut self,
+        ui: &mut egui::Ui,
+        manager: &mut WorkspaceManager,
+        notifications: &NotificationManager,
+        notification_panel_visible: &mut bool,
+    ) {
         // --- Background ---
         ui.visuals_mut().override_text_color = Some(TAB_TEXT_COLOR);
         let mut style = (*ui.ctx().style()).clone();
@@ -124,6 +141,7 @@ impl SidebarView {
                 pane_count: w.pane_count(),
                 status: w.status.clone(),
                 progress: w.progress,
+                unread: notifications.unread_count_for_workspace(w.id.0),
             })
             .collect();
         let active_index = manager.active_index();
@@ -158,7 +176,7 @@ impl SidebarView {
             manager.switch_to(index);
         }
 
-        // --- Bottom hint ---
+        // --- Bottom area: hint + notification bell ---
         ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
             ui.add_space(12.0);
             ui.label(
@@ -166,6 +184,16 @@ impl SidebarView {
                     .size(10.0)
                     .color(egui::Color32::from_rgb(100, 100, 110)),
             );
+            ui.add_space(6.0);
+            let unread = notifications.unread_count();
+            let bell_label =
+                if unread > 0 { format!("\u{1f514} {unread}") } else { "\u{1f514}".to_owned() };
+            let bell = ui
+                .small_button(egui::RichText::new(bell_label).size(11.0))
+                .on_hover_text("Notifications (Cmd/Ctrl+Shift+N)");
+            if bell.clicked() {
+                *notification_panel_visible = !*notification_panel_visible;
+            }
             ui.add_space(8.0);
         });
     }
@@ -278,6 +306,19 @@ impl SidebarView {
                         status,
                         egui::FontId::proportional(10.0),
                         ACCENT_COLOR,
+                    );
+                }
+
+                // Unread notification badge at the tab's right edge
+                if tab.unread > 0 {
+                    let badge_center = egui::Pos2::new(rect.right() - 16.0, rect.top() + 14.0);
+                    painter.circle_filled(badge_center, 8.0, ACCENT_COLOR);
+                    painter.text(
+                        badge_center,
+                        egui::Align2::CENTER_CENTER,
+                        tab.unread.to_string(),
+                        egui::FontId::proportional(9.0),
+                        egui::Color32::WHITE,
                     );
                 }
             }

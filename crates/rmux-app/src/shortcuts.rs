@@ -32,6 +32,11 @@ impl RmuxApp {
                 tracing::debug!("Sidebar toggled via keyboard shortcut");
             }
 
+            // Cmd/Ctrl+Shift+N: Toggle notification panel
+            if mod_active && shift_active && *key == Key::N {
+                self.notification_panel.toggle();
+            }
+
             // Cmd/Ctrl+N: New workspace
             if mod_active && !shift_active && *key == Key::N {
                 let count = self.workspace_manager.workspace_count() + 1;

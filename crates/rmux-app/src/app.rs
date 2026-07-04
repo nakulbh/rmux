@@ -12,7 +12,7 @@ use serde_json::json;
 use crate::api;
 use crate::notifications::NotificationManager;
 use crate::ui::sidebar::SidebarView;
-use crate::ui::{TerminalPane, workspace_view};
+use crate::ui::{NotificationPanel, TerminalPane, workspace_view};
 use crate::workspace::WorkspaceManager;
 use crate::workspace::splits::{PaneId, PaneTreeError, SplitDirection};
 
@@ -33,6 +33,8 @@ pub struct RmuxApp {
     pub(crate) sidebar: SidebarView,
     /// Stores notifications and emits desktop notifications.
     pub(crate) notifications: NotificationManager,
+    /// The right-side notification list panel.
+    pub(crate) notification_panel: NotificationPanel,
     /// Receives socket API requests, drained each frame.
     api_request_rx: tokio::sync::mpsc::Receiver<rmux_api::ApiRequestEnvelope>,
     /// Publishes application events to `events.stream` subscribers.
@@ -51,6 +53,7 @@ impl RmuxApp {
             workspace_manager: WorkspaceManager::new(),
             sidebar: SidebarView::new(),
             notifications: NotificationManager::with_system_notifier(),
+            notification_panel: NotificationPanel::new(),
             api_request_rx: channels.request_rx,
             api_event_tx: channels.event_tx,
             last_active_workspace: 0,
@@ -101,7 +104,15 @@ impl eframe::App for RmuxApp {
         self.handle_keyboard_shortcuts(ctx);
 
         // Render the sidebar (left panel)
-        self.sidebar.show(ctx, &mut self.workspace_manager);
+        self.sidebar.show(
+            ctx,
+            &mut self.workspace_manager,
+            &self.notifications,
+            &mut self.notification_panel.visible,
+        );
+
+        // Render the notification panel (right panel, before the central panel)
+        self.notification_panel.show(ctx, &mut self.notifications, &mut self.workspace_manager);
 
         // Render the workspace view (central panel)
         self.render_workspace(ctx);

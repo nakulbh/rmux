@@ -8,11 +8,6 @@
 //! IDs reference panes and workspaces as raw `u64` values (the inner
 //! value of `PaneId` / `WorkspaceId`) to avoid import cycles with the
 //! workspace module.
-// Nothing wires this module up yet (UI panel and OSC integration are
-// later Phase 3 tasks), so silence dead-code and unused re-export
-// warnings for now.
-#![allow(dead_code, unused_imports)]
-
 mod manager;
 
 pub use manager::NotificationManager;
