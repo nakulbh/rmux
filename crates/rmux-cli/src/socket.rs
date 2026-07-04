@@ -10,13 +10,9 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-/// Environment variable that overrides the default socket path.
+/// Environment variable that overrides the default socket path
+/// (honored by [`rmux_api::default_socket_path`]).
 pub const SOCKET_PATH_ENV: &str = "RMUX_SOCKET_PATH";
-
-/// Default socket path for debug builds.
-const DEBUG_SOCKET_PATH: &str = "/tmp/rmux-debug.sock";
-/// Default socket path for release builds.
-const RELEASE_SOCKET_PATH: &str = "/tmp/rmux.sock";
 
 /// Error raised when the client cannot connect to the rmux socket.
 ///
@@ -61,39 +57,14 @@ impl fmt::Display for ServerError {
 
 impl std::error::Error for ServerError {}
 
-/// Resolve the rmux control socket path.
-///
-/// Resolution order: the `$RMUX_SOCKET_PATH` environment variable if set
-/// and non-empty, else `/tmp/rmux-debug.sock` in debug builds or
-/// `/tmp/rmux.sock` in release builds.
-// TODO: unify with rmux_api::default_socket_path once merged
-pub fn resolve_socket_path() -> PathBuf {
-    resolve_from(None, std::env::var(SOCKET_PATH_ENV).ok())
-}
-
 /// Resolve the socket path, giving a CLI `--socket` flag top precedence.
 ///
-/// Precedence: `flag` > `$RMUX_SOCKET_PATH` > built-in default.
+/// Precedence: `flag` > `$RMUX_SOCKET_PATH` > built-in default. The
+/// env-var and default handling is delegated to
+/// [`rmux_api::default_socket_path`] so the CLI and the app always
+/// agree on the socket location.
 pub fn effective_socket_path(flag: Option<PathBuf>) -> PathBuf {
-    resolve_from(flag, std::env::var(SOCKET_PATH_ENV).ok())
-}
-
-/// Pure resolution helper so precedence is testable without touching
-/// process environment (mutating env vars is unsafe in edition 2024).
-fn resolve_from(flag: Option<PathBuf>, env_value: Option<String>) -> PathBuf {
-    if let Some(path) = flag {
-        return path;
-    }
-    if let Some(value) = env_value
-        && !value.is_empty()
-    {
-        return PathBuf::from(value);
-    }
-    if cfg!(debug_assertions) {
-        PathBuf::from(DEBUG_SOCKET_PATH)
-    } else {
-        PathBuf::from(RELEASE_SOCKET_PATH)
-    }
+    flag.unwrap_or_else(rmux_api::default_socket_path)
 }
 
 /// Perform a single blocking request/response roundtrip over the socket.
@@ -178,27 +149,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn flag_takes_precedence_over_env() {
-        let path =
-            resolve_from(Some(PathBuf::from("/tmp/flag.sock")), Some("/tmp/env.sock".to_owned()));
+    fn flag_takes_precedence() {
+        let path = effective_socket_path(Some(PathBuf::from("/tmp/flag.sock")));
         assert_eq!(path, PathBuf::from("/tmp/flag.sock"));
     }
 
     #[test]
-    fn env_takes_precedence_over_default() {
-        let path = resolve_from(None, Some("/tmp/env.sock".to_owned()));
-        assert_eq!(path, PathBuf::from("/tmp/env.sock"));
-    }
-
-    #[test]
-    fn empty_env_falls_back_to_default() {
-        let path = resolve_from(None, Some(String::new()));
-        assert_eq!(path, resolve_from(None, None));
-    }
-
-    #[test]
-    fn default_matches_build_profile() {
-        let expected = if cfg!(debug_assertions) { DEBUG_SOCKET_PATH } else { RELEASE_SOCKET_PATH };
-        assert_eq!(resolve_from(None, None), PathBuf::from(expected));
+    fn no_flag_delegates_to_rmux_api_resolution() {
+        // Env-var and build-profile precedence is covered by rmux-api's
+        // own tests; here we only assert the CLI delegates to it.
+        assert_eq!(effective_socket_path(None), rmux_api::default_socket_path());
     }
 }
