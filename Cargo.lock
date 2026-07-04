@@ -2876,9 +2876,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "serde",
+ "rmux-api",
  "serde_json",
- "tokio",
 ]
 
 [[package]]
