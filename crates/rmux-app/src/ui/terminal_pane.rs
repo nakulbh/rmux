@@ -4,7 +4,9 @@
 //! a self-contained egui widget that can be placed in split layouts.
 
 use anyhow::Result;
-use rmux_terminal::{InputMapper, PtyBackend, PtyError, TermState, TerminalRenderer};
+use rmux_terminal::{
+    InputMapper, OscNotification, OscScanner, PtyBackend, PtyError, TermState, TerminalRenderer,
+};
 use std::sync::mpsc;
 
 /// The default font size for terminal text.
@@ -34,6 +36,10 @@ pub struct TerminalPane {
     input_mapper: InputMapper,
     /// Channel receiver for PTY output from background thread.
     pty_rx: mpsc::Receiver<Vec<u8>>,
+    /// Scanner that detects notification OSC sequences in the PTY output.
+    osc_scanner: OscScanner,
+    /// Notifications parsed from the output, waiting to be collected.
+    pending_notifications: Vec<OscNotification>,
     /// Whether this pane currently has keyboard focus.
     has_focus: bool,
     /// Whether to show the blinking cursor.
@@ -110,6 +116,8 @@ impl TerminalPane {
             renderer,
             input_mapper,
             pty_rx: rx,
+            osc_scanner: OscScanner::new(),
+            pending_notifications: Vec::new(),
             has_focus: false,
             show_cursor: true,
             name,
@@ -125,6 +133,7 @@ impl TerminalPane {
     /// Should be called once per frame before rendering.
     pub fn process_pty_output(&mut self) {
         while let Ok(data) = self.pty_rx.try_recv() {
+            self.pending_notifications.extend(self.osc_scanner.feed(&data));
             self.state.feed_bytes(&data);
         }
 
@@ -133,6 +142,23 @@ impl TerminalPane {
             self.exited = true;
             self.name.push_str(" [exited]");
         }
+    }
+
+    /// Write raw text to the pane's PTY as if it had been typed.
+    ///
+    /// The text is sent verbatim — no escape interpretation is performed.
+    /// Write failures are logged and swallowed (best-effort, like typing).
+    pub fn send_text(&mut self, text: &str) {
+        if let Err(err) = self.backend.write(text.as_bytes()) {
+            tracing::warn!(error = %err, "failed to write text to PTY");
+        }
+    }
+
+    /// Take all notifications parsed from the PTY output since the last call.
+    ///
+    /// Returns them in arrival order and leaves the internal queue empty.
+    pub fn take_notifications(&mut self) -> Vec<OscNotification> {
+        std::mem::take(&mut self.pending_notifications)
     }
 
     /// Render the terminal pane in the egui UI.
@@ -224,11 +250,18 @@ impl TerminalPane {
                     continue;
                 }
 
+                // Cmd-only chords (macOS) are reserved for app-level shortcuts
+                // (split, close, new workspace, etc.) — never forward to the shell.
+                // Physical Ctrl is still forwarded so Ctrl+C/Ctrl+D keep working.
+                if modifiers.command && !modifiers.ctrl {
+                    continue;
+                }
+
                 // Skip plain printable characters — Event::Text handles them.
                 // Only handle special keys (Enter, Tab, arrows, F-keys, etc.)
                 // and modified keys (Ctrl+A, Alt+char).
                 let name = key.name();
-                if name.len() == 1 && !modifiers.ctrl && !modifiers.command && !modifiers.alt {
+                if name.len() == 1 && !modifiers.ctrl && !modifiers.alt {
                     continue;
                 }
 
@@ -254,7 +287,7 @@ impl TerminalPane {
     fn map_key_to_terminal(&self, key: &egui::Key, modifiers: &egui::Modifiers) -> Option<Vec<u8>> {
         use egui::Key;
 
-        let ctrl = modifiers.ctrl || modifiers.command;
+        let ctrl = modifiers.ctrl;
         let _shift = modifiers.shift;
         let alt = modifiers.alt;
 

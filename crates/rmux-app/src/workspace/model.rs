@@ -5,6 +5,8 @@
 
 #![allow(dead_code)]
 
+use rmux_terminal::OscNotification;
+
 use super::splits::{PaneId, PaneNode, PaneTreeError, SplitDirection, SplitId};
 use crate::ui::TerminalPane;
 
@@ -32,6 +34,11 @@ pub struct Workspace {
     pub root: PaneNode,
     /// The currently focused (active) pane.
     pub active_pane: PaneId,
+    /// Status text shown in the sidebar tab (set via `sidebar.set_status`).
+    pub status: Option<String>,
+    /// Progress in `0.0..=1.0` shown as a bar in the sidebar tab
+    /// (set via `sidebar.set_progress`).
+    pub progress: Option<f32>,
 }
 
 impl Workspace {
@@ -40,7 +47,7 @@ impl Workspace {
         let pane_id = *next_pane_id;
         *next_pane_id += 1;
         let pane = PaneNode::new_leaf(PaneId(pane_id));
-        Self { id, name, root: pane, active_pane: PaneId(pane_id) }
+        Self { id, name, root: pane, active_pane: PaneId(pane_id), status: None, progress: None }
     }
 
     /// Set the terminal for a pane by its ID.
@@ -50,9 +57,10 @@ impl Workspace {
         }
     }
 
-    /// Process PTY output for all panes in this workspace.
-    pub fn process_pty_outputs(&mut self) {
-        self.root.process_pty_outputs();
+    /// Process PTY output for all panes in this workspace, collecting any
+    /// OSC notifications (tagged with their pane id) into `notifications`.
+    pub fn process_pty_outputs(&mut self, notifications: &mut Vec<(PaneId, OscNotification)>) {
+        self.root.process_pty_outputs(notifications);
     }
 
     /// Split the specified pane to the right (horizontal split).

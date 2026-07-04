@@ -1,14 +1,26 @@
 //! Application state and main egui rendering logic.
 //!
 //! The `RmuxApp` struct owns the top-level application state including the
-//! workspace manager, sidebar view, and terminal panes. It implements
-//! `eframe::App` to drive the UI and handles keyboard shortcuts.
+//! workspace manager, sidebar view, notification manager, and the socket
+//! API channel endpoints. It implements `eframe::App` to drive the UI.
+//! Keyboard shortcut handling lives in [`crate::shortcuts`]; socket API
+//! request handling lives in [`crate::api_dispatch`].
 
-use egui::Key;
+use rmux_api::ApiEvent;
+use serde_json::json;
 
+use crate::api;
+use crate::notifications::NotificationManager;
 use crate::ui::sidebar::SidebarView;
-use crate::ui::{TerminalPane, workspace_view};
+use crate::ui::{NotificationPanel, TerminalPane, workspace_view};
 use crate::workspace::WorkspaceManager;
+use crate::workspace::splits::{PaneId, PaneTreeError, SplitDirection};
+
+/// Terminal dimensions used when spawning a pane; the pane resizes to
+/// its real cell grid on the first rendered frame.
+const INITIAL_COLS: u16 = 80;
+/// See [`INITIAL_COLS`].
+const INITIAL_ROWS: u16 = 24;
 
 /// The root application state.
 ///
@@ -16,29 +28,40 @@ use crate::workspace::WorkspaceManager;
 /// Implements `eframe::App` to render the UI each frame.
 pub struct RmuxApp {
     /// Manages all workspaces, panes, and splits.
-    workspace_manager: WorkspaceManager,
+    pub(crate) workspace_manager: WorkspaceManager,
     /// The sidebar view for workspace tab navigation.
-    sidebar: SidebarView,
+    pub(crate) sidebar: SidebarView,
+    /// Stores notifications and emits desktop notifications.
+    pub(crate) notifications: NotificationManager,
+    /// The right-side notification list panel.
+    pub(crate) notification_panel: NotificationPanel,
+    /// Receives socket API requests, drained each frame.
+    api_request_rx: tokio::sync::mpsc::Receiver<rmux_api::ApiRequestEnvelope>,
+    /// Publishes application events to `events.stream` subscribers.
+    api_event_tx: tokio::sync::broadcast::Sender<ApiEvent>,
+    /// Active workspace id at the end of the previous frame, used to
+    /// detect switches (keyboard, sidebar, or API) and publish
+    /// `workspace.changed` exactly once per switch.
+    last_active_workspace: u64,
 }
 
 impl RmuxApp {
     /// Create a new application state with a default workspace and terminal pane.
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
-        let mut app =
-            Self { workspace_manager: WorkspaceManager::new(), sidebar: SidebarView::new() };
+        let channels = api::start_server();
+        let mut app = Self {
+            workspace_manager: WorkspaceManager::new(),
+            sidebar: SidebarView::new(),
+            notifications: NotificationManager::with_system_notifier(),
+            notification_panel: NotificationPanel::new(),
+            api_request_rx: channels.request_rx,
+            api_event_tx: channels.event_tx,
+            last_active_workspace: 0,
+        };
 
         let pane_id = app.workspace_manager.active().active_pane;
-        let cols = 80u16;
-        let rows = 24u16;
-
-        match TerminalPane::spawn(cols, rows) {
-            Ok(terminal) => {
-                app.workspace_manager.active_mut().set_terminal(pane_id, terminal);
-            }
-            Err(e) => {
-                tracing::error!("Failed to spawn initial terminal pane: {e}");
-            }
-        }
+        attach_terminal(&mut app.workspace_manager, pane_id);
+        app.last_active_workspace = app.workspace_manager.active().id.0;
 
         tracing::info!(
             workspaces = app.workspace_manager.workspace_count(),
@@ -52,11 +75,27 @@ impl RmuxApp {
 impl eframe::App for RmuxApp {
     /// Called each frame to update the UI.
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Process PTY output for all terminal panes
-        self.workspace_manager.process_all_panes();
+        // Process PTY output for all terminal panes; collect any OSC
+        // notifications raised by pane output.
+        let osc_notifications = self.workspace_manager.process_all_panes();
+        for (workspace_id, pane_id, notification) in osc_notifications {
+            self.add_pane_notification(workspace_id, pane_id, notification);
+        }
 
         // Auto-close panes whose process has exited
-        self.workspace_manager.close_exited_panes();
+        let cleanup = self.workspace_manager.close_exited_panes();
+        for (workspace_id, pane_id) in cleanup.panes {
+            self.publish_event(
+                "pane.closed",
+                json!({ "pane_id": pane_id, "workspace_id": workspace_id }),
+            );
+        }
+        for workspace_id in cleanup.workspaces {
+            self.publish_event("workspace.closed", json!({ "id": workspace_id }));
+        }
+
+        // Handle any pending socket API requests on the main thread
+        self.process_api_requests();
 
         // Request continuous repaints for terminal updates (PTY output, cursor blink)
         ctx.request_repaint_after(std::time::Duration::from_millis(16));
@@ -65,126 +104,137 @@ impl eframe::App for RmuxApp {
         self.handle_keyboard_shortcuts(ctx);
 
         // Render the sidebar (left panel)
-        self.sidebar.show(ctx, &mut self.workspace_manager);
+        self.sidebar.show(
+            ctx,
+            &mut self.workspace_manager,
+            &self.notifications,
+            &mut self.notification_panel.visible,
+        );
+
+        // Render the notification panel (right panel, before the central panel)
+        self.notification_panel.show(ctx, &mut self.notifications, &mut self.workspace_manager);
 
         // Render the workspace view (central panel)
         self.render_workspace(ctx);
+
+        // Publish workspace.changed if the active workspace switched this
+        // frame (keyboard, sidebar click, or API request).
+        self.emit_workspace_change();
     }
 }
 
 impl RmuxApp {
-    /// Handle global keyboard shortcuts for workspace/pane operations.
-    fn handle_keyboard_shortcuts(&mut self, ctx: &egui::Context) {
-        let input = ctx.input(|i| i.clone());
-
-        // Skip shortcuts if any text input is focused (don't steal typing from terminal)
-        if ctx.wants_keyboard_input() {
-            return;
+    /// Drain and answer all pending socket API requests.
+    ///
+    /// Runs on the main thread inside `update()`, so the dispatcher has
+    /// direct `&mut` access to application state. The `oneshot` respond
+    /// send is synchronous and non-blocking.
+    fn process_api_requests(&mut self) {
+        while let Ok(envelope) = self.api_request_rx.try_recv() {
+            tracing::debug!(method = %envelope.method, "handling API request");
+            let result = crate::api_dispatch::dispatch(self, &envelope.method, envelope.params);
+            let _ = envelope.respond.send(result);
         }
+    }
 
-        for event in &input.events {
-            let egui::Event::Key { key, pressed: true, modifiers, .. } = event else {
-                continue;
-            };
+    /// Publish an event to `events.stream` subscribers (best-effort:
+    /// send errors just mean nobody is listening).
+    pub(crate) fn publish_event(&self, event: &str, data: serde_json::Value) {
+        let _ = self.api_event_tx.send(ApiEvent::new(event, data));
+    }
 
-            let mod_active = modifiers.command || modifiers.ctrl;
-            let shift_active = modifiers.shift;
+    /// Store a notification raised by a pane's OSC output and publish
+    /// the matching `notification` event.
+    fn add_pane_notification(
+        &mut self,
+        workspace_id: u64,
+        pane_id: u64,
+        notification: rmux_terminal::OscNotification,
+    ) {
+        let id = self.notifications.add(
+            notification.title.clone(),
+            notification.body.clone(),
+            Some(pane_id),
+            Some(workspace_id),
+        );
+        tracing::debug!(id, pane_id, workspace_id, "OSC notification added");
+        self.publish_event(
+            "notification",
+            json!({
+                "id": id,
+                "title": notification.title,
+                "body": notification.body,
+                "pane_id": pane_id,
+                "workspace_id": workspace_id,
+            }),
+        );
+    }
 
-            // Cmd/Ctrl+B: Toggle sidebar
-            if mod_active && !shift_active && *key == Key::B {
-                self.sidebar.toggle();
-                tracing::debug!("Sidebar toggled via keyboard shortcut");
-            }
+    /// Create a workspace with a live terminal in its initial pane.
+    ///
+    /// Shared by the Cmd/Ctrl+N shortcut and the `workspace.create` API
+    /// method. Publishes `workspace.created` and `pane.created` events.
+    /// Returns the raw id of the new workspace.
+    pub(crate) fn create_workspace_with_terminal(&mut self, name: String) -> u64 {
+        let ws = self.workspace_manager.create_workspace(name);
+        let pane_id = self.workspace_manager.active().active_pane;
+        attach_terminal(&mut self.workspace_manager, pane_id);
+        self.publish_event("workspace.created", json!({ "id": ws.0 }));
+        self.publish_event("pane.created", json!({ "pane_id": pane_id.0, "workspace_id": ws.0 }));
+        ws.0
+    }
 
-            // Cmd/Ctrl+N: New workspace
-            if mod_active && !shift_active && *key == Key::N {
-                let count = self.workspace_manager.workspace_count() + 1;
-                let ws = self.workspace_manager.create_workspace(format!("Workspace {count}"));
-                let pane_id = self.workspace_manager.active().active_pane;
-                let cols = 80u16;
-                let rows = 24u16;
-                if let Ok(terminal) = TerminalPane::spawn(cols, rows) {
-                    self.workspace_manager.active_mut().set_terminal(pane_id, terminal);
-                }
-                tracing::info!(workspace_id = ws.0, "Created workspace");
-            }
+    /// Split the active pane and spawn a terminal in the new pane.
+    ///
+    /// Shared by the Cmd/Ctrl+D shortcuts and the `surface.split` API
+    /// method. Publishes a `pane.created` event. Returns the raw id of
+    /// the new pane.
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying [`PaneTreeError`] if the split fails.
+    pub(crate) fn split_active_with_terminal(
+        &mut self,
+        direction: SplitDirection,
+    ) -> Result<u64, PaneTreeError> {
+        let new_id = match direction {
+            SplitDirection::Horizontal => self.workspace_manager.split_active_right()?,
+            SplitDirection::Vertical => self.workspace_manager.split_active_down()?,
+        };
+        attach_terminal(&mut self.workspace_manager, new_id);
+        let workspace_id = self.workspace_manager.active().id.0;
+        self.publish_event(
+            "pane.created",
+            json!({ "pane_id": new_id.0, "workspace_id": workspace_id }),
+        );
+        Ok(new_id.0)
+    }
 
-            // Cmd/Ctrl+D: Split right
-            if mod_active && !shift_active && *key == Key::D {
-                match self.workspace_manager.split_active_right() {
-                    Ok(new_id) => {
-                        let cols = 80u16;
-                        let rows = 24u16;
-                        if let Ok(terminal) = TerminalPane::spawn(cols, rows) {
-                            self.workspace_manager.active_mut().set_terminal(new_id, terminal);
-                        }
-                        tracing::info!(pane_id = new_id.0, "Split right");
-                    }
-                    Err(e) => {
-                        tracing::warn!("Split right failed: {e}");
-                    }
-                }
-            }
+    /// Close the active pane and publish a `pane.closed` event.
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying [`PaneTreeError`] if the pane cannot be
+    /// closed (e.g. it is the last pane in the workspace).
+    pub(crate) fn close_active_pane_with_event(&mut self) -> Result<(), PaneTreeError> {
+        let workspace_id = self.workspace_manager.active().id.0;
+        let pane_id = self.workspace_manager.active().active_pane.0;
+        self.workspace_manager.close_active_pane()?;
+        self.publish_event(
+            "pane.closed",
+            json!({ "pane_id": pane_id, "workspace_id": workspace_id }),
+        );
+        Ok(())
+    }
 
-            // Cmd/Ctrl+Shift+D: Split down
-            if mod_active && shift_active && *key == Key::D {
-                match self.workspace_manager.split_active_down() {
-                    Ok(new_id) => {
-                        let cols = 80u16;
-                        let rows = 24u16;
-                        if let Ok(terminal) = TerminalPane::spawn(cols, rows) {
-                            self.workspace_manager.active_mut().set_terminal(new_id, terminal);
-                        }
-                        tracing::info!(pane_id = new_id.0, "Split down");
-                    }
-                    Err(e) => {
-                        tracing::warn!("Split down failed: {e}");
-                    }
-                }
-            }
-
-            // Cmd/Ctrl+W: Close active pane
-            if mod_active && !shift_active && *key == Key::W {
-                match self.workspace_manager.close_active_pane() {
-                    Ok(()) => {
-                        tracing::info!("Closed active pane");
-                    }
-                    Err(e) => {
-                        tracing::warn!("Close pane failed: {e}");
-                    }
-                }
-            }
-
-            // Cmd/Ctrl+1..9: Switch to workspace by index
-            if mod_active
-                && !shift_active
-                && let Some(index) = key_to_workspace_index(*key)
-            {
-                self.workspace_manager.switch_to(index);
-                tracing::info!(index, "Switched to workspace");
-            }
-
-            // Cmd/Ctrl+Shift+[ or ]: Previous/next workspace
-            if mod_active && shift_active {
-                match *key {
-                    Key::OpenBracket => self.workspace_manager.switch_prev(),
-                    Key::CloseBracket => self.workspace_manager.switch_next(),
-                    _ => {}
-                }
-            }
-
-            // Arrow keys for pane focus (Cmd/Ctrl+Arrow without shift)
-            if mod_active && !shift_active {
-                match *key {
-                    Key::ArrowLeft | Key::ArrowUp => {
-                        self.workspace_manager.active_mut().focus_prev();
-                    }
-                    Key::ArrowRight | Key::ArrowDown => {
-                        self.workspace_manager.active_mut().focus_next();
-                    }
-                    _ => {}
-                }
-            }
+    /// Publish `workspace.changed` if the active workspace differs from
+    /// the previous frame.
+    fn emit_workspace_change(&mut self) {
+        let id = self.workspace_manager.active().id.0;
+        if id != self.last_active_workspace {
+            self.last_active_workspace = id;
+            let index = self.workspace_manager.active_index();
+            self.publish_event("workspace.changed", json!({ "id": id, "index": index }));
         }
     }
 
@@ -197,18 +247,13 @@ impl RmuxApp {
     }
 }
 
-/// Convert a number key (1-9) to a workspace index (0-8).
-fn key_to_workspace_index(key: Key) -> Option<usize> {
-    match key {
-        Key::Num1 => Some(0),
-        Key::Num2 => Some(1),
-        Key::Num3 => Some(2),
-        Key::Num4 => Some(3),
-        Key::Num5 => Some(4),
-        Key::Num6 => Some(5),
-        Key::Num7 => Some(6),
-        Key::Num8 => Some(7),
-        Key::Num9 => Some(8),
-        _ => None,
+/// Spawn a terminal and attach it to `pane_id` in the active workspace.
+///
+/// Spawn failures are logged; the pane then shows the "Spawning
+/// terminal..." placeholder indefinitely.
+fn attach_terminal(manager: &mut WorkspaceManager, pane_id: PaneId) {
+    match TerminalPane::spawn(INITIAL_COLS, INITIAL_ROWS) {
+        Ok(terminal) => manager.active_mut().set_terminal(pane_id, terminal),
+        Err(e) => tracing::error!(pane_id = pane_id.0, "Failed to spawn terminal pane: {e}"),
     }
 }
