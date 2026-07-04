@@ -165,7 +165,10 @@ impl WorkspaceManager {
     /// Switches to the workspace containing the pane and focuses it.
     /// Returns `false` if no workspace contains the pane.
     pub fn focus_pane_global(&mut self, pane: PaneId) -> bool {
-        let Some(index) = self.workspaces.iter().position(|w| w.pane_ids().contains(&pane)) else {
+        // Use `find_leaf` (tree walk, zero-allocation) instead of `pane_ids()`
+        // which allocates a full Vec<PaneId> per workspace.
+        let Some(index) = self.workspaces.iter().position(|w| w.root.find_leaf(pane).is_some())
+        else {
             return false;
         };
         self.active_index = index;

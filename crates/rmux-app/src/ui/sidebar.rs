@@ -327,7 +327,10 @@ impl SidebarView {
             // Re-borrow the painter: the editing branch above needed `ui`
             // mutably for the TextEdit widget.
             if let Some(progress) = tab.progress {
-                let width = rect.width() * progress.clamp(0.0, 1.0);
+                // Clamp to [0.0, 1.0], treating NaN/infinite as 0.0 so they
+                // don't produce degenerate geometry and UI glitches.
+                let clamped = if progress.is_finite() { progress.clamp(0.0, 1.0) } else { 0.0 };
+                let width = rect.width() * clamped;
                 let bar_rect = egui::Rect::from_min_max(
                     egui::Pos2::new(rect.left(), rect.bottom() - 3.0),
                     egui::Pos2::new(rect.left() + width, rect.bottom()),

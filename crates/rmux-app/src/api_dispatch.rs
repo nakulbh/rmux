@@ -250,7 +250,8 @@ fn sidebar_clear_status(app: &mut RmuxApp, params: Value) -> Result<Value, JsonR
 /// `sidebar.set_progress` — set the active workspace's progress bar.
 fn sidebar_set_progress(app: &mut RmuxApp, params: Value) -> Result<Value, JsonRpcError> {
     let params: SidebarSetProgressParams = parse_params(params)?;
-    app.workspace_manager.active_mut().progress = Some(params.value.clamp(0.0, 1.0));
+    let safe = if params.value.is_finite() { params.value.clamp(0.0, 1.0) } else { 0.0 };
+    app.workspace_manager.active_mut().progress = Some(safe);
     Ok(json!({}))
 }
 

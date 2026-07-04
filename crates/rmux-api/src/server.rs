@@ -8,6 +8,8 @@
 //! [`ApiEvent`]s.
 
 use std::ffi::OsString;
+#[cfg(unix)]
+use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -179,8 +181,28 @@ impl Drop for ApiServer {
 }
 
 /// Remove a leftover socket file from a previous run, if any.
+///
+/// Only removes the path if it is an actual Unix socket to avoid
+/// accidentally deleting a non-socket file the user may have pointed
+/// `$RMUX_SOCKET_PATH` at (data file, symlink, etc.).
 #[cfg(unix)]
 fn remove_stale_socket(path: &Path) {
+    // Stat the path; bail if metadata isn't available or it's not a socket.
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.file_type().is_socket() => {}
+        Ok(_) => {
+            tracing::warn!(
+                path = %path.display(),
+                "socket path exists but is not a Unix socket; refusing to remove",
+            );
+            return;
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return,
+        Err(err) => {
+            tracing::warn!(path = %path.display(), error = %err, "could not stat socket path");
+            return;
+        }
+    }
     match std::fs::remove_file(path) {
         Ok(()) => tracing::debug!(path = %path.display(), "removed stale socket file"),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
