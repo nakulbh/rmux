@@ -34,6 +34,11 @@ pub struct Workspace {
     pub root: PaneNode,
     /// The currently focused (active) pane.
     pub active_pane: PaneId,
+    /// Status text shown in the sidebar tab (set via `sidebar.set_status`).
+    pub status: Option<String>,
+    /// Progress in `0.0..=1.0` shown as a bar in the sidebar tab
+    /// (set via `sidebar.set_progress`).
+    pub progress: Option<f32>,
 }
 
 impl Workspace {
@@ -42,7 +47,7 @@ impl Workspace {
         let pane_id = *next_pane_id;
         *next_pane_id += 1;
         let pane = PaneNode::new_leaf(PaneId(pane_id));
-        Self { id, name, root: pane, active_pane: PaneId(pane_id) }
+        Self { id, name, root: pane, active_pane: PaneId(pane_id), status: None, progress: None }
     }
 
     /// Set the terminal for a pane by its ID.

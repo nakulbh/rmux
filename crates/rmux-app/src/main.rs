@@ -17,8 +17,11 @@ use anyhow::Result;
 use clap::Parser;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
+mod api;
+mod api_dispatch;
 mod app;
 mod notifications;
+mod shortcuts;
 mod ui;
 mod workspace;
 

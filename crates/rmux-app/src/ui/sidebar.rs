@@ -28,6 +28,23 @@ const TAB_TEXT_COLOR_ACTIVE: egui::Color32 = egui::Color32::WHITE;
 /// Accent color stripe for the active tab.
 const ACCENT_COLOR: egui::Color32 = egui::Color32::from_rgb(70, 130, 250);
 
+/// Per-workspace data captured before rendering a tab.
+///
+/// Snapshotting avoids holding a borrow of the manager while tabs also
+/// need `&mut` access for renames.
+struct TabData {
+    /// Workspace id.
+    id: WorkspaceId,
+    /// Display name.
+    name: String,
+    /// Number of panes.
+    pane_count: usize,
+    /// Status text set via `sidebar.set_status`.
+    status: Option<String>,
+    /// Progress in `0.0..=1.0` set via `sidebar.set_progress`.
+    progress: Option<f32>,
+}
+
 /// The sidebar view renders workspace tabs and handles tab switching.
 #[derive(Debug)]
 pub struct SidebarView {
@@ -98,10 +115,16 @@ impl SidebarView {
         ui.add_space(8.0);
 
         // --- Tab list ---
-        let workspaces: Vec<(WorkspaceId, String, usize)> = manager
-            .list()
-            .into_iter()
-            .map(|(id, name, count)| (id, name.to_string(), count))
+        let workspaces: Vec<TabData> = manager
+            .workspaces()
+            .iter()
+            .map(|w| TabData {
+                id: w.id,
+                name: w.name.clone(),
+                pane_count: w.pane_count(),
+                status: w.status.clone(),
+                progress: w.progress,
+            })
             .collect();
         let active_index = manager.active_index();
         let mut clicked_index: Option<usize> = None;
@@ -109,12 +132,11 @@ impl SidebarView {
         egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
             ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
 
-            for (i, (id, name, pane_count)) in workspaces.iter().enumerate() {
+            for (i, tab) in workspaces.iter().enumerate() {
                 let is_active = i == active_index;
                 let is_editing = self.editing_index == Some(i);
 
-                let tab_response =
-                    self.render_tab(ui, name, *pane_count, is_active, is_editing, i, *id, manager);
+                let tab_response = self.render_tab(ui, tab, is_active, is_editing, i, manager);
 
                 // Detect single click for switching (only when not editing)
                 if tab_response.clicked() && !is_editing {
@@ -124,7 +146,7 @@ impl SidebarView {
                 // Detect double-click to start renaming
                 if tab_response.double_clicked() && !is_editing {
                     self.editing_index = Some(i);
-                    self.edit_buffer = name.to_string();
+                    self.edit_buffer = tab.name.clone();
                 }
             }
         });
@@ -152,21 +174,20 @@ impl SidebarView {
     ///
     /// If `is_editing` is true, renders a `TextEdit` widget for inline rename.
     /// Returns the response for click/double-click detection.
-    #[allow(clippy::too_many_arguments)]
     fn render_tab(
         &mut self,
         ui: &mut egui::Ui,
-        name: &str,
-        pane_count: usize,
+        tab: &TabData,
         is_active: bool,
         is_editing: bool,
         index: usize,
-        workspace_id: WorkspaceId,
         manager: &mut WorkspaceManager,
     ) -> egui::Response {
         let bg_color = if is_active { TAB_BG_ACTIVE } else { TAB_BG_INACTIVE };
 
-        let desired_size = egui::Vec2::new(ui.available_width(), 42.0);
+        // Taller tab when a status line is shown under the pane count hint.
+        let height = if tab.status.is_some() { 54.0 } else { 42.0 };
+        let desired_size = egui::Vec2::new(ui.available_width(), height);
         let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
 
         if ui.is_rect_visible(rect) {
@@ -218,15 +239,15 @@ impl SidebarView {
                     self.editing_index = None;
                 } else if enter_pressed || edit_response.lost_focus() {
                     if !self.edit_buffer.trim().is_empty() {
-                        manager.rename_workspace(workspace_id, self.edit_buffer.clone());
+                        manager.rename_workspace(tab.id, self.edit_buffer.clone());
                     }
                     self.editing_index = None;
                 }
             } else {
                 // Tab label (static text)
                 let text_color = if is_active { TAB_TEXT_COLOR_ACTIVE } else { TAB_TEXT_COLOR };
-                let label_text = format!("{} ({})", name, pane_count);
-                let label_pos = egui::Pos2::new(rect.left() + 16.0, rect.center().y - 8.0);
+                let label_text = format!("{} ({})", tab.name, tab.pane_count);
+                let label_pos = egui::Pos2::new(rect.left() + 16.0, rect.top() + 6.0);
 
                 painter.text(
                     label_pos,
@@ -237,8 +258,9 @@ impl SidebarView {
                 );
 
                 // Pane count hint
+                let pane_count = tab.pane_count;
                 let hint = if pane_count == 1 { "1 pane" } else { &format!("{pane_count} panes") };
-                let hint_pos = egui::Pos2::new(rect.left() + 16.0, rect.center().y + 4.0);
+                let hint_pos = egui::Pos2::new(rect.left() + 16.0, rect.top() + 21.0);
                 painter.text(
                     hint_pos,
                     egui::Align2::LEFT_TOP,
@@ -246,6 +268,30 @@ impl SidebarView {
                     egui::FontId::proportional(10.0),
                     egui::Color32::from_rgb(120, 120, 130),
                 );
+
+                // Status text set via the sidebar API, under the pane count
+                if let Some(status) = &tab.status {
+                    let status_pos = egui::Pos2::new(rect.left() + 16.0, rect.top() + 34.0);
+                    painter.text(
+                        status_pos,
+                        egui::Align2::LEFT_TOP,
+                        status,
+                        egui::FontId::proportional(10.0),
+                        ACCENT_COLOR,
+                    );
+                }
+            }
+
+            // Thin progress bar along the tab bottom (sidebar.set_progress).
+            // Re-borrow the painter: the editing branch above needed `ui`
+            // mutably for the TextEdit widget.
+            if let Some(progress) = tab.progress {
+                let width = rect.width() * progress.clamp(0.0, 1.0);
+                let bar_rect = egui::Rect::from_min_max(
+                    egui::Pos2::new(rect.left(), rect.bottom() - 3.0),
+                    egui::Pos2::new(rect.left() + width, rect.bottom()),
+                );
+                ui.painter().rect_filled(bar_rect, 0.0, ACCENT_COLOR);
             }
         }
 

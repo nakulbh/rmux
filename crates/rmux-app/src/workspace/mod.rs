@@ -19,6 +19,18 @@ use splits::PaneId;
 /// The maximum number of panes before a warning is emitted.
 const MAX_PANES_BEFORE_WARN: usize = 50;
 
+/// Panes and workspaces removed by [`WorkspaceManager::close_exited_panes`].
+///
+/// Ids are the raw inner values of `WorkspaceId` / `PaneId` so callers
+/// can forward them directly as API event payloads.
+#[derive(Debug, Default)]
+pub struct ExitCleanup {
+    /// `(workspace_id, pane_id)` for each pane that was closed.
+    pub panes: Vec<(u64, u64)>,
+    /// Ids of workspaces closed because their last pane exited.
+    pub workspaces: Vec<u64>,
+}
+
 /// Manages multiple workspaces and tracks which is active.
 ///
 /// The `WorkspaceManager` owns all workspaces and provides operations
@@ -138,9 +150,27 @@ impl WorkspaceManager {
         &mut self.workspaces[self.active_index]
     }
 
-    /// Get all workspace IDs and names.
-    pub fn list(&self) -> Vec<(WorkspaceId, &str, usize)> {
-        self.workspaces.iter().map(|w| (w.id, w.name.as_str(), w.pane_count())).collect()
+    /// All workspaces in display order.
+    pub fn workspaces(&self) -> &[Workspace] {
+        &self.workspaces
+    }
+
+    /// Get a mutable reference to the workspace with the given id, if any.
+    pub fn workspace_mut(&mut self, id: WorkspaceId) -> Option<&mut Workspace> {
+        self.workspaces.iter_mut().find(|w| w.id == id)
+    }
+
+    /// Focus a pane anywhere in the application.
+    ///
+    /// Switches to the workspace containing the pane and focuses it.
+    /// Returns `false` if no workspace contains the pane.
+    pub fn focus_pane_global(&mut self, pane: PaneId) -> bool {
+        let Some(index) = self.workspaces.iter().position(|w| w.pane_ids().contains(&pane)) else {
+            return false;
+        };
+        self.active_index = index;
+        self.workspaces[index].focus_pane(pane);
+        true
     }
 
     /// Get the number of workspaces.
@@ -223,8 +253,10 @@ impl WorkspaceManager {
     /// Close all panes whose process has exited.
     ///
     /// If a pane was the last in its workspace, closes the entire workspace.
-    /// The last remaining workspace is never closed.
-    pub fn close_exited_panes(&mut self) {
+    /// The last remaining workspace is never closed. Returns the panes and
+    /// workspaces that were removed so callers can publish events for them.
+    pub fn close_exited_panes(&mut self) -> ExitCleanup {
+        let mut cleanup = ExitCleanup::default();
         let mut i = 0;
         while i < self.workspaces.len() {
             let workspace_id = self.workspaces[i].id;
@@ -240,11 +272,14 @@ impl WorkspaceManager {
                 match self.workspaces[i].close_pane(*pane_id) {
                     Ok(()) => {
                         tracing::debug!(pane_id = pane_id.0, "Closed exited pane");
+                        cleanup.panes.push((workspace_id.0, pane_id.0));
                     }
                     Err(splits::PaneTreeError::CannotCloseLastPane) => {
                         if self.workspaces.len() > 1 {
                             tracing::info!(workspace_id = ?workspace_id, "Last pane exited, closing workspace");
                             let _ = self.close_workspace(workspace_id);
+                            cleanup.panes.push((workspace_id.0, pane_id.0));
+                            cleanup.workspaces.push(workspace_id.0);
                             workspace_removed = true;
                             break;
                         }
@@ -259,6 +294,7 @@ impl WorkspaceManager {
                 i += 1;
             }
         }
+        cleanup
     }
 
     /// Rename a workspace by ID.

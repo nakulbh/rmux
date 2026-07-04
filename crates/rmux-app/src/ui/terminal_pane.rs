@@ -144,6 +144,16 @@ impl TerminalPane {
         }
     }
 
+    /// Write raw text to the pane's PTY as if it had been typed.
+    ///
+    /// The text is sent verbatim — no escape interpretation is performed.
+    /// Write failures are logged and swallowed (best-effort, like typing).
+    pub fn send_text(&mut self, text: &str) {
+        if let Err(err) = self.backend.write(text.as_bytes()) {
+            tracing::warn!(error = %err, "failed to write text to PTY");
+        }
+    }
+
     /// Take all notifications parsed from the PTY output since the last call.
     ///
     /// Returns them in arrival order and leaves the internal queue empty.
