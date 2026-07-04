@@ -104,30 +104,30 @@ cross-platform Rust application targeting Linux, macOS, and Windows with a stric
 
 ### Tasks
 
-- [ ] **1.1** Implement `PtyBackend` using `portable-pty`:
+- [x] **1.1** Implement `PtyBackend` using `portable-pty`:
   - Spawn shell (respect `$SHELL`, fallback to `/bin/sh`)
   - Read/write PTY
   - Handle resize events
-- [ ] **1.2** Implement `TermState` wrapping `alacritty_terminal::Term`:
+- [x] **1.2** Implement `TermState` wrapping `alacritty_terminal::Term`:
   - Feed PTY bytes through VTE parser
   - Maintain grid, scrollback, selection
   - Configurable `max_scrollback_lines` (default: 10_000)
-- [ ] **1.3** Implement `TerminalRenderer`:
+- [x] **1.3** Implement `TerminalRenderer`:
   - Convert `Term` grid cells → egui `PaintCmd` rects + glyphs
   - Render cursor, selection highlight, colors (16 + 256 + truecolor)
   - Font: monospace, configurable size
-- [ ] **1.4** Handle keyboard input:
+- [x] **1.4** Handle keyboard input:
   - Map egui `KeyEvent` → terminal escape sequences
   - Support Ctrl, Alt, Shift modifiers
   - Paste via bracket mode
-- [ ] **1.5** Handle mouse input:
+- [x] **1.5** Handle mouse input:
   - Click to position cursor
   - Scroll wheel → terminal scrollback
   - Selection (click-drag)
-- [ ] **1.6** Handle terminal resize:
+- [x] **1.6** Handle terminal resize:
   - Window resize → recalculate cols/rows → PTY resize
   - Debounce resize events
-- [ ] **1.7** Add basic ANSI color theme support:
+- [x] **1.7** Add basic ANSI color theme support:
   - Default 16-color palette
   - Read from config later
 
@@ -202,36 +202,36 @@ cross-platform Rust application targeting Linux, macOS, and Windows with a stric
 
 ### Tasks
 
-- [ ] **3.1** Implement OSC parser for notifications:
+- [x] **3.1** Implement OSC parser for notifications:
   - OSC 9 (simple): `\e]9;message\a`
   - OSC 99 (rich): `\e]99;i=1;e=1;d=0;p=title:body\e\\`
   - OSC 777 (legacy): `\e]777;notify;Title;Body\a`
-- [ ] **3.2** Implement `NotificationManager`:
+- [x] **3.2** Implement `NotificationManager`:
   - Store notifications per pane
   - Track read/unread state
   - Emit desktop notifications via `notify-rust`
   - Pane ring highlight on unread
   - Sidebar badge count
-- [ ] **3.3** Build `NotificationPanel` in egui:
+- [x] **3.3** Build `NotificationPanel` in egui:
   - List of pending notifications
   - Jump-to-pane on click
   - Mark read/clear actions
-- [ ] **3.4** Implement Unix socket server:
+- [x] **3.4** Implement Unix socket server:
   - JSON-RPC line protocol (newline-delimited JSON)
   - Socket path: `/tmp/rmux.sock` (release) or `/tmp/rmux-debug.sock`
   - Configurable via `RMUX_SOCKET_PATH` env var
-- [ ] **3.5** Implement socket methods:
+- [x] **3.5** Implement socket methods:
   - `system.ping`, `system.capabilities`, `system.identify`
   - `workspace.list`, `workspace.create`, `workspace.select`, `workspace.close`
   - `surface.list`, `surface.split`, `surface.focus`, `surface.send_text`, `surface.send_key`
   - `notification.create`, `notification.list`, `notification.clear`
   - `sidebar.set_status`, `sidebar.clear_status`, `sidebar.set_progress`
-- [ ] **3.6** Implement `rmux` CLI subcommands:
+- [x] **3.6** Implement `rmux` CLI subcommands:
   - `rmux notify --title T --subtitle S --body B`
   - `rmux new-workspace`, `rmux list-workspaces --json`
   - `rmux new-split right`, `rmux send "echo hi\n"`
   - `rmux ping`, `rmux capabilities`
-- [ ] **3.7** Implement event streaming:
+- [x] **3.7** Implement event streaming:
   - `events.stream` socket method for real-time event feed
   - Events: pane created/closed, notification, workspace changed
 
@@ -499,7 +499,7 @@ rmux/
 | Phase 0: Foundation | 🟢 Complete | 100% |
 | Phase 1: Terminal Pane | 🟢 Complete | 100% |
 | Phase 2: Workspaces | 🟢 Complete | 100% |
-| Phase 3: Notifications + API | ⬜ Blocked by Phase 2 | 0% |
-| Phase 4: Browser Pane | ⬜ Blocked by Phase 3 | 0% |
+| Phase 3: Notifications + API | 🟢 Complete | 100% |
+| Phase 4: Browser Pane | ⬜ Ready to start | 0% |
 | Phase 5: SSH + Sessions | ⬜ Blocked by Phase 4 | 0% |
 | Phase 6: Agent Hooks | ⬜ Blocked by Phase 5 | 0% |
