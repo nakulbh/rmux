@@ -224,11 +224,18 @@ impl TerminalPane {
                     continue;
                 }
 
+                // Cmd-only chords (macOS) are reserved for app-level shortcuts
+                // (split, close, new workspace, etc.) — never forward to the shell.
+                // Physical Ctrl is still forwarded so Ctrl+C/Ctrl+D keep working.
+                if modifiers.command && !modifiers.ctrl {
+                    continue;
+                }
+
                 // Skip plain printable characters — Event::Text handles them.
                 // Only handle special keys (Enter, Tab, arrows, F-keys, etc.)
                 // and modified keys (Ctrl+A, Alt+char).
                 let name = key.name();
-                if name.len() == 1 && !modifiers.ctrl && !modifiers.command && !modifiers.alt {
+                if name.len() == 1 && !modifiers.ctrl && !modifiers.alt {
                     continue;
                 }
 
@@ -254,7 +261,7 @@ impl TerminalPane {
     fn map_key_to_terminal(&self, key: &egui::Key, modifiers: &egui::Modifiers) -> Option<Vec<u8>> {
         use egui::Key;
 
-        let ctrl = modifiers.ctrl || modifiers.command;
+        let ctrl = modifiers.ctrl;
         let _shift = modifiers.shift;
         let alt = modifiers.alt;
 

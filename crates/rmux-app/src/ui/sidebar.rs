@@ -198,22 +198,29 @@ impl SidebarView {
                         .text_color_opt(Some(TAB_TEXT_COLOR_ACTIVE)),
                 );
 
-                // Request focus the first frame we enter edit mode
-                if !edit_response.has_focus() && self.editing_index == Some(index) {
+                // Request focus the first frame we enter edit mode. Skip this on the
+                // frame the widget just lost focus (Enter/Escape/click-away) — otherwise
+                // this re-queues focus for a widget that's about to disappear, leaving
+                // egui's focus state stuck and blocking all keyboard shortcuts.
+                if !edit_response.has_focus()
+                    && !edit_response.lost_focus()
+                    && self.editing_index == Some(index)
+                {
                     ui.memory_mut(|mem| mem.request_focus(edit_response.id));
                 }
 
-                // Commit on Enter or Escape, or when focus is permanently lost
-                if edit_response.lost_focus() {
-                    let escape_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
-                    if escape_pressed {
-                        self.editing_index = None;
-                    } else if !edit_response.has_focus() {
-                        if !self.edit_buffer.is_empty() {
-                            manager.rename_workspace(workspace_id, self.edit_buffer.clone());
-                        }
-                        self.editing_index = None;
+                let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                let escape_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
+
+                // Commit explicitly on Enter (don't rely solely on lost_focus, which
+                // some egui versions don't trigger for singleline TextEdit on Enter).
+                if escape_pressed {
+                    self.editing_index = None;
+                } else if enter_pressed || edit_response.lost_focus() {
+                    if !self.edit_buffer.trim().is_empty() {
+                        manager.rename_workspace(workspace_id, self.edit_buffer.clone());
                     }
+                    self.editing_index = None;
                 }
             } else {
                 // Tab label (static text)
