@@ -10,14 +10,17 @@
 //! - `state` — Terminal state wrapper around `alacritty_terminal::Term`
 //! - `renderer` — Convert terminal grid cells into egui paint commands
 //! - `input` — Map egui keyboard/mouse events to terminal escape sequences
+//! - `osc` — Scan PTY output for notification OSC sequences (9/99/777)
 
 mod backend;
 mod input;
+mod osc;
 mod renderer;
 mod state;
 
 pub use backend::{PtyBackend, PtyError, PtyResult};
 pub use input::InputMapper;
+pub use osc::{OscKind, OscNotification, OscScanner};
 pub use renderer::TerminalRenderer;
 pub use state::{GridCell, GridSnapshot, TermState};
 

@@ -18,6 +18,7 @@ use clap::Parser;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 mod app;
+mod notifications;
 mod ui;
 mod workspace;
 
