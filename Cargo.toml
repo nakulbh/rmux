@@ -18,7 +18,15 @@ alacritty_terminal = "0.26"
 portable-pty = "0.8"
 
 # Async runtime
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "net", "fs"] }
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "sync",
+    "net",
+    "fs",
+    "io-util",
+    "time",
+] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
