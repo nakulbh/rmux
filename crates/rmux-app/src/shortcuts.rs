@@ -13,6 +13,146 @@ impl RmuxApp {
     pub(crate) fn handle_keyboard_shortcuts(&mut self, ctx: &egui::Context) {
         let input = ctx.input(|i| i.clone());
 
+        // === Always-active shortcuts (work even when a text widget has focus) ===
+
+        for event in &input.events {
+            let egui::Event::Key { key, pressed: true, modifiers, .. } = event else {
+                continue;
+            };
+
+            // On macOS, Cmd is for app shortcuts, Ctrl is for terminal control characters.
+            // On Linux/Windows, both are used for app shortcuts.
+            let mod_active = if cfg!(target_os = "macos") {
+                modifiers.command && !modifiers.ctrl
+            } else {
+                modifiers.command || modifiers.ctrl
+            };
+
+            // Cmd/Ctrl+Q or Cmd/Ctrl+Shift+Q: Quit application
+            if mod_active && !modifiers.alt && *key == Key::Q {
+                tracing::info!("Quit shortcut pressed, closing window");
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                return; // quit immediately, skip other shortcuts
+            }
+
+            // Cmd/Ctrl+Plus or Cmd/Ctrl+Equals: Increase font size
+            if mod_active && !modifiers.shift && (*key == Key::Plus || *key == Key::Equals) {
+                self.set_font_size(1.0);
+                continue;
+            }
+
+            // Cmd/Ctrl+Minus: Decrease font size
+            if mod_active && !modifiers.shift && *key == Key::Minus {
+                self.set_font_size(-1.0);
+                continue;
+            }
+
+            // Cmd/Ctrl+0: Reset font size to default
+            if mod_active && !modifiers.shift && *key == Key::Num0 {
+                self.set_font_size(0.0);
+                continue;
+            }
+
+            // Cmd/Ctrl+C: Copy selected text from active terminal pane
+            if mod_active && !modifiers.shift && !modifiers.alt && *key == Key::C {
+                if let Some(terminal) = self.active_terminal_mut()
+                    && let Some(text) = terminal.copy_selection()
+                {
+                    ctx.copy_text(text.clone());
+                    self.last_copied_text = Some(text);
+                    tracing::debug!("Copied terminal selection to clipboard");
+                }
+                continue;
+            }
+
+            // Escape: Close find bar if visible
+            if !modifiers.command
+                && !modifiers.ctrl
+                && !modifiers.alt
+                && !modifiers.shift
+                && *key == Key::Escape
+                && let Some(term) = self.active_terminal_mut()
+                && term.is_find_visible()
+            {
+                term.close_find_bar();
+                continue;
+            }
+
+            // Enter: Find next match when find bar is visible
+            if !modifiers.command
+                && !modifiers.ctrl
+                && !modifiers.alt
+                && !modifiers.shift
+                && *key == Key::Enter
+                && let Some(term) = self.active_terminal_mut()
+                && term.is_find_visible()
+            {
+                term.find_next_match();
+                continue;
+            }
+
+            // Cmd/Ctrl+F: Toggle find bar
+            if mod_active && !modifiers.alt && *key == Key::F {
+                if let Some(term) = self.active_terminal_mut() {
+                    term.toggle_find();
+                }
+                continue;
+            }
+
+            // Cmd/Ctrl+G: Find next match
+            if mod_active
+                && !modifiers.alt
+                && *key == Key::G
+                && let Some(term) = self.active_terminal_mut()
+                && term.is_find_visible()
+            {
+                term.find_next_match();
+                continue;
+            }
+
+            // Alt+Cmd/Ctrl+G: Find previous match
+            if mod_active
+                && modifiers.alt
+                && *key == Key::G
+                && let Some(term) = self.active_terminal_mut()
+                && term.is_find_visible()
+            {
+                term.find_prev_match();
+                continue;
+            }
+
+            // Cmd/Ctrl+E: Use selection for find
+            if mod_active && !modifiers.alt && *key == Key::E {
+                if let Some(term) = self.active_terminal_mut() {
+                    if !term.is_find_visible() {
+                        term.toggle_find();
+                    }
+                    term.find_with_selection();
+                }
+                continue;
+            }
+
+            // Cmd/Ctrl+K: Clear terminal scrollback
+            if mod_active && !modifiers.shift && !modifiers.alt && *key == Key::K {
+                if let Some(term) = self.active_terminal_mut() {
+                    term.clear_scrollback();
+                    tracing::debug!("Terminal scrollback cleared via shortcut");
+                }
+                continue;
+            }
+
+            // Cmd/Ctrl+Shift+K: Clear screen (sends Ctrl+L to terminal)
+            if mod_active && modifiers.shift && !modifiers.alt && *key == Key::K {
+                if let Some(term) = self.active_terminal_mut() {
+                    term.send_text("\x0c");
+                    tracing::debug!("Terminal screen cleared via shortcut");
+                }
+                continue;
+            }
+        }
+
+        // === Focus-dependent shortcuts (skip if any text widget is focused) ===
+
         // Skip shortcuts if any text input is focused (don't steal typing from terminal)
         if ctx.wants_keyboard_input() {
             return;
@@ -23,7 +163,13 @@ impl RmuxApp {
                 continue;
             };
 
-            let mod_active = modifiers.command || modifiers.ctrl;
+            // On macOS, Cmd is for app shortcuts, Ctrl is for terminal control characters.
+            // On Linux/Windows, both are used for app shortcuts.
+            let mod_active = if cfg!(target_os = "macos") {
+                modifiers.command && !modifiers.ctrl
+            } else {
+                modifiers.command || modifiers.ctrl
+            };
             let shift_active = modifiers.shift;
 
             // Cmd/Ctrl+B: Toggle sidebar
@@ -32,8 +178,8 @@ impl RmuxApp {
                 tracing::debug!("Sidebar toggled via keyboard shortcut");
             }
 
-            // Cmd/Ctrl+Shift+N: Toggle notification panel
-            if mod_active && shift_active && *key == Key::N {
+            // Cmd/Ctrl+I: Toggle notification panel (matches cmux)
+            if mod_active && !shift_active && *key == Key::I {
                 self.notification_panel.toggle();
             }
 
@@ -77,8 +223,39 @@ impl RmuxApp {
                 tracing::info!(index, "Switched to workspace");
             }
 
-            // Cmd/Ctrl+Shift+[ or ]: Previous/next workspace
-            if mod_active && shift_active {
+            // Cmd/Ctrl+Shift+W: Close active workspace
+            if mod_active && shift_active && *key == Key::W {
+                match self.close_active_workspace_with_event() {
+                    Ok(id) => tracing::info!(id, "Closed workspace via shortcut"),
+                    Err(e) => tracing::warn!("Close workspace failed: {e}"),
+                }
+            }
+
+            // Cmd/Ctrl+Shift+R: Rename active workspace (start inline rename)
+            if mod_active && shift_active && *key == Key::R {
+                self.start_workspace_rename();
+            }
+
+            // Cmd/Ctrl+Shift+Enter: Toggle pane zoom (maximize/restore)
+            if mod_active && shift_active && *key == Key::Enter {
+                self.workspace_manager.toggle_zoom();
+            }
+
+            // Cmd/Ctrl+Shift+=: Equalize all split sizes
+            if mod_active && shift_active && *key == Key::Equals {
+                self.workspace_manager.equalize_splits();
+                tracing::debug!("Equalized split sizes via shortcut");
+            }
+
+            // Cmd/Ctrl+Shift+[ or ]: Previous/next workspace.
+            // On macOS, also accept cmux's Ctrl+Cmd+[ or ] chord.
+            let mac_ctrl_cmd_bracket = cfg!(target_os = "macos")
+                && modifiers.command
+                && modifiers.ctrl
+                && !modifiers.shift
+                && !modifiers.alt;
+            let workspace_bracket_chord = (mod_active && shift_active) || mac_ctrl_cmd_bracket;
+            if workspace_bracket_chord {
                 match *key {
                     Key::OpenBracket => self.workspace_manager.switch_prev(),
                     Key::CloseBracket => self.workspace_manager.switch_next(),

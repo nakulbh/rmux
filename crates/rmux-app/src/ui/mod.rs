@@ -1,4 +1,4 @@
-//! UI module — egui-based user interface components.
+// UI module — egui-based user interface components.
 //!
 //! # Components
 //!
@@ -13,4 +13,4 @@ mod terminal_pane;
 pub mod workspace_view;
 
 pub use notification_panel::NotificationPanel;
-pub use terminal_pane::TerminalPane;
+pub use terminal_pane::{DEFAULT_FONT_SIZE, TerminalPane};

@@ -235,6 +235,23 @@ impl TermState {
     pub fn colors(&self) -> Colors {
         *self.term.colors()
     }
+
+    /// If the terminal has an active text selection, return the selected text.
+    ///
+    /// Returns `None` if there is no active selection. Trailing whitespace is
+    /// stripped from each line. Lines are joined with `\n`.
+    pub fn copy_selected_text(&self) -> Option<String> {
+        self.term.selection_to_string()
+    }
+
+    /// Clear the terminal scrollback buffer.
+    ///
+    /// Sends `CSI 3 J` ("Erase Saved Lines") through the VTE parser,
+    /// which removes all scrollback history while preserving the
+    /// visible screen content.
+    pub fn clear_scrollback(&mut self) {
+        self.feed_bytes(b"\x1b[3J");
+    }
 }
 
 /// Convert a cell's foreground and background colors to egui `Color32`.
@@ -422,5 +439,48 @@ mod tests {
         // All should produce valid colors
         assert!(c0 != c255 || c0 == c255);
         let _ = (c16, c231);
+    }
+    #[test]
+    fn test_clear_scrollback() {
+        let mut state = TermState::new(80, 24, 1000);
+        // Fill enough lines to create scrollback (30 lines in a 24-row terminal)
+        for _ in 0..30 {
+            state.feed_bytes(b"Hello, World!\r\n");
+        }
+        // After feeding, display_offset is 0 (viewing the bottommost lines).
+        // Scroll up to verify scrollback exists.
+        state.scroll(5);
+        let snapshot = state.snapshot();
+        assert!(snapshot.display_offset > 0, "Expected scrollback after scrolling up");
+
+        // Clear scrollback and verify it resets
+        state.clear_scrollback();
+        let snapshot_after = state.snapshot();
+        // After clearing, should be back at bottom
+        assert_eq!(snapshot_after.display_offset, 0);
+    }
+
+    #[test]
+    fn test_clear_scrollback_preserves_content() {
+        let mut state = TermState::new(80, 10, 1000);
+        // Print enough lines to fill some rows (stay within visible area,
+        // no scrolling yet)
+        state.feed_bytes(b"line one\r\nline two\r\nline three\r\n");
+        let before = state.snapshot();
+
+        state.clear_scrollback();
+        let after = state.snapshot();
+
+        // Dimensions should be unchanged
+        assert_eq!(before.rows, after.rows);
+        assert_eq!(before.cols, after.cols);
+
+        // At least the first row should still have content
+        let first_row_has = after.cells[0].iter().any(|c| c.c != ' ');
+        assert!(first_row_has, "Row 0 should have content after clear_scrollback");
+
+        // At row 2 (line three), should also have content
+        let row2_has = after.cells[2].iter().any(|c| c.c != ' ');
+        assert!(row2_has, "Row 2 should have content after clear_scrollback");
     }
 }

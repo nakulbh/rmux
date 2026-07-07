@@ -10,7 +10,10 @@ use rmux_terminal::{
 use std::sync::mpsc;
 
 /// The default font size for terminal text.
-const DEFAULT_FONT_SIZE: f32 = 14.0;
+pub const DEFAULT_FONT_SIZE: f32 = 14.0;
+
+/// Height of the find bar in pixels.
+const FIND_BAR_HEIGHT: f32 = 28.0;
 
 /// A terminal pane that manages a PTY process and its rendering.
 ///
@@ -23,7 +26,7 @@ const DEFAULT_FONT_SIZE: f32 = 14.0;
 /// ```no_run
 /// use rmux_app::ui::TerminalPane;
 ///
-/// let mut pane = TerminalPane::spawn(80, 24).unwrap();
+/// let mut pane = TerminalPane::spawn(80, 24, 14.0).unwrap();
 /// ```
 pub struct TerminalPane {
     /// The PTY backend managing the shell process.
@@ -52,6 +55,16 @@ pub struct TerminalPane {
     rows: u16,
     /// Whether the underlying process has exited.
     exited: bool,
+
+    // Find bar state
+    /// Whether the find/search bar is currently visible.
+    find_visible: bool,
+    /// The current search query string.
+    find_query: String,
+    /// List of find match positions as (row, col) in snapshot coordinates.
+    find_results: Vec<(usize, usize)>,
+    /// Index into `find_results` for the currently highlighted match.
+    find_index: usize,
 }
 
 impl TerminalPane {
@@ -65,15 +78,16 @@ impl TerminalPane {
     ///
     /// * `cols` - Initial number of columns.
     /// * `rows` - Initial number of rows.
+    /// * `font_size` - Font size for the terminal renderer.
     ///
     /// # Errors
     ///
     /// Returns an error if the PTY could not be created or the shell
     /// could not be spawned.
-    pub fn spawn(cols: u16, rows: u16) -> Result<Self, PtyError> {
+    pub fn spawn(cols: u16, rows: u16, font_size: f32) -> Result<Self, PtyError> {
         let mut backend = PtyBackend::spawn(cols, rows)?;
         let state = TermState::new(cols, rows, 10_000);
-        let renderer = TerminalRenderer::new(DEFAULT_FONT_SIZE);
+        let renderer = TerminalRenderer::new(font_size);
         let input_mapper = InputMapper::new();
 
         // Channel for PTY output from background thread
@@ -124,6 +138,10 @@ impl TerminalPane {
             cols,
             rows,
             exited: false,
+            find_visible: false,
+            find_query: String::new(),
+            find_results: Vec::new(),
+            find_index: 0,
         })
     }
 
@@ -164,16 +182,22 @@ impl TerminalPane {
     /// Render the terminal pane in the egui UI.
     ///
     /// Draws the terminal grid, handles keyboard input when focused,
-    /// and shows the cursor.
+    /// and shows the cursor. When the find bar is active, it appears
+    /// at the bottom of the pane.
     pub fn show(&mut self, ui: &mut egui::Ui) {
         // Process any new PTY output
         self.process_pty_output();
 
-        // Determine available space and calculate terminal dimensions
+        // Determine available space, reserving room for find bar if visible
         let available = ui.available_size();
+        let find_bar_space =
+            if self.find_visible { egui::vec2(0.0, FIND_BAR_HEIGHT) } else { egui::Vec2::ZERO };
+        let terminal_available = available - find_bar_space;
+
+        // Calculate terminal dimensions
         let (new_cols, new_rows) = self
             .renderer
-            .cols_rows_for_rect(egui::Rect::from_min_size(egui::Pos2::ZERO, available));
+            .cols_rows_for_rect(egui::Rect::from_min_size(egui::Pos2::ZERO, terminal_available));
 
         // Resize terminal if dimensions changed
         if new_cols != self.cols || new_rows != self.rows {
@@ -183,19 +207,20 @@ impl TerminalPane {
             self.backend.resize(new_cols, new_rows).ok();
         }
 
-        // Allocate the full available space for the terminal
-        let (rect, response) = ui.allocate_exact_size(available, egui::Sense::click_and_drag());
+        // Allocate space for the terminal
+        let (rect, term_response) =
+            ui.allocate_exact_size(terminal_available, egui::Sense::click_and_drag());
 
-        // Track focus
-        if response.clicked() {
+        // Track focus from the terminal area response
+        if term_response.clicked() {
             self.has_focus = true;
         }
-        if response.clicked_elsewhere() {
+        if term_response.clicked_elsewhere() {
             self.has_focus = false;
         }
 
         // Handle scroll wheel for terminal scrollback
-        if response.hovered() {
+        if term_response.hovered() {
             let scroll_delta = ui.input(|i| i.smooth_scroll_delta);
             if scroll_delta.y != 0.0 {
                 let lines = (-scroll_delta.y / self.renderer.cell_size().y) as i32;
@@ -217,6 +242,11 @@ impl TerminalPane {
         let snapshot = self.state.snapshot();
         self.renderer.draw(ui, rect, &snapshot, self.show_cursor);
 
+        // Highlight find matches in the terminal
+        if self.find_visible && !self.find_query.is_empty() {
+            self.highlight_matches(ui, rect, &snapshot);
+        }
+
         // Show pane border when focused
         if self.has_focus {
             let painter = ui.painter();
@@ -226,6 +256,11 @@ impl TerminalPane {
                 egui::Stroke::new(1.0, egui::Color32::from_rgb(100, 149, 237)),
                 egui::StrokeKind::Middle,
             );
+        }
+
+        // Render find bar if visible
+        if self.find_visible {
+            self.show_find_bar(ui, rect.x_range().min, rect.bottom());
         }
 
         // Show exit status
@@ -257,6 +292,29 @@ impl TerminalPane {
                     continue;
                 }
 
+                // On non-macOS, specific Ctrl chords are reserved for app shortcuts.
+                // On macOS, Ctrl is for terminal control characters (Ctrl+C=SIGINT,
+                // Ctrl+D=EOF, etc.) and must always be forwarded to the shell.
+                if !cfg!(target_os = "macos")
+                    && modifiers.ctrl
+                    && !modifiers.command
+                    && self.is_reserved_app_key(key)
+                {
+                    continue;
+                }
+
+                // When find bar is visible, Escape and Enter are handled by
+                // shortcuts.rs (close find bar / find next) — don't forward to terminal.
+                if self.find_visible
+                    && !modifiers.command
+                    && !modifiers.ctrl
+                    && !modifiers.alt
+                    && !modifiers.shift
+                    && matches!(key, egui::Key::Escape | egui::Key::Enter)
+                {
+                    continue;
+                }
+
                 // Skip plain printable characters — Event::Text handles them.
                 // Only handle special keys (Enter, Tab, arrows, F-keys, etc.)
                 // and modified keys (Ctrl+A, Alt+char).
@@ -280,6 +338,42 @@ impl TerminalPane {
                     }
                 }
             }
+        }
+    }
+
+    /// Check if a key is claimed by an app-level shortcut.
+    ///
+    /// On non-macOS platforms, specific Ctrl chords are reserved for app
+    /// shortcuts (split, close, new workspace, etc.) and should not be
+    /// forwarded to the terminal shell. On macOS, Ctrl is always forwarded
+    /// (the terminal uses Ctrl for control characters, app shortcuts use Cmd).
+    fn is_reserved_app_key(&self, key: &egui::Key) -> bool {
+        match key {
+            egui::Key::B
+            | egui::Key::D
+            | egui::Key::E
+            | egui::Key::F
+            | egui::Key::G
+            | egui::Key::K
+            | egui::Key::N
+            | egui::Key::Q
+            | egui::Key::W
+            | egui::Key::Plus
+            | egui::Key::Equals
+            | egui::Key::Minus
+            | egui::Key::Num0
+            | egui::Key::Num1
+            | egui::Key::Num2
+            | egui::Key::Num3
+            | egui::Key::Num4
+            | egui::Key::Num5
+            | egui::Key::Num6
+            | egui::Key::Num7
+            | egui::Key::Num8
+            | egui::Key::Num9 => true,
+            // Ctrl+C is only reserved when there's a text selection to copy
+            egui::Key::C => self.state.copy_selected_text().is_some(),
+            _ => false,
         }
     }
 
@@ -345,6 +439,14 @@ impl TerminalPane {
         }
     }
 
+    /// Change the font size used by the terminal renderer.
+    ///
+    /// The cell grid is recalculated on the next render frame when the
+    /// available pixel area is known.
+    pub fn set_font_size(&mut self, font_size: f32) {
+        self.renderer.set_font_size(font_size);
+    }
+
     /// Resize the terminal pane.
     #[allow(dead_code)]
     pub fn resize(&mut self, cols: u16, rows: u16) {
@@ -369,5 +471,268 @@ impl TerminalPane {
     /// Whether this pane currently has keyboard focus.
     pub fn has_focus(&self) -> bool {
         self.has_focus
+    }
+}
+
+impl TerminalPane {
+    /// If the terminal has an active text selection, return the selected text.
+    ///
+    /// Delegates to [`TermState::copy_selected_text`].
+    pub fn copy_selection(&self) -> Option<String> {
+        self.state.copy_selected_text()
+    }
+
+    /// Get the current font size used by the renderer.
+    #[allow(dead_code)]
+    pub fn font_size(&self) -> f32 {
+        self.renderer.font_size
+    }
+
+    /// Clear the terminal scrollback buffer.
+    ///
+    /// Public entry point for the app-level shortcut (`Cmd/Ctrl+K`).
+    pub fn clear_scrollback(&mut self) {
+        self.state.clear_scrollback();
+    }
+
+    /// Whether the find/search bar is currently visible.
+    pub fn is_find_visible(&self) -> bool {
+        self.find_visible
+    }
+
+    /// Close the find bar and clear search state.
+    ///
+    /// Public entry point for the Escape key shortcut.
+    pub fn close_find_bar(&mut self) {
+        self.find_visible = false;
+        self.find_query.clear();
+        self.find_results.clear();
+        self.find_index = 0;
+    }
+
+    /// Open the find bar (if not already open) and populate with the
+    /// current terminal text selection.
+    ///
+    /// Public entry point for the `Cmd/Ctrl+E` shortcut.
+    pub fn find_with_selection(&mut self) {
+        if !self.find_visible {
+            self.find_visible = true;
+        }
+        if let Some(sel) = self.state.copy_selected_text() {
+            self.find_query = sel;
+            self.perform_find();
+        }
+    }
+
+    /// Toggle the find/search bar visibility.
+    ///
+    /// When toggling off, clears the find state. When toggling on,
+    /// pre-populates with the current terminal selection if available.
+    pub fn toggle_find(&mut self) {
+        if self.find_visible {
+            self.find_visible = false;
+            self.find_query.clear();
+            self.find_results.clear();
+            self.find_index = 0;
+        } else {
+            self.find_visible = true;
+            // If there's a selection, use it as the initial query
+            if let Some(sel) = self.state.copy_selected_text() {
+                self.find_query = sel;
+                self.perform_find();
+            }
+        }
+    }
+
+    /// Search the visible terminal grid for all occurrences of `find_query`.
+    ///
+    /// Results are stored in `find_results` as `(row, col)` pairs
+    /// in snapshot coordinates. The first match becomes the active one.
+    fn perform_find(&mut self) {
+        self.find_results.clear();
+        self.find_index = 0;
+
+        if self.find_query.is_empty() {
+            return;
+        }
+
+        let snapshot = self.state.snapshot();
+        let query_lower: Vec<char> = self.find_query.to_lowercase().chars().collect();
+        let query_len = query_lower.len();
+
+        for row in 0..snapshot.rows as usize {
+            let row_chars: Vec<char> = snapshot.cells[row].iter().map(|c| c.c).collect();
+
+            // Search on char grid (not byte offsets) to handle non-ASCII correctly
+            if row_chars.len() < query_len {
+                continue;
+            }
+            let mut col = 0;
+            while col + query_len <= row_chars.len() {
+                let mut matched = true;
+                for q in 0..query_len {
+                    if row_chars[col + q].to_lowercase().next() != Some(query_lower[q]) {
+                        matched = false;
+                        break;
+                    }
+                }
+                if matched {
+                    self.find_results.push((row, col));
+                    col += query_len;
+                } else {
+                    col += 1;
+                }
+            }
+        }
+    }
+
+    /// Move to the next find match (wraps around).
+    pub fn find_next_match(&mut self) {
+        if self.find_results.is_empty() {
+            // Re-run search if results are empty but query is non-empty
+            if !self.find_query.is_empty() {
+                self.perform_find();
+            }
+            return;
+        }
+        self.find_index = (self.find_index + 1) % self.find_results.len();
+    }
+
+    /// Move to the previous find match (wraps around).
+    pub fn find_prev_match(&mut self) {
+        if self.find_results.is_empty() {
+            if !self.find_query.is_empty() {
+                self.perform_find();
+            }
+            return;
+        }
+        if self.find_index == 0 {
+            self.find_index = self.find_results.len() - 1;
+        } else {
+            self.find_index -= 1;
+        }
+    }
+
+    /// Highlight find matches in the terminal viewport.
+    ///
+    /// Draws a colored background overlay for all matched cells,
+    /// with a different color for the currently active match.
+    fn highlight_matches(
+        &self,
+        ui: &mut egui::Ui,
+        term_rect: egui::Rect,
+        snapshot: &rmux_terminal::GridSnapshot,
+    ) {
+        if self.find_results.is_empty() {
+            return;
+        }
+
+        let cell_size = self.renderer.cell_size();
+        let painter = ui.painter();
+
+        let match_bg = egui::Color32::from_rgba_premultiplied(255, 200, 0, 80);
+        let active_bg = egui::Color32::from_rgba_premultiplied(255, 140, 0, 140);
+
+        for (i, &(row, col)) in self.find_results.iter().enumerate() {
+            if row >= snapshot.rows as usize || col >= snapshot.cols as usize {
+                continue;
+            }
+
+            let is_active = i == self.find_index;
+
+            // Calculate match cell position
+            let x = term_rect.left() + col as f32 * cell_size.x;
+            let y = term_rect.top() + row as f32 * cell_size.y;
+
+            // Calculate match width (number of consecutive chars matching the query)
+            let query_len = self.find_query.chars().count();
+            let match_width = (query_len as f32 * cell_size.x).min(term_rect.right() - x);
+
+            let highlight_rect = egui::Rect::from_min_size(
+                egui::Pos2::new(x, y),
+                egui::Vec2::new(match_width, cell_size.y),
+            );
+
+            let color = if is_active { active_bg } else { match_bg };
+            painter.rect_filled(highlight_rect, 0.0, color);
+        }
+    }
+
+    /// Render the find bar at the bottom of the terminal pane.
+    fn show_find_bar(&mut self, ui: &mut egui::Ui, x: f32, y: f32) {
+        let available_width = ui.available_width();
+
+        let bar_rect = egui::Rect::from_min_size(
+            egui::Pos2::new(x, y),
+            egui::Vec2::new(available_width, FIND_BAR_HEIGHT),
+        );
+
+        // Allocate space for the find bar
+        let mut bar_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(bar_rect)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+
+        // Background
+        bar_ui.painter().rect_filled(bar_rect, 0.0, egui::Color32::from_rgb(40, 44, 52));
+
+        // Spacing
+        bar_ui.add_space(8.0);
+
+        // Query text input
+        let text_response = bar_ui.add(
+            egui::TextEdit::singleline(&mut self.find_query)
+                .hint_text("Find...")
+                .font(egui::FontId::monospace(13.0))
+                .desired_width(200.0),
+        );
+
+        if text_response.changed() {
+            self.perform_find();
+        }
+
+        // Match count label
+        let count_text = if self.find_results.is_empty() && !self.find_query.is_empty() {
+            "No matches".to_string()
+        } else if self.find_results.is_empty() {
+            String::new()
+        } else {
+            format!("{}/{}", self.find_index + 1, self.find_results.len())
+        };
+
+        if !count_text.is_empty() {
+            bar_ui.label(
+                egui::RichText::new(count_text)
+                    .font(egui::FontId::monospace(12.0))
+                    .color(egui::Color32::from_rgb(180, 180, 190)),
+            );
+        }
+
+        bar_ui.add_space(8.0);
+
+        // Previous match button
+        if bar_ui.add(egui::Button::new("◀")).clicked() && !self.find_results.is_empty() {
+            if self.find_index == 0 {
+                self.find_index = self.find_results.len() - 1;
+            } else {
+                self.find_index -= 1;
+            }
+        }
+
+        // Next match button
+        if bar_ui.add(egui::Button::new("▶")).clicked() {
+            self.find_next_match();
+        }
+
+        bar_ui.add_space(8.0);
+
+        // Close button
+        if bar_ui.add(egui::Button::new("✕")).clicked() {
+            self.find_visible = false;
+            self.find_query.clear();
+            self.find_results.clear();
+            self.find_index = 0;
+        }
     }
 }
