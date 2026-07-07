@@ -20,7 +20,13 @@ impl RmuxApp {
                 continue;
             };
 
-            let mod_active = modifiers.command || modifiers.ctrl;
+            // On macOS, Cmd is for app shortcuts, Ctrl is for terminal control characters.
+            // On Linux/Windows, both are used for app shortcuts.
+            let mod_active = if cfg!(target_os = "macos") {
+                modifiers.command && !modifiers.ctrl
+            } else {
+                modifiers.command || modifiers.ctrl
+            };
 
             // Cmd/Ctrl+Q or Cmd/Ctrl+Shift+Q: Quit application
             if mod_active && !modifiers.alt && *key == Key::Q {
@@ -157,7 +163,13 @@ impl RmuxApp {
                 continue;
             };
 
-            let mod_active = modifiers.command || modifiers.ctrl;
+            // On macOS, Cmd is for app shortcuts, Ctrl is for terminal control characters.
+            // On Linux/Windows, both are used for app shortcuts.
+            let mod_active = if cfg!(target_os = "macos") {
+                modifiers.command && !modifiers.ctrl
+            } else {
+                modifiers.command || modifiers.ctrl
+            };
             let shift_active = modifiers.shift;
 
             // Cmd/Ctrl+B: Toggle sidebar
@@ -236,9 +248,13 @@ impl RmuxApp {
             }
 
             // Cmd/Ctrl+Shift+[ or ]: Previous/next workspace.
-            // Also accept cmux's macOS chord: Ctrl+Cmd+[ or ].
-            let workspace_bracket_chord = (mod_active && shift_active)
-                || (modifiers.command && modifiers.ctrl && !modifiers.shift && !modifiers.alt);
+            // On macOS, also accept cmux's Ctrl+Cmd+[ or ] chord.
+            let mac_ctrl_cmd_bracket = cfg!(target_os = "macos")
+                && modifiers.command
+                && modifiers.ctrl
+                && !modifiers.shift
+                && !modifiers.alt;
+            let workspace_bracket_chord = (mod_active && shift_active) || mac_ctrl_cmd_bracket;
             if workspace_bracket_chord {
                 match *key {
                     Key::OpenBracket => self.workspace_manager.switch_prev(),

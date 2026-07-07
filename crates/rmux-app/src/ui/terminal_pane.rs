@@ -208,11 +208,10 @@ impl TerminalPane {
         }
 
         // Allocate space for the terminal
-        let (rect, _response) =
+        let (rect, term_response) =
             ui.allocate_exact_size(terminal_available, egui::Sense::click_and_drag());
 
         // Track focus from the terminal area response
-        let term_response = ui.interact(rect, ui.id(), egui::Sense::click_and_drag());
         if term_response.clicked() {
             self.has_focus = true;
         }
@@ -558,18 +557,31 @@ impl TerminalPane {
         }
 
         let snapshot = self.state.snapshot();
-        let query_lower = self.find_query.to_lowercase();
+        let query_lower: Vec<char> = self.find_query.to_lowercase().chars().collect();
+        let query_len = query_lower.len();
 
         for row in 0..snapshot.rows as usize {
-            let row_text: String = snapshot.cells[row].iter().map(|c| c.c).collect();
-            let row_lower = row_text.to_lowercase();
+            let row_chars: Vec<char> = snapshot.cells[row].iter().map(|c| c.c).collect();
 
-            // Find all matches in this row
-            let mut search_start = 0;
-            while let Some(pos) = row_lower[search_start..].find(&query_lower) {
-                let col = search_start + pos;
-                self.find_results.push((row, col));
-                search_start = col + 1;
+            // Search on char grid (not byte offsets) to handle non-ASCII correctly
+            if row_chars.len() < query_len {
+                continue;
+            }
+            let mut col = 0;
+            while col + query_len <= row_chars.len() {
+                let mut matched = true;
+                for q in 0..query_len {
+                    if row_chars[col + q].to_lowercase().next() != Some(query_lower[q]) {
+                        matched = false;
+                        break;
+                    }
+                }
+                if matched {
+                    self.find_results.push((row, col));
+                    col += query_len;
+                } else {
+                    col += 1;
+                }
             }
         }
     }
@@ -633,7 +645,7 @@ impl TerminalPane {
             let y = term_rect.top() + row as f32 * cell_size.y;
 
             // Calculate match width (number of consecutive chars matching the query)
-            let query_len = self.find_query.len();
+            let query_len = self.find_query.chars().count();
             let match_width = (query_len as f32 * cell_size.x).min(term_rect.right() - x);
 
             let highlight_rect = egui::Rect::from_min_size(

@@ -49,10 +49,11 @@ pub fn render_pane_tree(
             available.right_top() - Vec2::new(220.0, -2.0),
             Vec2::new(216.0, 18.0),
         );
+        let modifier = if cfg!(target_os = "macos") { "Cmd" } else { "Ctrl" };
         ui.painter().text(
             label_rect.left_top(),
             egui::Align2::LEFT_TOP,
-            "Zoom: Cmd+Shift+Enter to restore",
+            format!("Zoom: {modifier}+Shift+Enter to restore"),
             egui::FontId::proportional(10.0),
             ZOOM_LABEL_COLOR,
         );
