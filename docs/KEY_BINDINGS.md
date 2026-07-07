@@ -38,8 +38,8 @@ Active when no text widget has focus.
 | `Cmd/Ctrl+Shift+R` | Rename active workspace | |
 | `Cmd/Ctrl+Shift+Enter` | Toggle pane zoom (maximize/restore) | |
 | `Cmd/Ctrl+Shift+=` | Equalize all split sizes | |
-| `Cmd/Ctrl+Shift+[` | Previous workspace | |
-| `Cmd/Ctrl+Shift+]` | Next workspace | |
+| `Cmd/Ctrl+Shift+[` or `Ctrl+Cmd+[` | Previous workspace | `Ctrl+Cmd+[` matches cmux on macOS |
+| `Cmd/Ctrl+Shift+]` or `Ctrl+Cmd+]` | Next workspace | `Ctrl+Cmd+]` matches cmux on macOS |
 | `Cmd/Ctrl+1` – `Cmd/Ctrl+9` | Switch to workspace by index | |
 | `Cmd/Ctrl+Arrow Left/Up` | Focus previous pane | |
 | `Cmd/Ctrl+Arrow Right/Down` | Focus next pane | |
@@ -132,7 +132,7 @@ Font size change triggers PTY resize for all panes (recalculates grid cols/rows)
 
 | rmux | cmux | Reason |
 |------|------|--------|
-| `Cmd/Ctrl+Shift+[` / `]` | `Ctrl+Cmd+[` / `]` | Workspace switch — different modifier order |
+| `Cmd/Ctrl+Shift+[` / `]` plus `Ctrl+Cmd+[` / `]` | `Ctrl+Cmd+[` / `]` | rmux keeps old chord and supports cmux chord |
 | `Cmd/Ctrl+Arrow` | `Alt+Cmd+Arrow` | Pane focus — rmux uses simpler chord |
 | `Cmd/Ctrl+K` | — | Clear scrollback (rmux-specific, not in cmux) |
 | `Cmd/Ctrl+C` | — | Copy selection (cmux uses `Cmd+C` implicitly) |

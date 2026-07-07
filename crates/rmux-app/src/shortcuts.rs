@@ -235,8 +235,11 @@ impl RmuxApp {
                 tracing::debug!("Equalized split sizes via shortcut");
             }
 
-            // Cmd/Ctrl+Shift+[ or ]: Previous/next workspace
-            if mod_active && shift_active {
+            // Cmd/Ctrl+Shift+[ or ]: Previous/next workspace.
+            // Also accept cmux's macOS chord: Ctrl+Cmd+[ or ].
+            let workspace_bracket_chord = (mod_active && shift_active)
+                || (modifiers.command && modifiers.ctrl && !modifiers.shift && !modifiers.alt);
+            if workspace_bracket_chord {
                 match *key {
                     Key::OpenBracket => self.workspace_manager.switch_prev(),
                     Key::CloseBracket => self.workspace_manager.switch_next(),
