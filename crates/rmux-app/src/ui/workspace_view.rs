@@ -2,7 +2,8 @@
 //!
 //! This module renders the recursive `PaneNode` tree into the central panel
 //! of the application window. Split nodes divide the available area among their
-//! children. Leaf nodes render terminal panes.
+//! children. Leaf nodes render terminal panes. When a pane is zoomed (maximized),
+//! only that pane is rendered at full workspace size.
 
 use crate::workspace::splits::{PaneId, PaneNode, SplitDirection};
 use egui::{Color32, Rect, Vec2};
@@ -13,12 +14,21 @@ const SPLIT_BORDER: f32 = 2.0;
 /// Default background color for the workspace area.
 const WORKSPACE_BG: Color32 = Color32::from_rgb(20, 22, 28);
 
-/// Render the pane tree into the given `egui::Ui`.
+/// Color for the zoom indicator label.
+const ZOOM_LABEL_COLOR: Color32 = Color32::from_rgb(100, 120, 160);
+
+/// Render the pane tree into the given `egui::Ui`, optionally zoomed to a
+/// single pane.
 ///
-/// This function recursively traverses the pane tree and renders each leaf
-/// as a terminal pane. Split nodes distribute the available area among their
-/// children according to their size ratios.
-pub fn render_pane_tree(ui: &mut egui::Ui, root: &mut PaneNode, active_pane: &mut PaneId) {
+/// When `zoomed_pane` is `Some(id)`, only that pane is rendered at full
+/// workspace size. A small label in the top-right corner reminds the user
+/// how to restore the layout.
+pub fn render_pane_tree(
+    ui: &mut egui::Ui,
+    root: &mut PaneNode,
+    active_pane: &mut PaneId,
+    zoomed_pane: Option<PaneId>,
+) {
     let available = ui.available_rect_before_wrap();
 
     if !ui.is_rect_visible(available) {
@@ -27,6 +37,29 @@ pub fn render_pane_tree(ui: &mut egui::Ui, root: &mut PaneNode, active_pane: &mu
 
     // Fill background
     ui.painter().rect_filled(available, 0.0, WORKSPACE_BG);
+
+    // If a pane is zoomed, render only that pane
+    if let Some(zoom_id) = zoomed_pane
+        && let Some(terminal) = root.find_terminal_mut(zoom_id)
+    {
+        render_leaf(ui, zoom_id, terminal, available, zoom_id == *active_pane, active_pane);
+
+        // Zoom indicator label in top-right corner
+        let label_rect = Rect::from_min_size(
+            available.right_top() - Vec2::new(220.0, -2.0),
+            Vec2::new(216.0, 18.0),
+        );
+        ui.painter().text(
+            label_rect.left_top(),
+            egui::Align2::LEFT_TOP,
+            "Zoom: Cmd+Shift+Enter to restore",
+            egui::FontId::proportional(10.0),
+            ZOOM_LABEL_COLOR,
+        );
+        return;
+    }
+    // Zoomed pane not found in tree (e.g. was closed) — fall through
+    // to render the full tree.
 
     // Render the tree recursively
     render_node(ui, root, available, active_pane);

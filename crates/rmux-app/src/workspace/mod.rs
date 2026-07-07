@@ -155,6 +155,11 @@ impl WorkspaceManager {
         &self.workspaces
     }
 
+    /// Mutable access to all workspaces (for bulk operations like font resize).
+    pub fn workspaces_mut(&mut self) -> &mut [Workspace] {
+        &mut self.workspaces
+    }
+
     /// Get a mutable reference to the workspace with the given id, if any.
     pub fn workspace_mut(&mut self, id: WorkspaceId) -> Option<&mut Workspace> {
         self.workspaces.iter_mut().find(|w| w.id == id)
@@ -307,6 +312,41 @@ impl WorkspaceManager {
             tracing::debug!(workspace_id = ?id, "Renamed workspace");
         }
     }
+
+    /// Close the currently active workspace.
+    ///
+    /// Returns an error if it is the last workspace.
+    pub fn close_active_workspace(&mut self) -> Result<WorkspaceId, anyhow::Error> {
+        let active_id = self.active().id;
+        self.close_workspace(active_id)?;
+        Ok(active_id)
+    }
+
+    /// Toggle zoom (maximize/restore) on the active pane in the active workspace.
+    ///
+    /// When zooming in, the active pane fills the entire workspace area.
+    /// When zooming out (restoring), the full split tree is shown again.
+    pub fn toggle_zoom(&mut self) -> Option<PaneId> {
+        let ws = self.active_mut();
+        if let Some(zoomed) = ws.zoomed_pane.take() {
+            tracing::debug!(pane_id = zoomed.0, "Zoom restored");
+            None
+        } else {
+            let active = ws.active_pane;
+            ws.zoomed_pane = Some(active);
+            tracing::debug!(pane_id = active.0, "Pane zoomed");
+            Some(active)
+        }
+    }
+
+    /// Equalize all split ratios in the active workspace's pane tree.
+    ///
+    /// Every `Split` node gets equal child sizes. Useful after manual
+    /// resizing to return to a balanced layout.
+    pub fn equalize_splits(&mut self) {
+        self.active_mut().root.equalize_splits();
+        tracing::debug!("Split sizes equalized");
+    }
 }
 
 impl Default for WorkspaceManager {
@@ -457,5 +497,63 @@ mod tests {
         // Switching to an out-of-bounds index should not panic
         manager.switch_to(999);
         assert_eq!(manager.active_index(), 0);
+    }
+
+    #[test]
+    fn test_close_active_workspace() {
+        let mut manager = WorkspaceManager::new();
+        manager.create_workspace("WS 2".to_string());
+        assert_eq!(manager.workspace_count(), 2);
+        let closed_id = manager.close_active_workspace().unwrap();
+        assert_eq!(closed_id.0, 2); // WS 2 was active
+        assert_eq!(manager.workspace_count(), 1);
+    }
+
+    #[test]
+    fn test_close_active_workspace_last_errors() {
+        let mut manager = WorkspaceManager::new();
+        assert_eq!(manager.workspace_count(), 1);
+        let result = manager.close_active_workspace();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_toggle_zoom() {
+        let mut manager = WorkspaceManager::new();
+        // Initially not zoomed
+        assert!(manager.active().zoomed_pane.is_none());
+
+        // Zoom in → returns Some(active_pane_id)
+        let zoomed = manager.toggle_zoom();
+        assert!(zoomed.is_some());
+        assert_eq!(manager.active().zoomed_pane, zoomed);
+
+        // Zoom out → returns None
+        let restored = manager.toggle_zoom();
+        assert!(restored.is_none());
+        assert!(manager.active().zoomed_pane.is_none());
+    }
+
+    #[test]
+    fn test_equalize_splits_via_manager() {
+        let mut manager = WorkspaceManager::new();
+        // Create a split layout
+        manager.split_active_right().unwrap();
+        manager.split_active_down().unwrap();
+        assert_eq!(manager.total_pane_count(), 3);
+
+        // Unequalize some sizes by tweaking the root's sizes
+        if let splits::PaneNode::Split { sizes, .. } = &mut manager.active_mut().root {
+            sizes[0] = 0.2;
+            sizes[1] = 0.8;
+        }
+
+        // Equalize
+        manager.equalize_splits();
+
+        if let splits::PaneNode::Split { sizes, .. } = &manager.active().root {
+            assert!((sizes[0] - 0.5).abs() < f32::EPSILON);
+            assert!((sizes[1] - 0.5).abs() < f32::EPSILON);
+        }
     }
 }

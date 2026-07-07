@@ -11,6 +11,7 @@ use serde_json::json;
 
 use crate::api;
 use crate::notifications::NotificationManager;
+use crate::ui::DEFAULT_FONT_SIZE;
 use crate::ui::sidebar::SidebarView;
 use crate::ui::{NotificationPanel, TerminalPane, workspace_view};
 use crate::workspace::WorkspaceManager;
@@ -35,6 +36,10 @@ pub struct RmuxApp {
     pub(crate) notifications: NotificationManager,
     /// The right-side notification list panel.
     pub(crate) notification_panel: NotificationPanel,
+    /// The current terminal font size (shared by all panes).
+    pub(crate) font_size: f32,
+    /// Most recent text copied from a terminal selection.
+    pub(crate) last_copied_text: Option<String>,
     /// Receives socket API requests, drained each frame.
     api_request_rx: tokio::sync::mpsc::Receiver<rmux_api::ApiRequestEnvelope>,
     /// Publishes application events to `events.stream` subscribers.
@@ -49,18 +54,21 @@ impl RmuxApp {
     /// Create a new application state with a default workspace and terminal pane.
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         let channels = api::start_server();
+        let font_size = DEFAULT_FONT_SIZE;
         let mut app = Self {
             workspace_manager: WorkspaceManager::new(),
             sidebar: SidebarView::new(),
             notifications: NotificationManager::with_system_notifier(),
             notification_panel: NotificationPanel::new(),
+            font_size,
+            last_copied_text: None,
             api_request_rx: channels.request_rx,
             api_event_tx: channels.event_tx,
             last_active_workspace: 0,
         };
 
         let pane_id = app.workspace_manager.active().active_pane;
-        attach_terminal(&mut app.workspace_manager, pane_id);
+        attach_terminal(&mut app.workspace_manager, pane_id, font_size);
         app.last_active_workspace = app.workspace_manager.active().id.0;
 
         tracing::info!(
@@ -100,9 +108,6 @@ impl eframe::App for RmuxApp {
         // Request continuous repaints for terminal updates (PTY output, cursor blink)
         ctx.request_repaint_after(std::time::Duration::from_millis(16));
 
-        // Process keyboard shortcuts
-        self.handle_keyboard_shortcuts(ctx);
-
         // Render the sidebar (left panel)
         self.sidebar.show(
             ctx,
@@ -116,6 +121,9 @@ impl eframe::App for RmuxApp {
 
         // Render the workspace view (central panel)
         self.render_workspace(ctx);
+
+        // Process keyboard shortcuts AFTER UI render so ctx.wants_keyboard_input() works
+        self.handle_keyboard_shortcuts(ctx);
 
         // Publish workspace.changed if the active workspace switched this
         // frame (keyboard, sidebar click, or API request).
@@ -178,7 +186,7 @@ impl RmuxApp {
     pub(crate) fn create_workspace_with_terminal(&mut self, name: String) -> u64 {
         let ws = self.workspace_manager.create_workspace(name);
         let pane_id = self.workspace_manager.active().active_pane;
-        attach_terminal(&mut self.workspace_manager, pane_id);
+        attach_terminal(&mut self.workspace_manager, pane_id, self.font_size);
         self.publish_event("workspace.created", json!({ "id": ws.0 }));
         self.publish_event("pane.created", json!({ "pane_id": pane_id.0, "workspace_id": ws.0 }));
         ws.0
@@ -201,7 +209,7 @@ impl RmuxApp {
             SplitDirection::Horizontal => self.workspace_manager.split_active_right()?,
             SplitDirection::Vertical => self.workspace_manager.split_active_down()?,
         };
-        attach_terminal(&mut self.workspace_manager, new_id);
+        attach_terminal(&mut self.workspace_manager, new_id, self.font_size);
         let workspace_id = self.workspace_manager.active().id.0;
         self.publish_event(
             "pane.created",
@@ -227,6 +235,58 @@ impl RmuxApp {
         Ok(())
     }
 
+    /// Close the active workspace and publish `workspace.closed`.
+    ///
+    /// Returns the closed workspace id, or an error if it is the last
+    /// workspace remaining.
+    pub(crate) fn close_active_workspace_with_event(&mut self) -> Result<u64, anyhow::Error> {
+        let id = self.workspace_manager.close_active_workspace()?;
+        self.publish_event("workspace.closed", json!({ "id": id.0 }));
+        tracing::info!(workspace_id = id.0, "Closed active workspace via shortcut");
+        Ok(id.0)
+    }
+
+    /// Start inline rename for the active workspace in the sidebar.
+    pub(crate) fn start_workspace_rename(&mut self) {
+        let index = self.workspace_manager.active_index();
+        let name = self.workspace_manager.active().name.clone();
+        self.sidebar.start_rename(index, name);
+    }
+
+    /// Change the terminal font size by the given delta.
+    ///
+    /// Pass `delta = 0.0` to reset to the default size. The effective
+    /// font size is clamped to `[6.0, 60.0]`. After the change, all
+    /// panes recalculate their cell grid and send a PTY resize.
+    pub(crate) fn set_font_size(&mut self, delta: f32) {
+        let new_size = if delta == 0.0 {
+            DEFAULT_FONT_SIZE
+        } else {
+            (self.font_size + delta).clamp(6.0, 60.0)
+        };
+
+        if (new_size - self.font_size).abs() < f32::EPSILON {
+            return; // no change
+        }
+
+        self.font_size = new_size;
+        tracing::debug!(font_size = self.font_size, "Font size changed");
+
+        // Propagate to every terminal pane across all workspaces
+        for workspace in self.workspace_manager.workspaces_mut() {
+            for (_, terminal) in workspace.root.leaf_panes_mut() {
+                if let Some(t) = terminal.as_mut() {
+                    t.set_font_size(self.font_size);
+                }
+            }
+        }
+    }
+
+    /// Get a mutable reference to the active terminal pane, if any.
+    pub(crate) fn active_terminal_mut(&mut self) -> Option<&mut TerminalPane> {
+        self.workspace_manager.active_mut().active_terminal()
+    }
+
     /// Publish `workspace.changed` if the active workspace differs from
     /// the previous frame.
     fn emit_workspace_change(&mut self) {
@@ -242,7 +302,8 @@ impl RmuxApp {
     fn render_workspace(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
             let ws = self.workspace_manager.active_mut();
-            workspace_view::render_pane_tree(ui, &mut ws.root, &mut ws.active_pane);
+            let zoomed = ws.zoomed_pane;
+            workspace_view::render_pane_tree(ui, &mut ws.root, &mut ws.active_pane, zoomed);
         });
     }
 }
@@ -251,8 +312,8 @@ impl RmuxApp {
 ///
 /// Spawn failures are logged; the pane then shows the "Spawning
 /// terminal..." placeholder indefinitely.
-fn attach_terminal(manager: &mut WorkspaceManager, pane_id: PaneId) {
-    match TerminalPane::spawn(INITIAL_COLS, INITIAL_ROWS) {
+fn attach_terminal(manager: &mut WorkspaceManager, pane_id: PaneId, font_size: f32) {
+    match TerminalPane::spawn(INITIAL_COLS, INITIAL_ROWS, font_size) {
         Ok(terminal) => manager.active_mut().set_terminal(pane_id, terminal),
         Err(e) => tracing::error!(pane_id = pane_id.0, "Failed to spawn terminal pane: {e}"),
     }

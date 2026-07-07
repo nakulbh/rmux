@@ -71,6 +71,20 @@ impl SidebarView {
         Self::default()
     }
 
+    /// Start inline renaming a workspace tab at the given index.
+    ///
+    /// Called by the `Cmd/Ctrl+Shift+R` keyboard shortcut. The sidebar
+    /// must be visible for the rename to be rendered; if it is hidden,
+    /// this call is a no-op.
+    pub fn start_rename(&mut self, index: usize, name: String) {
+        if !self.visible {
+            return;
+        }
+        self.editing_index = Some(index);
+        self.edit_buffer = name;
+        tracing::debug!(index, "Started inline workspace rename via shortcut");
+    }
+
     /// Toggle sidebar visibility.
     pub fn toggle(&mut self) {
         self.visible = !self.visible;

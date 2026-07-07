@@ -39,6 +39,9 @@ pub struct Workspace {
     /// Progress in `0.0..=1.0` shown as a bar in the sidebar tab
     /// (set via `sidebar.set_progress`).
     pub progress: Option<f32>,
+    /// When `Some`, only this pane is rendered (zoomed/maximized mode).
+    /// Toggled by `Cmd/Ctrl+Shift+Enter`.
+    pub zoomed_pane: Option<PaneId>,
 }
 
 impl Workspace {
@@ -47,7 +50,15 @@ impl Workspace {
         let pane_id = *next_pane_id;
         *next_pane_id += 1;
         let pane = PaneNode::new_leaf(PaneId(pane_id));
-        Self { id, name, root: pane, active_pane: PaneId(pane_id), status: None, progress: None }
+        Self {
+            id,
+            name,
+            root: pane,
+            active_pane: PaneId(pane_id),
+            status: None,
+            progress: None,
+            zoomed_pane: None,
+        }
     }
 
     /// Set the terminal for a pane by its ID.

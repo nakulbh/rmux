@@ -110,6 +110,15 @@ impl TerminalRenderer {
         }
     }
 
+    /// Change the font size and recalculate cell dimensions.
+    ///
+    /// After calling this, [`cols_rows_for_rect`](Self::cols_rows_for_rect) and
+    /// [`draw`](Self::draw) will use the new font size.
+    pub fn set_font_size(&mut self, font_size: f32) {
+        self.font_size = font_size;
+        self.cell_size = Self::calc_cell_size(font_size);
+    }
+
     /// Calculate the required cell size for the given font.
     ///
     /// In this MVP, we use a fixed estimate: monospace characters
@@ -158,5 +167,18 @@ mod tests {
     fn test_new_renderer() {
         let renderer = TerminalRenderer::new(12.0);
         assert_eq!(renderer.font_size, 12.0);
+    }
+
+    #[test]
+    fn test_set_font_size() {
+        let mut renderer = TerminalRenderer::new(14.0);
+        let original_cell_size = renderer.cell_size();
+
+        renderer.set_font_size(20.0);
+        assert_eq!(renderer.font_size, 20.0);
+
+        let new_cell_size = renderer.cell_size();
+        assert!(new_cell_size.x > original_cell_size.x);
+        assert!(new_cell_size.y > original_cell_size.y);
     }
 }

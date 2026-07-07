@@ -334,6 +334,25 @@ impl PaneNode {
         }
     }
 
+    /// Recursively equalize all split ratios in the tree.
+    ///
+    /// For every `Split` node, each child gets an equal share of the
+    /// available space. Leaf nodes are unaffected.
+    pub fn equalize_splits(&mut self) {
+        if let Self::Split { children, sizes, .. } = self {
+            let count = children.len();
+            if count > 0 {
+                let equal = 1.0 / count as f32;
+                for size in sizes.iter_mut() {
+                    *size = equal;
+                }
+            }
+            for child in children.iter_mut() {
+                child.equalize_splits();
+            }
+        }
+    }
+
     /// Collect pane IDs whose terminal process has exited.
     pub fn collect_exited_panes(&self) -> Vec<PaneId> {
         match self {
@@ -416,5 +435,66 @@ mod tests {
         let mut root = PaneNode::new_leaf(PaneId(1));
         let result = root.close_pane(PaneId(1));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_equalize_splits_single_leaf() {
+        let mut root = PaneNode::new_leaf(PaneId(1));
+        // Should not panic on a leaf
+        root.equalize_splits();
+    }
+
+    #[test]
+    fn test_equalize_splits_already_equal() {
+        let leaf1 = PaneNode::new_leaf(PaneId(1));
+        let leaf2 = PaneNode::new_leaf(PaneId(2));
+        let mut root =
+            PaneNode::new_split(SplitId(10), SplitDirection::Horizontal, vec![leaf1, leaf2]);
+        // Already 0.5 / 0.5
+        root.equalize_splits();
+        if let PaneNode::Split { sizes, .. } = &root {
+            assert_eq!(sizes.len(), 2);
+            assert!((sizes[0] - 0.5).abs() < f32::EPSILON);
+            assert!((sizes[1] - 0.5).abs() < f32::EPSILON);
+        }
+    }
+
+    #[test]
+    fn test_equalize_splits_unequal() {
+        let leaf1 = PaneNode::new_leaf(PaneId(1));
+        let leaf2 = PaneNode::new_leaf(PaneId(2));
+        let mut root = PaneNode::Split {
+            id: SplitId(10),
+            direction: SplitDirection::Horizontal,
+            children: vec![leaf1, leaf2],
+            sizes: vec![0.3, 0.7],
+        };
+        root.equalize_splits();
+        if let PaneNode::Split { sizes, .. } = &root {
+            assert_eq!(sizes.len(), 2);
+            assert!((sizes[0] - 0.5).abs() < f32::EPSILON);
+            assert!((sizes[1] - 0.5).abs() < f32::EPSILON);
+        }
+    }
+
+    #[test]
+    fn test_equalize_splits_nested() {
+        // Create a 3-pane layout via split
+        let mut root = make_test_tree(); // pane 1, 2
+        root.split_at(PaneId(1), SplitDirection::Vertical, PaneId(3), SplitId(11)).unwrap();
+        assert_eq!(root.pane_count(), 3);
+
+        // Unequalize some split
+        if let PaneNode::Split { sizes, .. } = &mut root {
+            sizes[0] = 0.2;
+            sizes[1] = 0.8;
+        }
+        root.equalize_splits();
+        // Top-level: 2 children -> each 0.5
+        if let PaneNode::Split { sizes, .. } = &root {
+            assert_eq!(sizes.len(), 2);
+            assert!((sizes[0] - 0.5).abs() < f32::EPSILON);
+            assert!((sizes[1] - 0.5).abs() < f32::EPSILON);
+        }
     }
 }
