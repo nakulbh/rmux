@@ -10,6 +10,7 @@
 pub mod notification_panel;
 pub mod sidebar;
 mod terminal_pane;
+pub mod theme;
 pub mod workspace_view;
 
 pub use notification_panel::NotificationPanel;

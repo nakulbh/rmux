@@ -83,6 +83,8 @@ impl RmuxApp {
 impl eframe::App for RmuxApp {
     /// Called each frame to update the UI.
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Apply shadcn-inspired theme every frame
+        crate::ui::theme::Theme::dark().apply(ctx);
         // Process PTY output for all terminal panes; collect any OSC
         // notifications raised by pane output.
         let osc_notifications = self.workspace_manager.process_all_panes();

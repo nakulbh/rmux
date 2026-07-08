@@ -2,20 +2,15 @@
 //!
 //! Shows notifications newest-first with unread markers and relative
 //! timestamps. Clicking a row jumps to the workspace/pane that raised
-//! the notification and marks it read. Toggled with Cmd/Ctrl+Shift+N or
+//! the notification and marks it read. Toggled with Cmd/Ctrl+I or
 //! the bell button in the sidebar.
 
 use std::time::SystemTime;
 
 use crate::notifications::{Notification, NotificationManager};
+use crate::ui::theme;
 use crate::workspace::WorkspaceManager;
 use crate::workspace::splits::PaneId;
-
-/// Accent color for unread markers (matches the sidebar accent).
-const ACCENT_COLOR: egui::Color32 = egui::Color32::from_rgb(70, 130, 250);
-
-/// Dimmed color for body text and timestamps.
-const DIM_TEXT_COLOR: egui::Color32 = egui::Color32::from_rgb(140, 140, 150);
 
 /// The notification panel state and renderer.
 #[derive(Debug, Default)]
@@ -50,11 +45,18 @@ impl NotificationPanel {
         }
 
         egui::SidePanel::right("rmux_notification_panel")
+            .frame(
+                egui::Frame::default()
+                    .fill(theme::palette().background)
+                    .stroke(egui::Stroke::new(1.0, theme::palette().border))
+                    .inner_margin(egui::Margin::same(10)),
+            )
             .min_width(240.0)
             .max_width(340.0)
             .default_width(280.0)
             .resizable(true)
             .show(ctx, |ui| {
+                ui.visuals_mut().panel_fill = theme::palette().background;
                 render_panel(ui, notifications, manager);
             });
     }
@@ -66,21 +68,41 @@ fn render_panel(
     notifications: &mut NotificationManager,
     manager: &mut WorkspaceManager,
 ) {
-    ui.add_space(8.0);
+    let palette = theme::palette();
+    ui.add_space(10.0);
     ui.heading(
         egui::RichText::new(format!("Notifications ({} unread)", notifications.unread_count()))
-            .size(13.0),
+            .size(14.0)
+            .color(palette.foreground),
     );
-    ui.add_space(4.0);
+    ui.add_space(6.0);
     ui.horizontal(|ui| {
-        if ui.small_button("Mark all read").clicked() {
+        if ui
+            .add(
+                egui::Button::new(egui::RichText::new("Mark all read").size(12.0))
+                    .fill(palette.secondary)
+                    .stroke(egui::Stroke::new(1.0, palette.border))
+                    .corner_radius(egui::CornerRadius::same(6))
+                    .small(),
+            )
+            .clicked()
+        {
             notifications.mark_all_read();
         }
-        if ui.small_button("Clear").clicked() {
+        if ui
+            .add(
+                egui::Button::new(egui::RichText::new("Clear").size(12.0))
+                    .fill(palette.secondary)
+                    .stroke(egui::Stroke::new(1.0, palette.border))
+                    .corner_radius(egui::CornerRadius::same(6))
+                    .small(),
+            )
+            .clicked()
+        {
             notifications.clear();
         }
     });
-    ui.add_space(4.0);
+    ui.add_space(6.0);
     ui.separator();
 
     // Row clicks are collected and applied after the loop so the list
@@ -90,7 +112,7 @@ fn render_panel(
     egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
         if notifications.list().is_empty() {
             ui.add_space(8.0);
-            ui.label(egui::RichText::new("No notifications").color(DIM_TEXT_COLOR));
+            ui.label(egui::RichText::new("No notifications").color(palette.muted_foreground));
             return;
         }
         for notification in notifications.list().iter().rev() {
@@ -108,37 +130,44 @@ fn render_panel(
 
 /// Render one notification row; returns its click response.
 fn render_row(ui: &mut egui::Ui, notification: &Notification) -> egui::Response {
-    let left = ui.max_rect().left();
-    let right = ui.max_rect().right();
-    let top = ui.cursor().top();
+    let palette = theme::palette();
+    let row_height = if notification.body.is_some() { 64.0 } else { 46.0 };
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), row_height), egui::Sense::click());
 
-    ui.add_space(6.0);
-    ui.horizontal(|ui| {
+    if ui.is_rect_visible(rect) {
+        let fill = if response.hovered() { palette.accent } else { palette.card };
+        ui.painter().rect_filled(rect.shrink(1.0), egui::CornerRadius::same(8), fill);
+        ui.painter().rect_stroke(
+            rect.shrink(1.0),
+            egui::CornerRadius::same(8),
+            egui::Stroke::new(1.0, palette.border),
+            egui::StrokeKind::Inside,
+        );
+    }
+
+    let mut row_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect.shrink2(egui::vec2(10.0, 8.0)))
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    row_ui.horizontal(|ui| {
         if !notification.read {
-            ui.label(egui::RichText::new("\u{25cf}").color(ACCENT_COLOR).size(10.0));
+            ui.label(egui::RichText::new("\u{25cf}").color(palette.primary).size(10.0));
         }
-        ui.label(egui::RichText::new(&notification.title).strong().size(12.0));
+        ui.label(egui::RichText::new(&notification.title).size(12.5).color(palette.foreground));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.label(
                 egui::RichText::new(relative_time(notification.timestamp))
                     .size(10.0)
-                    .color(DIM_TEXT_COLOR),
+                    .color(palette.muted_foreground),
             );
         });
     });
     if let Some(body) = &notification.body {
-        ui.label(egui::RichText::new(body).size(11.0).color(DIM_TEXT_COLOR));
+        row_ui.label(egui::RichText::new(body).size(11.0).color(palette.muted_foreground));
     }
-    ui.add_space(6.0);
-
-    let bottom = ui.cursor().top();
-    let rect = egui::Rect::from_min_max(egui::pos2(left, top), egui::pos2(right, bottom));
-    let response = ui.interact(
-        rect,
-        ui.id().with(("notification_row", notification.id)),
-        egui::Sense::click(),
-    );
-    ui.separator();
+    ui.add_space(4.0);
     response
 }
 

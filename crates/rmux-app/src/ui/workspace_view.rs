@@ -5,17 +5,12 @@
 //! children. Leaf nodes render terminal panes. When a pane is zoomed (maximized),
 //! only that pane is rendered at full workspace size.
 
+use crate::ui::theme;
 use crate::workspace::splits::{PaneId, PaneNode, SplitDirection};
-use egui::{Color32, Rect, Vec2};
+use egui::{Rect, Vec2};
 
 /// Border width (in pixels) between split panes.
-const SPLIT_BORDER: f32 = 2.0;
-
-/// Default background color for the workspace area.
-const WORKSPACE_BG: Color32 = Color32::from_rgb(20, 22, 28);
-
-/// Color for the zoom indicator label.
-const ZOOM_LABEL_COLOR: Color32 = Color32::from_rgb(100, 120, 160);
+const SPLIT_BORDER: f32 = 1.0;
 
 /// Render the pane tree into the given `egui::Ui`, optionally zoomed to a
 /// single pane.
@@ -36,7 +31,8 @@ pub fn render_pane_tree(
     }
 
     // Fill background
-    ui.painter().rect_filled(available, 0.0, WORKSPACE_BG);
+    let palette = theme::palette();
+    ui.painter().rect_filled(available, 0.0, palette.background);
 
     // If a pane is zoomed, render only that pane
     if let Some(zoom_id) = zoomed_pane
@@ -50,12 +46,19 @@ pub fn render_pane_tree(
             Vec2::new(216.0, 18.0),
         );
         let modifier = if cfg!(target_os = "macos") { "Cmd" } else { "Ctrl" };
+        ui.painter().rect_filled(label_rect, egui::CornerRadius::same(6), palette.card);
+        ui.painter().rect_stroke(
+            label_rect,
+            egui::CornerRadius::same(6),
+            egui::Stroke::new(1.0, palette.border),
+            egui::StrokeKind::Inside,
+        );
         ui.painter().text(
-            label_rect.left_top(),
-            egui::Align2::LEFT_TOP,
+            label_rect.left_center() + Vec2::new(8.0, 0.0),
+            egui::Align2::LEFT_CENTER,
             format!("Zoom: {modifier}+Shift+Enter to restore"),
             egui::FontId::proportional(10.0),
-            ZOOM_LABEL_COLOR,
+            palette.muted_foreground,
         );
         return;
     }
@@ -100,13 +103,20 @@ fn render_leaf(
     } else {
         // Show a loading placeholder if terminal hasn't been spawned yet
         let painter = child_ui.painter();
-        painter.rect_filled(rect, 0.0, Color32::from_rgb(30, 32, 40));
+        let palette = theme::palette();
+        painter.rect_filled(rect, 0.0, palette.card);
+        painter.rect_stroke(
+            rect.shrink(0.5),
+            egui::CornerRadius::ZERO,
+            egui::Stroke::new(1.0, palette.border),
+            egui::StrokeKind::Inside,
+        );
         painter.text(
             rect.center(),
             egui::Align2::CENTER_CENTER,
             "Spawning terminal...",
             egui::FontId::monospace(14.0),
-            Color32::from_rgb(150, 150, 160),
+            palette.muted_foreground,
         );
     }
 }

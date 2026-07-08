@@ -9,6 +9,8 @@ use rmux_terminal::{
 };
 use std::sync::mpsc;
 
+use crate::ui::theme;
+
 /// The default font size for terminal text.
 pub const DEFAULT_FONT_SIZE: f32 = 14.0;
 
@@ -249,11 +251,12 @@ impl TerminalPane {
 
         // Show pane border when focused
         if self.has_focus {
+            let palette = theme::palette();
             let painter = ui.painter();
             painter.rect_stroke(
                 rect,
                 egui::CornerRadius::ZERO,
-                egui::Stroke::new(1.0, egui::Color32::from_rgb(100, 149, 237)),
+                egui::Stroke::new(2.0, palette.ring.gamma_multiply(0.75)),
                 egui::StrokeKind::Middle,
             );
         }
@@ -270,7 +273,7 @@ impl TerminalPane {
                 egui::Align2::CENTER_CENTER,
                 format!("Process exited (code: {:?})", self.backend.try_wait()),
                 egui::FontId::monospace(18.0),
-                egui::Color32::from_rgb(255, 100, 100),
+                theme::palette().destructive,
             );
         }
     }
@@ -630,8 +633,9 @@ impl TerminalPane {
         let cell_size = self.renderer.cell_size();
         let painter = ui.painter();
 
-        let match_bg = egui::Color32::from_rgba_premultiplied(255, 200, 0, 80);
-        let active_bg = egui::Color32::from_rgba_premultiplied(255, 140, 0, 140);
+        let palette = theme::palette();
+        let match_bg = palette.primary.gamma_multiply(0.22);
+        let active_bg = palette.primary.gamma_multiply(0.42);
 
         for (i, &(row, col)) in self.find_results.iter().enumerate() {
             if row >= snapshot.rows as usize || col >= snapshot.cols as usize {
@@ -674,8 +678,16 @@ impl TerminalPane {
                 .layout(egui::Layout::left_to_right(egui::Align::Center)),
         );
 
+        let palette = theme::palette();
+
         // Background
-        bar_ui.painter().rect_filled(bar_rect, 0.0, egui::Color32::from_rgb(40, 44, 52));
+        bar_ui.painter().rect_filled(bar_rect, 0.0, palette.card);
+        bar_ui.painter().rect_stroke(
+            bar_rect,
+            egui::CornerRadius::ZERO,
+            egui::Stroke::new(1.0, palette.border),
+            egui::StrokeKind::Inside,
+        );
 
         // Spacing
         bar_ui.add_space(8.0);
@@ -705,14 +717,21 @@ impl TerminalPane {
             bar_ui.label(
                 egui::RichText::new(count_text)
                     .font(egui::FontId::monospace(12.0))
-                    .color(egui::Color32::from_rgb(180, 180, 190)),
+                    .color(palette.muted_foreground),
             );
         }
 
         bar_ui.add_space(8.0);
 
         // Previous match button
-        if bar_ui.add(egui::Button::new("◀")).clicked() && !self.find_results.is_empty() {
+        let button = |label: &str| {
+            egui::Button::new(egui::RichText::new(label).color(palette.foreground).size(12.0))
+                .fill(palette.secondary)
+                .stroke(egui::Stroke::new(1.0, palette.border))
+                .corner_radius(egui::CornerRadius::same(6))
+                .small()
+        };
+        if bar_ui.add(button("<")).clicked() && !self.find_results.is_empty() {
             if self.find_index == 0 {
                 self.find_index = self.find_results.len() - 1;
             } else {
@@ -721,14 +740,14 @@ impl TerminalPane {
         }
 
         // Next match button
-        if bar_ui.add(egui::Button::new("▶")).clicked() {
+        if bar_ui.add(button(">")).clicked() {
             self.find_next_match();
         }
 
         bar_ui.add_space(8.0);
 
         // Close button
-        if bar_ui.add(egui::Button::new("✕")).clicked() {
+        if bar_ui.add(button("x")).clicked() {
             self.find_visible = false;
             self.find_query.clear();
             self.find_results.clear();

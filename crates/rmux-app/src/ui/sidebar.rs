@@ -8,26 +8,10 @@ use crate::notifications::NotificationManager;
 use crate::workspace::WorkspaceManager;
 use crate::workspace::model::WorkspaceId;
 
-/// Dark background color for the sidebar.
-const SIDEBAR_BG: egui::Color32 = egui::Color32::from_rgb(25, 28, 35);
-
-/// Subtle border color for the sidebar divider.
-const SIDEBAR_BORDER: egui::Color32 = egui::Color32::from_rgb(40, 44, 52);
-
-/// Background color for tabs (inactive).
-const TAB_BG_INACTIVE: egui::Color32 = egui::Color32::from_rgb(35, 38, 45);
-
-/// Background color for the active tab.
-const TAB_BG_ACTIVE: egui::Color32 = egui::Color32::from_rgb(55, 60, 75);
-
-/// Text color for tab labels.
-const TAB_TEXT_COLOR: egui::Color32 = egui::Color32::from_rgb(200, 200, 210);
-
-/// Text color for the active tab label.
-const TAB_TEXT_COLOR_ACTIVE: egui::Color32 = egui::Color32::WHITE;
-
-/// Accent color stripe for the active tab.
-const ACCENT_COLOR: egui::Color32 = egui::Color32::from_rgb(70, 130, 250);
+/// Convenience accessor for the shadcn theme palette.
+fn p() -> crate::ui::theme::Palette {
+    crate::ui::theme::palette()
+}
 
 /// Per-workspace data captured before rendering a tab.
 ///
@@ -109,6 +93,12 @@ impl SidebarView {
         }
 
         egui::SidePanel::left("rmux_sidebar")
+            .frame(
+                egui::Frame::default()
+                    .fill(p().background)
+                    .stroke(egui::Stroke::new(1.0, p().border))
+                    .inner_margin(egui::Margin::same(8)),
+            )
             .min_width(180.0)
             .max_width(250.0)
             .default_width(200.0)
@@ -126,22 +116,18 @@ impl SidebarView {
         notifications: &NotificationManager,
         notification_panel_visible: &mut bool,
     ) {
-        // --- Background ---
-        ui.visuals_mut().override_text_color = Some(TAB_TEXT_COLOR);
-        let mut style = (*ui.ctx().style()).clone();
-        style.visuals.panel_fill = SIDEBAR_BG;
-        ui.ctx().set_style(style);
+        ui.visuals_mut().override_text_color = Some(p().foreground);
 
         // --- Header ---
-        ui.add_space(12.0);
-        ui.heading(egui::RichText::new("Workspaces").color(TAB_TEXT_COLOR_ACTIVE).size(13.0));
+        ui.add_space(4.0);
+        ui.heading(egui::RichText::new("Workspaces").color(p().foreground).size(13.0));
         ui.add_space(8.0);
 
         // --- Separator ---
         ui.painter().hline(
             ui.available_rect_before_wrap().x_range(),
             ui.cursor().top(),
-            (1.0, SIDEBAR_BORDER),
+            (1.0, p().border),
         );
         ui.add_space(8.0);
 
@@ -193,18 +179,24 @@ impl SidebarView {
         // --- Bottom area: hint + notification bell ---
         ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
             ui.add_space(12.0);
-            ui.label(
-                egui::RichText::new("Ctrl+B to toggle")
-                    .size(10.0)
-                    .color(egui::Color32::from_rgb(100, 100, 110)),
-            );
+            let toggle_hint =
+                if cfg!(target_os = "macos") { "Cmd+B to toggle" } else { "Ctrl+B to toggle" };
+            ui.label(egui::RichText::new(toggle_hint).size(10.0).color(p().muted_foreground));
             ui.add_space(6.0);
             let unread = notifications.unread_count();
             let bell_label =
                 if unread > 0 { format!("\u{1f514} {unread}") } else { "\u{1f514}".to_owned() };
             let bell = ui
-                .small_button(egui::RichText::new(bell_label).size(11.0))
-                .on_hover_text("Notifications (Cmd/Ctrl+Shift+N)");
+                .add(
+                    egui::Button::new(
+                        egui::RichText::new(bell_label).size(11.0).color(p().foreground),
+                    )
+                    .fill(p().secondary)
+                    .stroke(egui::Stroke::new(1.0, p().border))
+                    .corner_radius(egui::CornerRadius::same(6))
+                    .small(),
+                )
+                .on_hover_text("Notifications (Cmd/Ctrl+I)");
             if bell.clicked() {
                 *notification_panel_visible = !*notification_panel_visible;
             }
@@ -225,18 +217,40 @@ impl SidebarView {
         index: usize,
         manager: &mut WorkspaceManager,
     ) -> egui::Response {
-        let bg_color = if is_active { TAB_BG_ACTIVE } else { TAB_BG_INACTIVE };
-
         // Taller tab when a status line is shown under the pane count hint.
         let height = if tab.status.is_some() { 54.0 } else { 42.0 };
         let desired_size = egui::Vec2::new(ui.available_width(), height);
         let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
 
+        // shadcn radius_sm for tab corners.
+        let tab_radius = egui::CornerRadius::same(6);
+
+        // Active tab uses the accent fill; hovered inactive tabs blend toward
+        // accent for a subtle highlight; inactive tabs use the card fill.
+        let bg_color = if is_active {
+            p().accent
+        } else if response.hovered() {
+            p().accent.gamma_multiply(0.5)
+        } else {
+            p().card
+        };
+
         if ui.is_rect_visible(rect) {
             let painter = ui.painter();
 
             // Background
-            painter.rect_filled(rect, 4.0, bg_color);
+            painter.rect_filled(rect, tab_radius, bg_color);
+
+            // Inactive tabs get a 1px border; the active tab is emphasized by
+            // the accent stripe instead.
+            if !is_active {
+                painter.rect_stroke(
+                    rect,
+                    tab_radius,
+                    egui::Stroke::new(1.0, p().border),
+                    egui::StrokeKind::Inside,
+                );
+            }
 
             // Accent stripe on the left for active tab
             if is_active {
@@ -244,7 +258,7 @@ impl SidebarView {
                     rect.left_top(),
                     egui::Pos2::new(rect.left() + 3.0, rect.bottom()),
                 );
-                painter.rect_filled(stripe_rect, 0.0, ACCENT_COLOR);
+                painter.rect_filled(stripe_rect, 0.0, p().primary);
             }
 
             if is_editing {
@@ -253,12 +267,26 @@ impl SidebarView {
                     egui::Pos2::new(rect.left() + 16.0, rect.center().y - 8.0),
                     egui::Pos2::new(rect.right() - 16.0, rect.center().y + 8.0),
                 );
+
+                // Input background (shadcn `input` token).
+                painter.rect_filled(edit_rect, egui::CornerRadius::same(4), p().input);
+
                 let edit_response = ui.put(
                     edit_rect,
                     egui::TextEdit::singleline(&mut self.edit_buffer)
                         .desired_width(f32::INFINITY)
                         .font(egui::TextStyle::Body)
-                        .text_color_opt(Some(TAB_TEXT_COLOR_ACTIVE)),
+                        .frame(false)
+                        .text_color_opt(Some(p().foreground)),
+                );
+
+                // Border: ring when focused, border otherwise.
+                let border_color = if edit_response.has_focus() { p().ring } else { p().border };
+                ui.painter().rect_stroke(
+                    edit_rect,
+                    egui::CornerRadius::same(4),
+                    egui::Stroke::new(1.0, border_color),
+                    egui::StrokeKind::Inside,
                 );
 
                 // Request focus the first frame we enter edit mode. Skip this on the
@@ -287,7 +315,7 @@ impl SidebarView {
                 }
             } else {
                 // Tab label (static text)
-                let text_color = if is_active { TAB_TEXT_COLOR_ACTIVE } else { TAB_TEXT_COLOR };
+                let text_color = if is_active { p().foreground } else { p().muted_foreground };
                 let label_text = format!("{} ({})", tab.name, tab.pane_count);
                 let label_pos = egui::Pos2::new(rect.left() + 16.0, rect.top() + 6.0);
 
@@ -308,7 +336,7 @@ impl SidebarView {
                     egui::Align2::LEFT_TOP,
                     hint,
                     egui::FontId::proportional(10.0),
-                    egui::Color32::from_rgb(120, 120, 130),
+                    p().muted_foreground,
                 );
 
                 // Status text set via the sidebar API, under the pane count
@@ -319,20 +347,20 @@ impl SidebarView {
                         egui::Align2::LEFT_TOP,
                         status,
                         egui::FontId::proportional(10.0),
-                        ACCENT_COLOR,
+                        p().primary,
                     );
                 }
 
                 // Unread notification badge at the tab's right edge
                 if tab.unread > 0 {
                     let badge_center = egui::Pos2::new(rect.right() - 16.0, rect.top() + 14.0);
-                    painter.circle_filled(badge_center, 8.0, ACCENT_COLOR);
+                    painter.circle_filled(badge_center, 8.0, p().primary);
                     painter.text(
                         badge_center,
                         egui::Align2::CENTER_CENTER,
                         tab.unread.to_string(),
                         egui::FontId::proportional(9.0),
-                        egui::Color32::WHITE,
+                        p().primary_foreground,
                     );
                 }
             }
@@ -349,7 +377,7 @@ impl SidebarView {
                     egui::Pos2::new(rect.left(), rect.bottom() - 3.0),
                     egui::Pos2::new(rect.left() + width, rect.bottom()),
                 );
-                ui.painter().rect_filled(bar_rect, 0.0, ACCENT_COLOR);
+                ui.painter().rect_filled(bar_rect, 0.0, p().primary);
             }
         }
 
