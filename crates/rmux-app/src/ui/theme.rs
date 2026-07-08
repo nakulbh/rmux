@@ -19,10 +19,6 @@ const fn rgb(r: u8, g: u8, b: u8) -> Color32 {
 }
 
 /// Semantic color tokens (Arbor One Dark).
-///
-/// The `Legacy shims` block keeps the old shadcn-era field names alive so
-/// unmigrated modules compile; they alias the new tokens and will be
-/// removed once every UI module uses the canonical names.
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
 pub struct Palette {
@@ -75,24 +71,6 @@ pub struct Palette {
     pub terminal_cursor: Color32,
     /// Terminal selection background. `#3e4451`
     pub terminal_selection_bg: Color32,
-
-    // --- Legacy shims (do NOT use in new code; see docs/UI_REDESIGN.md) ---
-    pub background: Color32,
-    pub foreground: Color32,
-    pub card: Color32,
-    pub card_foreground: Color32,
-    pub popover: Color32,
-    pub popover_foreground: Color32,
-    pub primary: Color32,
-    pub primary_foreground: Color32,
-    pub secondary: Color32,
-    pub secondary_foreground: Color32,
-    pub muted: Color32,
-    pub muted_foreground: Color32,
-    pub destructive: Color32,
-    pub destructive_foreground: Color32,
-    pub input: Color32,
-    pub ring: Color32,
 }
 
 impl Palette {
@@ -134,24 +112,6 @@ impl Palette {
             info: rgb(0x61, 0xaf, 0xef),
             terminal_cursor: rgb(0xeb, 0xdb, 0xb2),
             terminal_selection_bg: rgb(0x3e, 0x44, 0x51),
-
-            // Legacy shims → new tokens
-            background: app_bg,
-            foreground: text_primary,
-            card: panel_bg,
-            card_foreground: text_primary,
-            popover: panel_bg,
-            popover_foreground: text_primary,
-            primary: accent,
-            primary_foreground: accent_fg,
-            secondary: panel_bg,
-            secondary_foreground: text_primary,
-            muted: panel_active_bg,
-            muted_foreground: text_muted,
-            destructive: danger,
-            destructive_foreground: text_primary,
-            input: panel_bg,
-            ring: accent,
         }
     }
 }

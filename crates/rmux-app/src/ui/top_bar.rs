@@ -90,20 +90,23 @@ pub fn show(
                 *sidebar_visible = !*sidebar_visible;
             }
 
-            // Notification bell (right): h=22, px=6, sized to content
+            // Notification bell (right): h=22, px=6, sized to content.
+            // The count is only shown when there are unread notifications.
             let unread = notifications.unread_count();
-            let count_color = if unread > 0 { p.accent } else { p.text_muted };
             let icon_galley = ui.painter().layout_no_wrap(
                 "🔔".to_string(),
                 FontId::proportional(11.0),
                 p.text_muted,
             );
-            let count_galley = ui.painter().layout_no_wrap(
-                format!(" {unread}"),
-                FontId::proportional(11.0),
-                count_color,
-            );
-            let content_width = icon_galley.size().x + count_galley.size().x;
+            let count_galley = (unread > 0).then(|| {
+                ui.painter().layout_no_wrap(
+                    format!(" {unread}"),
+                    FontId::proportional(11.0),
+                    p.accent,
+                )
+            });
+            let content_width =
+                icon_galley.size().x + count_galley.as_ref().map_or(0.0, |g| g.size().x);
             let bell_width = content_width + 2.0 * 6.0;
             let bell_rect = Rect::from_min_size(
                 pos2(rect.right() - 12.0 - bell_width, rect.center().y - 11.0),
@@ -123,12 +126,12 @@ pub fn show(
             );
             let icon_pos =
                 pos2(bell_rect.left() + 6.0, bell_rect.center().y - icon_galley.size().y / 2.0);
-            let count_pos = pos2(
-                icon_pos.x + icon_galley.size().x,
-                bell_rect.center().y - count_galley.size().y / 2.0,
-            );
+            let count_x = icon_pos.x + icon_galley.size().x;
             ui.painter().galley(icon_pos, icon_galley, p.text_muted);
-            ui.painter().galley(count_pos, count_galley, count_color);
+            if let Some(count) = count_galley {
+                let count_pos = pos2(count_x, bell_rect.center().y - count.size().y / 2.0);
+                ui.painter().galley(count_pos, count, p.accent);
+            }
             if bell.clicked() {
                 *notification_panel_visible = !*notification_panel_visible;
             }

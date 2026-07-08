@@ -94,17 +94,20 @@ impl SidebarView {
     /// This should be called from the main `update` loop. It draws the
     /// workspace card list (with per-workspace unread badges) and handles
     /// click events for workspace switching. The notification bell lives in
-    /// the top bar now; `_notification_panel_visible` is kept only so the
-    /// `app.rs` call site stays unchanged.
+    /// the top bar now.
+    ///
+    /// Returns `true` when the footer "+ New Workspace" button was clicked;
+    /// the caller (`app.rs`) routes that through
+    /// `RmuxApp::create_workspace_with_terminal`, the same path as Cmd/Ctrl+N.
+    #[must_use]
     pub fn show(
         &mut self,
         ctx: &egui::Context,
         manager: &mut WorkspaceManager,
         notifications: &NotificationManager,
-        _notification_panel_visible: &mut bool,
-    ) {
+    ) -> bool {
         if !self.visible {
-            return;
+            return false;
         }
 
         egui::SidePanel::left("rmux_sidebar")
@@ -113,18 +116,19 @@ impl SidebarView {
             .max_width(crate::ui::theme::metrics::SIDEBAR_MAX_WIDTH)
             .default_width(crate::ui::theme::metrics::SIDEBAR_DEFAULT_WIDTH)
             .resizable(true)
-            .show(ctx, |ui| {
-                self.render_sidebar(ui, manager, notifications);
-            });
+            .show(ctx, |ui| self.render_sidebar(ui, manager, notifications))
+            .inner
     }
 
     /// Render the sidebar contents: header, card list, and footer.
+    ///
+    /// Returns `true` when the "+ New Workspace" button was clicked.
     fn render_sidebar(
         &mut self,
         ui: &mut egui::Ui,
         manager: &mut WorkspaceManager,
         notifications: &NotificationManager,
-    ) {
+    ) -> bool {
         // Snapshot workspace data so cards can take `&mut manager` for renames.
         let workspaces: Vec<TabData> = manager
             .workspaces()
@@ -149,7 +153,7 @@ impl SidebarView {
                 if cfg!(target_os = "macos") { "\u{2318}B to toggle" } else { "Ctrl+B to toggle" };
             ui.label(egui::RichText::new(toggle_hint).size(10.0).color(p().text_disabled));
             ui.add_space(4.0);
-            render_new_workspace_button(ui);
+            let create_requested = render_new_workspace_button(ui);
             ui.add_space(6.0);
             let (line_rect, _) = ui.allocate_exact_size(
                 egui::Vec2::new(ui.available_width(), 1.0),
@@ -194,7 +198,10 @@ impl SidebarView {
                     manager.switch_to(index);
                 }
             });
-        });
+
+            create_requested
+        })
+        .inner
     }
 
     /// Render a single workspace card.
@@ -419,39 +426,45 @@ fn render_header(ui: &mut egui::Ui, count: usize) {
 
 /// Render the footer `+ New Workspace` button.
 ///
-/// Workspace creation with a live terminal lives on `RmuxApp`
-/// (`create_workspace_with_terminal`, shared with Cmd/Ctrl+N), which the
-/// sidebar cannot reach without changing `show()`'s signature — and calling
-/// `WorkspaceManager::create_workspace` directly would produce a workspace
-/// whose pane never attaches a terminal. Until the action can be routed
-/// through `app.rs`, the button renders disabled and points at the shortcut.
-fn render_new_workspace_button(ui: &mut egui::Ui) {
-    let label_font = egui::FontId::proportional(12.0);
-    let mut job = egui::text::LayoutJob::default();
-    job.append(
-        "+ ",
-        0.0,
-        egui::text::TextFormat {
-            font_id: label_font.clone(),
-            color: p().accent,
-            ..Default::default()
-        },
-    );
-    job.append(
-        "New Workspace",
-        0.0,
-        egui::text::TextFormat {
-            font_id: label_font,
-            color: p().text_primary,
-            ..Default::default()
-        },
+/// Returns `true` when clicked. The click is routed through
+/// `RmuxApp::create_workspace_with_terminal` by `app.rs` — the same path as
+/// the Cmd/Ctrl+N shortcut — so the new workspace gets a live terminal.
+/// Hover lifts the fill to `panel_active_bg` with an `accent` border
+/// (arbor "Add Repository" pattern).
+fn render_new_workspace_button(ui: &mut egui::Ui) -> bool {
+    let size = egui::Vec2::new(ui.available_width(), crate::ui::theme::metrics::BUTTON_HEIGHT);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    if !ui.is_rect_visible(rect) {
+        return false;
+    }
+
+    let hovered = response.hovered();
+    let fill = if hovered { p().panel_active_bg } else { p().panel_bg };
+    let border_color = if hovered { p().accent } else { p().border };
+    let radius = egui::CornerRadius::same(CARD_RADIUS);
+    let painter = ui.painter();
+    painter.rect_filled(rect, radius, fill);
+    painter.rect_stroke(
+        rect,
+        radius,
+        egui::Stroke::new(1.0, border_color),
+        egui::StrokeKind::Inside,
     );
 
-    let button = egui::Button::new(job)
-        .fill(p().panel_bg)
-        .stroke(egui::Stroke::new(1.0, p().border))
-        .corner_radius(egui::CornerRadius::same(CARD_RADIUS))
-        .min_size(egui::Vec2::new(ui.available_width(), crate::ui::theme::metrics::BUTTON_HEIGHT));
-    let shortcut_hint = if cfg!(target_os = "macos") { "use \u{2318}N" } else { "use Ctrl+N" };
-    ui.add_enabled(false, button).on_disabled_hover_text(shortcut_hint);
+    let label_font = egui::FontId::proportional(12.0);
+    let plus = painter.layout_no_wrap("+ ".to_owned(), label_font.clone(), p().accent);
+    let label = painter.layout_no_wrap("New Workspace".to_owned(), label_font, p().text_primary);
+    let total_width = plus.size().x + label.size().x;
+    let plus_pos =
+        egui::Pos2::new(rect.center().x - total_width / 2.0, rect.center().y - plus.size().y / 2.0);
+    let label_pos =
+        egui::Pos2::new(plus_pos.x + plus.size().x, rect.center().y - label.size().y / 2.0);
+    painter.galley(plus_pos, plus, p().accent);
+    painter.galley(label_pos, label, p().text_primary);
+
+    let shortcut_hint = if cfg!(target_os = "macos") { "\u{2318}N" } else { "Ctrl+N" };
+    let response = response
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(format!("New workspace ({shortcut_hint})"));
+    response.clicked()
 }
