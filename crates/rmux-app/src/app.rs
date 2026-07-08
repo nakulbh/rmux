@@ -110,6 +110,17 @@ impl eframe::App for RmuxApp {
         // Request continuous repaints for terminal updates (PTY output, cursor blink)
         ctx.request_repaint_after(std::time::Duration::from_millis(16));
 
+        // Render the top bar and status bar first so they span the full
+        // window width (egui panel order: top/bottom before side panels).
+        crate::ui::top_bar::show(
+            ctx,
+            &self.workspace_manager,
+            &self.notifications,
+            &mut self.sidebar.visible,
+            &mut self.notification_panel.visible,
+        );
+        crate::ui::status_bar::show(ctx, &self.workspace_manager, &self.notifications);
+
         // Render the sidebar (left panel)
         self.sidebar.show(
             ctx,
