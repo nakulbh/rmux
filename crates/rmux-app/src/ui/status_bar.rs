@@ -1,7 +1,8 @@
 //! Bottom status bar: workspace context on the left, counts on the right.
 //!
 //! 26px `chrome_bg` strip with a 1px `chrome_border` hairline along its
-//! top edge (see `docs/UI_REDESIGN.md` §D).
+//! top edge (see `docs/UI_REDESIGN.md` §D). All text 11px `text_muted`,
+//! segments joined with `" • "` — only the unread count may take `accent`.
 
 use egui::{Align2, FontId, Stroke, pos2};
 
@@ -26,41 +27,59 @@ pub fn show(ctx: &egui::Context, manager: &WorkspaceManager, notifications: &Not
 
             // Left: ● workspace • N panes
             let ws = manager.active();
-            let dot_pos = pos2(rect.left() + 8.0, rect.center().y);
-            painter.text(dot_pos, Align2::LEFT_CENTER, "●", FontId::proportional(9.0), p.success);
-            let panes = ws.pane_count();
-            let left_text =
-                format!("{} • {} pane{}", ws.name, panes, if panes == 1 { "" } else { "s" });
-            painter.text(
-                pos2(dot_pos.x + 14.0, rect.center().y),
+            let dot = painter.text(
+                pos2(rect.left() + 8.0, rect.center().y),
                 Align2::LEFT_CENTER,
-                left_text,
+                "●",
+                FontId::proportional(9.0),
+                p.success,
+            );
+            let panes = ws.pane_count();
+            painter.text(
+                pos2(dot.right() + 4.0, rect.center().y),
+                Align2::LEFT_CENTER,
+                format!("{} • {} pane{}", ws.name, panes, if panes == 1 { "" } else { "s" }),
                 font.clone(),
                 p.text_muted,
             );
 
             // Right: M workspaces • K unread • ready
+            // Painted right-to-left; separators stay muted so only the
+            // unread count itself takes the accent color.
             let unread = notifications.unread_count();
-            let right_anchor = pos2(rect.right() - 8.0, rect.center().y);
+            let unread_color = if unread > 0 { p.accent } else { p.text_muted };
             let ready = painter.text(
-                right_anchor,
+                pos2(rect.right() - 8.0, rect.center().y),
                 Align2::RIGHT_CENTER,
                 "ready",
                 font.clone(),
                 p.text_muted,
             );
-            let unread_color = if unread > 0 { p.accent } else { p.text_muted };
-            let unread_galley = painter.text(
-                pos2(ready.left() - 4.0, rect.center().y),
+            let sep2 = painter.text(
+                pos2(ready.left(), rect.center().y),
                 Align2::RIGHT_CENTER,
-                format!("{unread} unread •"),
+                " • ",
+                font.clone(),
+                p.text_muted,
+            );
+            let unread_seg = painter.text(
+                pos2(sep2.left(), rect.center().y),
+                Align2::RIGHT_CENTER,
+                format!("{unread} unread"),
                 font.clone(),
                 unread_color,
             );
-            painter.text(
-                pos2(unread_galley.left() - 4.0, rect.center().y),
+            let sep1 = painter.text(
+                pos2(unread_seg.left(), rect.center().y),
                 Align2::RIGHT_CENTER,
-                format!("{} workspaces •", manager.workspace_count()),
+                " • ",
+                font.clone(),
+                p.text_muted,
+            );
+            painter.text(
+                pos2(sep1.left(), rect.center().y),
+                Align2::RIGHT_CENTER,
+                format!("{} workspaces", manager.workspace_count()),
                 font,
                 p.text_muted,
             );
