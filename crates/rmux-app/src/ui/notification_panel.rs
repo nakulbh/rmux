@@ -1,10 +1,14 @@
 //! Notification panel — toggleable right-side list of notifications.
 //!
-//! Shows notifications newest-first with unread markers and relative
+//! Arbor/cmux-styled (see `docs/UI_REDESIGN.md` §C): `sidebar_bg` panel
+//! with a 1px `border` left edge, dense notification cards on `panel_bg`
+//! with a 2px `accent` stripe for unread rows, and read rows de-emphasized
+//! at 0.85 opacity. Shows notifications newest-first with relative
 //! timestamps. Clicking a row jumps to the workspace/pane that raised
-//! the notification and marks it read. Toggled with Cmd/Ctrl+I or
-//! the bell button in the sidebar.
+//! the notification and marks it read. Toggled with Cmd/Ctrl+I or the
+//! bell button in the top bar.
 
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use crate::notifications::{Notification, NotificationManager};
@@ -44,19 +48,22 @@ impl NotificationPanel {
             return;
         }
 
+        let palette = theme::palette();
         egui::SidePanel::right("rmux_notification_panel")
             .frame(
                 egui::Frame::default()
-                    .fill(theme::palette().background)
-                    .stroke(egui::Stroke::new(1.0, theme::palette().border))
-                    .inner_margin(egui::Margin::same(10)),
+                    .fill(palette.sidebar_bg)
+                    .inner_margin(egui::Margin::same(8)),
             )
             .min_width(240.0)
             .max_width(340.0)
             .default_width(280.0)
             .resizable(true)
+            // 1px `border`-colored line on the panel's left edge (the
+            // separator stroke comes from `widgets.noninteractive.bg_stroke`,
+            // which `Theme::apply` sets to 1px `border`).
+            .show_separator_line(true)
             .show(ctx, |ui| {
-                ui.visuals_mut().panel_fill = theme::palette().background;
                 render_panel(ui, notifications, manager);
             });
     }
@@ -69,52 +76,42 @@ fn render_panel(
     manager: &mut WorkspaceManager,
 ) {
     let palette = theme::palette();
-    ui.add_space(10.0);
-    ui.heading(
-        egui::RichText::new(format!("Notifications ({} unread)", notifications.unread_count()))
-            .size(14.0)
-            .color(palette.foreground),
-    );
-    ui.add_space(6.0);
+
+    // Header: "Notifications" 12px strong + right-aligned unread count pill.
     ui.horizontal(|ui| {
-        if ui
-            .add(
-                egui::Button::new(egui::RichText::new("Mark all read").size(12.0))
-                    .fill(palette.secondary)
-                    .stroke(egui::Stroke::new(1.0, palette.border))
-                    .corner_radius(egui::CornerRadius::same(6))
-                    .small(),
-            )
-            .clicked()
-        {
+        ui.label(
+            egui::RichText::new("Notifications").size(12.0).strong().color(palette.text_primary),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            count_pill(ui, &palette, notifications.unread_count());
+        });
+    });
+    ui.add_space(4.0);
+
+    // Action row.
+    ui.horizontal(|ui| {
+        if action_button(ui, &palette, "Mark all read").clicked() {
             notifications.mark_all_read();
         }
-        if ui
-            .add(
-                egui::Button::new(egui::RichText::new("Clear").size(12.0))
-                    .fill(palette.secondary)
-                    .stroke(egui::Stroke::new(1.0, palette.border))
-                    .corner_radius(egui::CornerRadius::same(6))
-                    .small(),
-            )
-            .clicked()
-        {
+        if action_button(ui, &palette, "Clear").clicked() {
             notifications.clear();
         }
     });
     ui.add_space(6.0);
-    ui.separator();
+    hline(ui, palette.border);
+    ui.add_space(6.0);
+
+    if notifications.list().is_empty() {
+        render_empty_state(ui, &palette);
+        return;
+    }
 
     // Row clicks are collected and applied after the loop so the list
     // is not mutated while it is being iterated.
     let mut clicked: Option<(u64, Option<u64>, Option<u64>)> = None;
 
     egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
-        if notifications.list().is_empty() {
-            ui.add_space(8.0);
-            ui.label(egui::RichText::new("No notifications").color(palette.muted_foreground));
-            return;
-        }
+        ui.spacing_mut().item_spacing.y = 2.0;
         for notification in notifications.list().iter().rev() {
             if render_row(ui, notification).clicked() {
                 clicked = Some((notification.id, notification.workspace_id, notification.pane_id));
@@ -128,47 +125,165 @@ fn render_panel(
     }
 }
 
-/// Render one notification row; returns its click response.
+/// Render one notification card; returns its click response.
+///
+/// Unread cards get a 2px `accent` stripe inside the left border and a
+/// `text_primary` title; read cards drop the stripe, use a `text_muted`
+/// title, and are painted at 0.85 opacity.
 fn render_row(ui: &mut egui::Ui, notification: &Notification) -> egui::Response {
     let palette = theme::palette();
-    let row_height = if notification.body.is_some() { 64.0 } else { 46.0 };
+    let title_font = egui::FontId::new(12.0, egui::FontFamily::Proportional);
+    let time_font = egui::FontId::new(10.0, egui::FontFamily::Proportional);
+    let body_font = egui::FontId::new(10.5, egui::FontFamily::Proportional);
+
+    // Padding 8px h / 6px v; line 1 (title + time), 2px gap, line 2 (body).
+    let title_height = ui.fonts(|f| f.row_height(&title_font));
+    let body_height = ui.fonts(|f| f.row_height(&body_font));
+    let row_height = 6.0
+        + title_height
+        + if notification.body.is_some() { 2.0 + body_height } else { 0.0 }
+        + 6.0;
+
     let (rect, response) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), row_height), egui::Sense::click());
+    if !ui.is_rect_visible(rect) {
+        return response;
+    }
 
-    if ui.is_rect_visible(rect) {
-        let fill = if response.hovered() { palette.accent } else { palette.card };
-        ui.painter().rect_filled(rect.shrink(1.0), egui::CornerRadius::same(8), fill);
-        ui.painter().rect_stroke(
-            rect.shrink(1.0),
-            egui::CornerRadius::same(8),
-            egui::Stroke::new(1.0, palette.border),
-            egui::StrokeKind::Inside,
+    // Read rows: whole card de-emphasized at 0.85 opacity.
+    let alpha = if notification.read { 0.85 } else { 1.0 };
+    let fill = if response.hovered() { palette.panel_active_bg } else { palette.panel_bg };
+    let title_color = if notification.read { palette.text_muted } else { palette.text_primary };
+
+    let painter = ui.painter();
+    painter.rect_filled(rect, egui::CornerRadius::same(2), fill.gamma_multiply(alpha));
+    painter.rect_stroke(
+        rect,
+        egui::CornerRadius::same(2),
+        egui::Stroke::new(1.0, palette.border.gamma_multiply(alpha)),
+        egui::StrokeKind::Inside,
+    );
+    if !notification.read {
+        // 2px accent stripe hugging the card's left edge, inside the border.
+        let stripe = egui::Rect::from_min_max(
+            egui::pos2(rect.left() + 1.0, rect.top() + 1.0),
+            egui::pos2(rect.left() + 3.0, rect.bottom() - 1.0),
+        );
+        painter.rect_filled(stripe, egui::CornerRadius::ZERO, palette.accent);
+    }
+
+    let content = rect.shrink2(egui::vec2(8.0, 6.0));
+
+    // Line 1: title 12px (ellipsized) + right-aligned relative time 10px.
+    let time_color = palette.text_disabled.gamma_multiply(alpha);
+    let time_galley =
+        painter.layout_no_wrap(relative_time(notification.timestamp), time_font, time_color);
+    let title_max_width = (content.width() - time_galley.size().x - 8.0).max(0.0);
+    let title_galley = singleline_galley(
+        ui,
+        &notification.title,
+        title_font,
+        title_color.gamma_multiply(alpha),
+        title_max_width,
+    );
+    let time_pos = egui::pos2(
+        content.right() - time_galley.size().x,
+        content.top() + (title_height - time_galley.size().y) / 2.0,
+    );
+    painter.galley(content.left_top(), title_galley, title_color.gamma_multiply(alpha));
+    painter.galley(time_pos, time_galley, time_color);
+
+    // Line 2: body 10.5px, single line ellipsized.
+    if let Some(body) = &notification.body {
+        let body_color = palette.text_muted.gamma_multiply(alpha);
+        let body_galley = singleline_galley(ui, body, body_font, body_color, content.width());
+        painter.galley(
+            egui::pos2(content.left(), content.top() + title_height + 2.0),
+            body_galley,
+            body_color,
         );
     }
 
-    let mut row_ui = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(rect.shrink2(egui::vec2(10.0, 8.0)))
-            .layout(egui::Layout::top_down(egui::Align::Min)),
-    );
-    row_ui.horizontal(|ui| {
-        if !notification.read {
-            ui.label(egui::RichText::new("\u{25cf}").color(palette.primary).size(10.0));
-        }
-        ui.label(egui::RichText::new(&notification.title).size(12.5).color(palette.foreground));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(
-                egui::RichText::new(relative_time(notification.timestamp))
-                    .size(10.0)
-                    .color(palette.muted_foreground),
-            );
-        });
-    });
-    if let Some(body) = &notification.body {
-        row_ui.label(egui::RichText::new(body).size(11.0).color(palette.muted_foreground));
-    }
-    ui.add_space(4.0);
     response
+}
+
+/// Centered empty state: "No notifications" + toggle hint below.
+fn render_empty_state(ui: &mut egui::Ui, palette: &theme::Palette) {
+    let offset = ((ui.available_height() - 40.0) / 2.0).max(8.0);
+    ui.add_space(offset);
+    ui.vertical_centered(|ui| {
+        ui.label(egui::RichText::new("No notifications").size(12.0).color(palette.text_muted));
+        ui.add_space(2.0);
+        ui.label(egui::RichText::new("⌘I to toggle").size(10.0).color(palette.text_disabled));
+    });
+}
+
+/// Header action button: h=22, radius 2, `panel_bg` + 1px `border`,
+/// `panel_active_bg` on hover, 11px label.
+fn action_button(ui: &mut egui::Ui, palette: &theme::Palette, label: &str) -> egui::Response {
+    let galley = ui.painter().layout_no_wrap(
+        label.to_owned(),
+        egui::FontId::new(11.0, egui::FontFamily::Proportional),
+        palette.text_primary,
+    );
+    let size = egui::vec2(galley.size().x + 16.0, 22.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let fill = if response.hovered() { palette.panel_active_bg } else { palette.panel_bg };
+        let painter = ui.painter();
+        painter.rect_filled(rect, egui::CornerRadius::same(2), fill);
+        painter.rect_stroke(
+            rect,
+            egui::CornerRadius::same(2),
+            egui::Stroke::new(1.0, palette.border),
+            egui::StrokeKind::Inside,
+        );
+        painter.galley(rect.center() - galley.size() / 2.0, galley, palette.text_primary);
+    }
+    response
+}
+
+/// Count pill (sidebar spec): `panel_bg` fill, 1px `border`, fully
+/// rounded, h=14, min-w 14, 9px mono text.
+fn count_pill(ui: &mut egui::Ui, palette: &theme::Palette, count: usize) {
+    let galley = ui.painter().layout_no_wrap(
+        count.to_string(),
+        egui::FontId::new(9.0, egui::FontFamily::Monospace),
+        palette.text_muted,
+    );
+    let size = egui::vec2((galley.size().x + 8.0).max(14.0), 14.0);
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        painter.rect_filled(rect, egui::CornerRadius::same(7), palette.panel_bg);
+        painter.rect_stroke(
+            rect,
+            egui::CornerRadius::same(7),
+            egui::Stroke::new(1.0, palette.border),
+            egui::StrokeKind::Inside,
+        );
+        painter.galley(rect.center() - galley.size() / 2.0, galley, palette.text_muted);
+    }
+}
+
+/// Full-width 1px horizontal separator line.
+fn hline(ui: &mut egui::Ui, color: egui::Color32) {
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), egui::Sense::hover());
+    ui.painter().hline(rect.x_range(), rect.center().y, egui::Stroke::new(1.0, color));
+}
+
+/// Lay out `text` on a single line, ellipsized with `…` at `max_width`.
+fn singleline_galley(
+    ui: &egui::Ui,
+    text: &str,
+    font: egui::FontId,
+    color: egui::Color32,
+    max_width: f32,
+) -> Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::simple_singleline(text.to_owned(), font, color);
+    job.wrap = egui::text::TextWrapping::truncate_at_width(max_width);
+    ui.fonts(|f| f.layout_job(job))
 }
 
 /// Jump to the pane (preferred) or workspace a notification points at.
