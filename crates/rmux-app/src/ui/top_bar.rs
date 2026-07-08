@@ -3,7 +3,7 @@
 //! 34px `chrome_bg` strip with a 1px `chrome_border` hairline along its
 //! bottom edge (see `docs/UI_REDESIGN.md` §D).
 
-use egui::{Align2, CornerRadius, FontId, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
+use egui::{CornerRadius, CursorIcon, FontId, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 
 use crate::notifications::NotificationManager;
 use crate::ui::theme::{self, metrics};
@@ -29,27 +29,49 @@ pub fn show(
         .show_separator_line(false)
         .show(ctx, |ui| {
             let rect = ui.max_rect();
-            let painter = ui.painter();
 
             // Bottom hairline
-            painter.hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, p.chrome_border));
+            ui.painter().hline(
+                rect.x_range(),
+                rect.bottom() - 0.5,
+                Stroke::new(1.0, p.chrome_border),
+            );
 
-            // Centered workspace title
+            // Center: workspace name (14px strong) + optional pane-count
+            // suffix (11px muted), measured and centered as one unit.
             let ws = manager.active();
-            painter.text(
-                rect.center(),
-                Align2::CENTER_CENTER,
-                &ws.name,
+            let name_galley = ui.painter().layout_no_wrap(
+                ws.name.clone(),
                 FontId::proportional(14.0),
                 p.text_primary,
             );
+            let panes = ws.pane_count();
+            let suffix_galley = (panes > 1).then(|| {
+                ui.painter().layout_no_wrap(
+                    format!(" · {panes} panes"),
+                    FontId::proportional(11.0),
+                    p.text_muted,
+                )
+            });
+            let total_width =
+                name_galley.size().x + suffix_galley.as_ref().map_or(0.0, |g| g.size().x);
+            let mut cursor_x = rect.center().x - total_width / 2.0;
+            let name_pos = pos2(cursor_x, rect.center().y - name_galley.size().y / 2.0);
+            cursor_x += name_galley.size().x;
+            ui.painter().galley(name_pos, name_galley, p.text_primary);
+            if let Some(suffix) = suffix_galley {
+                let suffix_pos = pos2(cursor_x, rect.center().y - suffix.size().y / 2.0);
+                ui.painter().galley(suffix_pos, suffix, p.text_muted);
+            }
 
-            // Sidebar toggle (left)
+            // Sidebar toggle (left): 20×20, radius 2, no fill
             let toggle_rect = Rect::from_center_size(
                 pos2(rect.left() + left_offset() + 10.0, rect.center().y),
                 vec2(20.0, 20.0),
             );
-            let toggle = ui.interact(toggle_rect, ui.id().with("sidebar_toggle"), Sense::click());
+            let toggle = ui
+                .interact(toggle_rect, ui.id().with("sidebar_toggle"), Sense::click())
+                .on_hover_cursor(CursorIcon::PointingHand);
             let icon_color = if !*sidebar_visible {
                 p.accent
             } else if toggle.hovered() {
@@ -59,7 +81,7 @@ pub fn show(
             };
             ui.painter().text(
                 toggle_rect.center(),
-                Align2::CENTER_CENTER,
+                egui::Align2::CENTER_CENTER,
                 "☰",
                 FontId::proportional(12.0),
                 icon_color,
@@ -68,14 +90,29 @@ pub fn show(
                 *sidebar_visible = !*sidebar_visible;
             }
 
-            // Notification bell (right)
+            // Notification bell (right): h=22, px=6, sized to content
             let unread = notifications.unread_count();
-            let label = if unread > 0 { format!("🔔 {unread}") } else { "🔔".to_string() };
-            let bell_rect = Rect::from_min_size(
-                pos2(rect.right() - 12.0 - 44.0, rect.center().y - 11.0),
-                vec2(44.0, 22.0),
+            let count_color = if unread > 0 { p.accent } else { p.text_muted };
+            let icon_galley = ui.painter().layout_no_wrap(
+                "🔔".to_string(),
+                FontId::proportional(11.0),
+                p.text_muted,
             );
-            let bell = ui.interact(bell_rect, ui.id().with("notification_bell"), Sense::click());
+            let count_galley = ui.painter().layout_no_wrap(
+                format!(" {unread}"),
+                FontId::proportional(11.0),
+                count_color,
+            );
+            let content_width = icon_galley.size().x + count_galley.size().x;
+            let bell_width = content_width + 2.0 * 6.0;
+            let bell_rect = Rect::from_min_size(
+                pos2(rect.right() - 12.0 - bell_width, rect.center().y - 11.0),
+                vec2(bell_width, 22.0),
+            );
+            let bell = ui
+                .interact(bell_rect, ui.id().with("notification_bell"), Sense::click())
+                .on_hover_cursor(CursorIcon::PointingHand)
+                .on_hover_text("Notifications (⌘I)");
             let fill = if bell.hovered() { p.panel_bg } else { p.chrome_bg };
             ui.painter().rect_filled(bell_rect, CornerRadius::same(2), fill);
             ui.painter().rect_stroke(
@@ -84,14 +121,14 @@ pub fn show(
                 Stroke::new(1.0, p.border),
                 StrokeKind::Inside,
             );
-            let bell_color = if unread > 0 { p.accent } else { p.text_muted };
-            ui.painter().text(
-                bell_rect.center(),
-                Align2::CENTER_CENTER,
-                label,
-                FontId::proportional(11.0),
-                bell_color,
+            let icon_pos =
+                pos2(bell_rect.left() + 6.0, bell_rect.center().y - icon_galley.size().y / 2.0);
+            let count_pos = pos2(
+                icon_pos.x + icon_galley.size().x,
+                bell_rect.center().y - count_galley.size().y / 2.0,
             );
+            ui.painter().galley(icon_pos, icon_galley, p.text_muted);
+            ui.painter().galley(count_pos, count_galley, count_color);
             if bell.clicked() {
                 *notification_panel_visible = !*notification_panel_visible;
             }
