@@ -249,15 +249,15 @@ impl TerminalPane {
             self.highlight_matches(ui, rect, &snapshot);
         }
 
-        // Show pane border when focused
+        // Show pane border when focused: 1px accent hairline inside the edge
         if self.has_focus {
             let palette = theme::palette();
             let painter = ui.painter();
             painter.rect_stroke(
                 rect,
                 egui::CornerRadius::ZERO,
-                egui::Stroke::new(2.0, palette.ring.gamma_multiply(0.75)),
-                egui::StrokeKind::Middle,
+                egui::Stroke::new(1.0, palette.accent),
+                egui::StrokeKind::Inside,
             );
         }
 
@@ -272,8 +272,8 @@ impl TerminalPane {
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
                 format!("Process exited (code: {:?})", self.backend.try_wait()),
-                egui::FontId::monospace(18.0),
-                theme::palette().destructive,
+                egui::FontId::monospace(13.0),
+                theme::palette().danger,
             );
         }
     }
@@ -634,8 +634,8 @@ impl TerminalPane {
         let painter = ui.painter();
 
         let palette = theme::palette();
-        let match_bg = palette.primary.gamma_multiply(0.22);
-        let active_bg = palette.primary.gamma_multiply(0.42);
+        let match_bg = palette.warning.gamma_multiply(0.35);
+        let active_bg = palette.accent.gamma_multiply(0.45);
 
         for (i, &(row, col)) in self.find_results.iter().enumerate() {
             if row >= snapshot.rows as usize || col >= snapshot.cols as usize {
@@ -663,6 +663,10 @@ impl TerminalPane {
     }
 
     /// Render the find bar at the bottom of the terminal pane.
+    ///
+    /// A 28px chrome strip: `chrome_bg` fill with a 1px `chrome_border`
+    /// top hairline, a mono-12 input on `panel_bg` (border turns `accent`
+    /// while focused), a mono-10 match counter, and 20x20 nav/close buttons.
     fn show_find_bar(&mut self, ui: &mut egui::Ui, x: f32, y: f32) {
         let available_width = ui.available_width();
 
@@ -680,29 +684,44 @@ impl TerminalPane {
 
         let palette = theme::palette();
 
-        // Background
-        bar_ui.painter().rect_filled(bar_rect, 0.0, palette.card);
-        bar_ui.painter().rect_stroke(
-            bar_rect,
-            egui::CornerRadius::ZERO,
-            egui::Stroke::new(1.0, palette.border),
-            egui::StrokeKind::Inside,
+        // Background: chrome strip with a 1px top hairline
+        bar_ui.painter().rect_filled(bar_rect, 0.0, palette.chrome_bg);
+        bar_ui.painter().rect_filled(
+            egui::Rect::from_min_size(bar_rect.left_top(), egui::Vec2::new(bar_rect.width(), 1.0)),
+            0.0,
+            palette.chrome_border,
         );
 
         // Spacing
         bar_ui.add_space(8.0);
 
-        // Query text input
-        let text_response = bar_ui.add(
+        // Query text input: panel_bg fill, 1px border (accent when focused)
+        let input_rect = egui::Rect::from_min_size(
+            egui::Pos2::new(bar_ui.cursor().min.x, bar_rect.center().y - 10.0),
+            egui::Vec2::new(200.0, 20.0),
+        );
+        bar_ui.painter().rect_filled(input_rect, egui::CornerRadius::same(2), palette.panel_bg);
+        let text_response = bar_ui.put(
+            input_rect.shrink2(egui::Vec2::new(6.0, 1.0)),
             egui::TextEdit::singleline(&mut self.find_query)
                 .hint_text("Find...")
-                .font(egui::FontId::monospace(13.0))
-                .desired_width(200.0),
+                .font(egui::FontId::monospace(12.0))
+                .vertical_align(egui::Align::Center)
+                .frame(false),
+        );
+        let input_border = if text_response.has_focus() { palette.accent } else { palette.border };
+        bar_ui.painter().rect_stroke(
+            input_rect,
+            egui::CornerRadius::same(2),
+            egui::Stroke::new(1.0, input_border),
+            egui::StrokeKind::Inside,
         );
 
         if text_response.changed() {
             self.perform_find();
         }
+
+        bar_ui.add_space(8.0);
 
         // Match count label
         let count_text = if self.find_results.is_empty() && !self.find_query.is_empty() {
@@ -716,22 +735,28 @@ impl TerminalPane {
         if !count_text.is_empty() {
             bar_ui.label(
                 egui::RichText::new(count_text)
-                    .font(egui::FontId::monospace(12.0))
-                    .color(palette.muted_foreground),
+                    .font(egui::FontId::monospace(10.0))
+                    .color(palette.text_muted),
             );
         }
 
         bar_ui.add_space(8.0);
 
-        // Previous match button
-        let button = |label: &str| {
-            egui::Button::new(egui::RichText::new(label).color(palette.foreground).size(12.0))
-                .fill(palette.secondary)
+        // Nav/close buttons: 20x20, panel_bg + 1px border, hover panel_active_bg
+        // (hover fill comes from the theme's widget visuals).
+        let button = |bar_ui: &mut egui::Ui, label: &str| {
+            bar_ui.add_sized(
+                [20.0, 20.0],
+                egui::Button::new(
+                    egui::RichText::new(label).color(palette.text_primary).size(12.0),
+                )
                 .stroke(egui::Stroke::new(1.0, palette.border))
-                .corner_radius(egui::CornerRadius::same(6))
-                .small()
+                .corner_radius(egui::CornerRadius::same(2)),
+            )
         };
-        if bar_ui.add(button("<")).clicked() && !self.find_results.is_empty() {
+
+        // Previous match button
+        if button(&mut bar_ui, "\u{2039}").clicked() && !self.find_results.is_empty() {
             if self.find_index == 0 {
                 self.find_index = self.find_results.len() - 1;
             } else {
@@ -740,14 +765,14 @@ impl TerminalPane {
         }
 
         // Next match button
-        if bar_ui.add(button(">")).clicked() {
+        if button(&mut bar_ui, "\u{203a}").clicked() {
             self.find_next_match();
         }
 
         bar_ui.add_space(8.0);
 
         // Close button
-        if bar_ui.add(button("x")).clicked() {
+        if button(&mut bar_ui, "\u{2715}").clicked() {
             self.find_visible = false;
             self.find_query.clear();
             self.find_results.clear();

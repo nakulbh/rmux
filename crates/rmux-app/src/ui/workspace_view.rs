@@ -32,7 +32,7 @@ pub fn render_pane_tree(
 
     // Fill background
     let palette = theme::palette();
-    ui.painter().rect_filled(available, 0.0, palette.background);
+    ui.painter().rect_filled(available, 0.0, palette.app_bg);
 
     // If a pane is zoomed, render only that pane
     if let Some(zoom_id) = zoomed_pane
@@ -40,17 +40,17 @@ pub fn render_pane_tree(
     {
         render_leaf(ui, zoom_id, terminal, available, zoom_id == *active_pane, active_pane);
 
-        // Zoom indicator label in top-right corner
+        // Zoom indicator: chrome pill in the top-right corner
         let label_rect = Rect::from_min_size(
             available.right_top() - Vec2::new(220.0, -2.0),
             Vec2::new(216.0, 18.0),
         );
         let modifier = if cfg!(target_os = "macos") { "Cmd" } else { "Ctrl" };
-        ui.painter().rect_filled(label_rect, egui::CornerRadius::same(6), palette.card);
+        ui.painter().rect_filled(label_rect, egui::CornerRadius::same(6), palette.chrome_bg);
         ui.painter().rect_stroke(
             label_rect,
             egui::CornerRadius::same(6),
-            egui::Stroke::new(1.0, palette.border),
+            egui::Stroke::new(1.0, palette.chrome_border),
             egui::StrokeKind::Inside,
         );
         ui.painter().text(
@@ -58,7 +58,7 @@ pub fn render_pane_tree(
             egui::Align2::LEFT_CENTER,
             format!("Zoom: {modifier}+Shift+Enter to restore"),
             egui::FontId::proportional(10.0),
-            palette.muted_foreground,
+            palette.text_muted,
         );
         return;
     }
@@ -104,7 +104,7 @@ fn render_leaf(
         // Show a loading placeholder if terminal hasn't been spawned yet
         let painter = child_ui.painter();
         let palette = theme::palette();
-        painter.rect_filled(rect, 0.0, palette.card);
+        painter.rect_filled(rect, 0.0, palette.panel_bg);
         painter.rect_stroke(
             rect.shrink(0.5),
             egui::CornerRadius::ZERO,
@@ -114,14 +114,17 @@ fn render_leaf(
         painter.text(
             rect.center(),
             egui::Align2::CENTER_CENTER,
-            "Spawning terminal...",
-            egui::FontId::monospace(14.0),
-            palette.muted_foreground,
+            "Spawning terminal…",
+            egui::FontId::monospace(12.0),
+            palette.text_muted,
         );
     }
 }
 
 /// Render a split node by dividing the rect among children.
+///
+/// A 1px hairline in the `border` color is drawn inside each gap between
+/// adjacent children (Arbor's visible split divider).
 fn render_split(
     ui: &mut egui::Ui,
     direction: &SplitDirection,
@@ -136,6 +139,7 @@ fn render_split(
     let total_borders = SPLIT_BORDER * (num_children.saturating_sub(1)) as f32;
     let usable_space = available_dimension - total_borders;
 
+    let divider_color = theme::palette().border;
     let mut offset = 0.0f32;
 
     for (i, child) in children.iter_mut().enumerate() {
@@ -155,6 +159,22 @@ fn render_split(
         };
 
         render_node(ui, child, child_rect, active_pane);
+
+        // Draw the 1px divider hairline in the gap after this child
+        if i + 1 < num_children {
+            let divider_rect = if is_horizontal {
+                Rect::from_min_size(
+                    rect.left_top() + Vec2::new(offset + child_size, 0.0),
+                    Vec2::new(SPLIT_BORDER, rect.height()),
+                )
+            } else {
+                Rect::from_min_size(
+                    rect.left_top() + Vec2::new(0.0, offset + child_size),
+                    Vec2::new(rect.width(), SPLIT_BORDER),
+                )
+            };
+            ui.painter().rect_filled(divider_rect, 0.0, divider_color);
+        }
 
         offset += child_size + SPLIT_BORDER;
     }

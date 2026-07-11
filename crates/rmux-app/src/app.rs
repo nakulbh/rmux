@@ -110,13 +110,26 @@ impl eframe::App for RmuxApp {
         // Request continuous repaints for terminal updates (PTY output, cursor blink)
         ctx.request_repaint_after(std::time::Duration::from_millis(16));
 
-        // Render the sidebar (left panel)
-        self.sidebar.show(
+        // Render the top bar and status bar first so they span the full
+        // window width (egui panel order: top/bottom before side panels).
+        crate::ui::top_bar::show(
             ctx,
-            &mut self.workspace_manager,
+            &self.workspace_manager,
             &self.notifications,
+            &mut self.sidebar.visible,
             &mut self.notification_panel.visible,
         );
+        crate::ui::status_bar::show(ctx, &self.workspace_manager, &self.notifications);
+
+        // Render the sidebar (left panel); route its "+ New Workspace"
+        // button through the same path as Cmd/Ctrl+N.
+        let create_requested =
+            self.sidebar.show(ctx, &mut self.workspace_manager, &self.notifications);
+        if create_requested {
+            let count = self.workspace_manager.workspace_count() + 1;
+            let ws = self.create_workspace_with_terminal(format!("Workspace {count}"));
+            tracing::info!(workspace_id = ws, "Created workspace via sidebar button");
+        }
 
         // Render the notification panel (right panel, before the central panel)
         self.notification_panel.show(ctx, &mut self.notifications, &mut self.workspace_manager);

@@ -7,6 +7,22 @@ use crate::state::GridSnapshot;
 use alacritty_terminal::vte::ansi::CursorShape;
 use egui::{Color32, Pos2, Rect, Ui, Vec2};
 
+/// Arbor terminal cursor color `#ebdbb2` (see `docs/UI_REDESIGN.md`).
+///
+/// Kept as literal channel values (not a theme token) so the renderer
+/// stays decoupled from the app's theme module.
+const CURSOR_RGB: (u8, u8, u8) = (0xeb, 0xdb, 0xb2);
+/// Cursor alpha for block/hollow shapes (glyph underneath stays readable).
+const CURSOR_BLOCK_ALPHA: u8 = 128;
+/// Cursor alpha for the thin underline/beam shapes (near-opaque).
+const CURSOR_LINE_ALPHA: u8 = 200;
+
+/// The cursor overlay color at the given alpha.
+fn cursor_color(alpha: u8) -> Color32 {
+    let (r, g, b) = CURSOR_RGB;
+    Color32::from_rgba_unmultiplied(r, g, b, alpha)
+}
+
 /// Renders terminal grid cells as egui paint commands.
 ///
 /// Handles background rectangles, foreground glyphs, and cursor overlay.
@@ -72,9 +88,9 @@ impl TerminalRenderer {
 
                 // Draw cursor overlay
                 if cell.is_cursor && cursor_visible {
-                    let cursor_color = match snapshot.cursor_shape {
+                    let overlay_color = match snapshot.cursor_shape {
                         CursorShape::Block | CursorShape::HollowBlock => {
-                            Color32::from_rgba_premultiplied(255, 255, 255, 128)
+                            cursor_color(CURSOR_BLOCK_ALPHA)
                         }
                         CursorShape::Underline => {
                             // Draw a thin line at the bottom of the cell
@@ -85,7 +101,7 @@ impl TerminalRenderer {
                             painter.rect_filled(
                                 underline_rect,
                                 0.0,
-                                Color32::from_rgba_premultiplied(255, 255, 255, 200),
+                                cursor_color(CURSOR_LINE_ALPHA),
                             );
                             continue;
                         }
@@ -95,16 +111,12 @@ impl TerminalRenderer {
                                 Pos2::new(cell_rect.left(), cell_rect.top()),
                                 Pos2::new(cell_rect.left() + 2.0, cell_rect.bottom()),
                             );
-                            painter.rect_filled(
-                                beam_rect,
-                                0.0,
-                                Color32::from_rgba_premultiplied(255, 255, 255, 200),
-                            );
+                            painter.rect_filled(beam_rect, 0.0, cursor_color(CURSOR_LINE_ALPHA));
                             continue;
                         }
                         CursorShape::Hidden => continue,
                     };
-                    painter.rect_filled(cell_rect, 0.0, cursor_color);
+                    painter.rect_filled(cell_rect, 0.0, overlay_color);
                 }
             }
         }
