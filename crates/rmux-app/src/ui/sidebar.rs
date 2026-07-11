@@ -148,19 +148,19 @@ impl SidebarView {
         // then fills the remaining space with the header and card list.
         ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
             // --- Footer (added bottom-up: hint, button, separator) ---
-            ui.add_space(2.0);
+            ui.add_space(2.0_f32);
             let toggle_hint =
                 if cfg!(target_os = "macos") { "\u{2318}B to toggle" } else { "Ctrl+B to toggle" };
-            ui.label(egui::RichText::new(toggle_hint).size(10.0).color(p().text_disabled));
-            ui.add_space(4.0);
+            ui.label(egui::RichText::new(toggle_hint).size(10.0_f32).color(p().text_disabled));
+            ui.add_space(4.0_f32);
             let create_requested = render_new_workspace_button(ui);
-            ui.add_space(6.0);
+            ui.add_space(6.0_f32);
             let (line_rect, _) = ui.allocate_exact_size(
-                egui::Vec2::new(ui.available_width(), 1.0),
+                egui::Vec2::new(ui.available_width(), 1.0_f32),
                 egui::Sense::hover(),
             );
-            ui.painter().hline(line_rect.x_range(), line_rect.center().y, (1.0, p().border));
-            ui.add_space(4.0);
+            ui.painter().hline(line_rect.x_range(), line_rect.center().y, (1.0_f32, p().border));
+            ui.add_space(4.0_f32);
 
             // --- Header + card list (top-down in the remaining space) ---
             ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
@@ -169,7 +169,7 @@ impl SidebarView {
                 let mut clicked_index: Option<usize> = None;
                 egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
                     // 2px gap between cards.
-                    ui.spacing_mut().item_spacing = egui::Vec2::new(0.0, 2.0);
+                    ui.spacing_mut().item_spacing = egui::Vec2::new(0.0_f32, 2.0_f32);
 
                     for (i, tab) in workspaces.iter().enumerate() {
                         let is_active = i == active_index;
@@ -218,7 +218,7 @@ impl SidebarView {
         manager: &mut WorkspaceManager,
     ) -> egui::Response {
         // Taller card when a status segment extends the metadata line.
-        let height = if tab.status.is_some() { 52.0 } else { 42.0 };
+        let height = if tab.status.is_some() { 52.0_f32 } else { 42.0_f32 };
         let desired_size = egui::Vec2::new(ui.available_width(), height);
         let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
 
@@ -228,7 +228,7 @@ impl SidebarView {
 
         let radius = egui::CornerRadius::same(CARD_RADIUS);
         // Inactive rows are de-emphasized at 0.8 opacity (text/border colors).
-        let dim = if is_active { 1.0 } else { INACTIVE_OPACITY };
+        let dim = if is_active { 1.0_f32 } else { INACTIVE_OPACITY };
         // Owned painter clipped to the card so content never bleeds out.
         let painter = ui.painter().with_clip_rect(rect);
 
@@ -239,7 +239,7 @@ impl SidebarView {
 
             let edit_rect = egui::Rect::from_center_size(
                 rect.center(),
-                egui::Vec2::new(rect.width() - 2.0 * CARD_PAD_X, 18.0),
+                egui::Vec2::new(rect.width() - 2.0_f32 * CARD_PAD_X, 18.0_f32),
             );
             let edit_response = ui.put(
                 edit_rect,
@@ -300,15 +300,16 @@ impl SidebarView {
 
             // Unread notification badge: accent-filled circle r=8 at the
             // right edge of line 1, count in 9px mono `accent_fg`.
-            let badge_reserved = if tab.unread > 0 { 20.0 } else { 0.0 };
+            let badge_reserved = if tab.unread > 0 { 20.0_f32 } else { 0.0_f32 };
             if tab.unread > 0 {
-                let badge_center = egui::Pos2::new(content.right() - 8.0, content.top() + 8.0);
-                painter.circle_filled(badge_center, 8.0, p().accent);
+                let badge_center =
+                    egui::Pos2::new(content.right() - 8.0_f32, content.top() + 8.0_f32);
+                painter.circle_filled(badge_center, 8.0_f32, p().accent);
                 painter.text(
                     badge_center,
                     egui::Align2::CENTER_CENTER,
                     tab.unread.to_string(),
-                    egui::FontId::monospace(9.0),
+                    egui::FontId::monospace(9.0_f32),
                     p().accent_fg,
                 );
             }
@@ -317,20 +318,20 @@ impl SidebarView {
             let title_color = p().text_primary.gamma_multiply(dim);
             let mut job = egui::text::LayoutJob::simple_singleline(
                 tab.name.clone(),
-                egui::FontId::proportional(12.5),
+                egui::FontId::proportional(12.5_f32),
                 title_color,
             );
             job.wrap = egui::text::TextWrapping::truncate_at_width(
-                (content.width() - badge_reserved).max(0.0),
+                (content.width() - badge_reserved).max(0.0_f32),
             );
             let galley = ui.fonts(|f| f.layout_job(job));
             painter.galley(content.left_top(), galley, title_color);
 
             // Line 2: mono 10px metadata — "N panes" plus an optional
             // " · status" segment (status in `warning`, cmux "Working" style).
-            let mono = egui::FontId::monospace(10.0);
+            let mono = egui::FontId::monospace(10.0_f32);
             let meta_color = p().text_muted.gamma_multiply(dim);
-            let line2_pos = egui::Pos2::new(content.left(), content.top() + 17.0);
+            let line2_pos = egui::Pos2::new(content.left(), content.top() + 17.0_f32);
             let pane_count = tab.pane_count;
             let panes_text =
                 if pane_count == 1 { "1 pane".to_owned() } else { format!("{pane_count} panes") };
@@ -364,15 +365,16 @@ impl SidebarView {
         if let Some(progress) = tab.progress {
             // Clamp to [0.0, 1.0], treating NaN/infinite as 0.0 so they
             // don't produce degenerate geometry and UI glitches.
-            let clamped = if progress.is_finite() { progress.clamp(0.0, 1.0) } else { 0.0 };
+            let clamped =
+                if progress.is_finite() { progress.clamp(0.0_f32, 1.0_f32) } else { 0.0_f32 };
             let capsule = egui::CornerRadius::same(2);
             let track = egui::Rect::from_min_max(
-                egui::Pos2::new(rect.left() + 1.0, rect.bottom() - 4.0),
-                egui::Pos2::new(rect.right() - 1.0, rect.bottom() - 1.0),
+                egui::Pos2::new(rect.left() + 1.0_f32, rect.bottom() - 4.0_f32),
+                egui::Pos2::new(rect.right() - 1.0_f32, rect.bottom() - 1.0_f32),
             );
             painter.rect_filled(track, capsule, p().border.gamma_multiply(dim));
             let fill_width = track.width() * clamped;
-            if fill_width > 0.0 {
+            if fill_width > 0.0_f32 {
                 let fill_rect = egui::Rect::from_min_size(
                     track.min,
                     egui::Vec2::new(fill_width, track.height()),
@@ -388,8 +390,8 @@ impl SidebarView {
 /// Render the sidebar header row: `"Workspaces"` label with a workspace
 /// count pill on the right (fully rounded, `panel_bg` fill, 1px `border`).
 fn render_header(ui: &mut egui::Ui, count: usize) {
-    let (rect, _) =
-        ui.allocate_exact_size(egui::Vec2::new(ui.available_width(), 32.0), egui::Sense::hover());
+    let (rect, _) = ui
+        .allocate_exact_size(egui::Vec2::new(ui.available_width(), 32.0_f32), egui::Sense::hover());
     if !ui.is_rect_visible(rect) {
         return;
     }
@@ -399,20 +401,20 @@ fn render_header(ui: &mut egui::Ui, count: usize) {
         egui::Pos2::new(rect.left(), rect.center().y),
         egui::Align2::LEFT_CENTER,
         "Workspaces",
-        egui::FontId::proportional(11.0),
+        egui::FontId::proportional(11.0_f32),
         p().text_muted,
     );
 
     // Count pill: h=14, min-w 14, 9px mono text.
     let galley =
-        painter.layout_no_wrap(count.to_string(), egui::FontId::monospace(9.0), p().text_muted);
-    let pill_height = 14.0;
-    let pill_width = (galley.size().x + 10.0).max(pill_height);
+        painter.layout_no_wrap(count.to_string(), egui::FontId::monospace(9.0_f32), p().text_muted);
+    let pill_height = 14.0_f32;
+    let pill_width = (galley.size().x + 10.0_f32).max(pill_height);
     let pill_rect = egui::Rect::from_min_size(
-        egui::Pos2::new(rect.right() - pill_width, rect.center().y - pill_height / 2.0),
+        egui::Pos2::new(rect.right() - pill_width, rect.center().y - pill_height / 2.0_f32),
         egui::Vec2::new(pill_width, pill_height),
     );
-    let pill_radius = egui::CornerRadius::same((pill_height / 2.0) as u8);
+    let pill_radius = egui::CornerRadius::same((pill_height / 2.0_f32) as u8);
     painter.rect_filled(pill_rect, pill_radius, p().panel_bg);
     painter.rect_stroke(
         pill_rect,
@@ -420,7 +422,7 @@ fn render_header(ui: &mut egui::Ui, count: usize) {
         egui::Stroke::new(1.0_f32, p().border),
         egui::StrokeKind::Inside,
     );
-    let text_pos = pill_rect.center() - galley.size() * 0.5;
+    let text_pos = pill_rect.center() - galley.size() * 0.5_f32;
     painter.galley(text_pos, galley, p().text_muted);
 }
 
@@ -451,14 +453,16 @@ fn render_new_workspace_button(ui: &mut egui::Ui) -> bool {
         egui::StrokeKind::Inside,
     );
 
-    let label_font = egui::FontId::proportional(12.0);
+    let label_font = egui::FontId::proportional(12.0_f32);
     let plus = painter.layout_no_wrap("+ ".to_owned(), label_font.clone(), p().accent);
     let label = painter.layout_no_wrap("New Workspace".to_owned(), label_font, p().text_primary);
     let total_width = plus.size().x + label.size().x;
-    let plus_pos =
-        egui::Pos2::new(rect.center().x - total_width / 2.0, rect.center().y - plus.size().y / 2.0);
+    let plus_pos = egui::Pos2::new(
+        rect.center().x - total_width / 2.0_f32,
+        rect.center().y - plus.size().y / 2.0_f32,
+    );
     let label_pos =
-        egui::Pos2::new(plus_pos.x + plus.size().x, rect.center().y - label.size().y / 2.0);
+        egui::Pos2::new(plus_pos.x + plus.size().x, rect.center().y - label.size().y / 2.0_f32);
     painter.galley(plus_pos, plus, p().accent);
     painter.galley(label_pos, label, p().text_primary);
 

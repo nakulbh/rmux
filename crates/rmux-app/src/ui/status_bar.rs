@@ -20,7 +20,7 @@ pub fn show(ctx: &egui::Context, manager: &WorkspaceManager, notifications: &Not
         .show(ctx, |ui| {
             let rect = ui.max_rect();
             let painter = ui.painter();
-            let font = FontId::proportional(11.0);
+            let font = FontId::proportional(11.0_f32);
 
             // Top hairline
             painter.hline(rect.x_range(), rect.top() + 0.5, Stroke::new(1.0_f32, p.chrome_border));
@@ -28,15 +28,15 @@ pub fn show(ctx: &egui::Context, manager: &WorkspaceManager, notifications: &Not
             // Left: ● workspace • N panes
             let ws = manager.active();
             let dot = painter.text(
-                pos2(rect.left() + 8.0, rect.center().y),
+                pos2(rect.left() + 8.0_f32, rect.center().y),
                 Align2::LEFT_CENTER,
                 "●",
-                FontId::proportional(9.0),
+                FontId::proportional(9.0_f32),
                 p.success,
             );
             let panes = ws.pane_count();
             painter.text(
-                pos2(dot.right() + 4.0, rect.center().y),
+                pos2(dot.right() + 4.0_f32, rect.center().y),
                 Align2::LEFT_CENTER,
                 format!("{} • {} pane{}", ws.name, panes, if panes == 1 { "" } else { "s" }),
                 font.clone(),
@@ -49,7 +49,7 @@ pub fn show(ctx: &egui::Context, manager: &WorkspaceManager, notifications: &Not
             let unread = notifications.unread_count();
             let unread_color = if unread > 0 { p.accent } else { p.text_muted };
             let ready = painter.text(
-                pos2(rect.right() - 8.0, rect.center().y),
+                pos2(rect.right() - 8.0_f32, rect.center().y),
                 Align2::RIGHT_CENTER,
                 "ready",
                 font.clone(),

@@ -55,9 +55,9 @@ impl NotificationPanel {
                     .fill(palette.sidebar_bg)
                     .inner_margin(egui::Margin::same(8)),
             )
-            .min_width(240.0)
-            .max_width(340.0)
-            .default_width(280.0)
+            .min_width(240.0_f32)
+            .max_width(340.0_f32)
+            .default_width(280.0_f32)
             .resizable(true)
             // 1px `border`-colored line on the panel's left edge (the
             // separator stroke comes from `widgets.noninteractive.bg_stroke`,
@@ -80,13 +80,16 @@ fn render_panel(
     // Header: "Notifications" 12px strong + right-aligned unread count pill.
     ui.horizontal(|ui| {
         ui.label(
-            egui::RichText::new("Notifications").size(12.0).strong().color(palette.text_primary),
+            egui::RichText::new("Notifications")
+                .size(12.0_f32)
+                .strong()
+                .color(palette.text_primary),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             count_pill(ui, &palette, notifications.unread_count());
         });
     });
-    ui.add_space(4.0);
+    ui.add_space(4.0_f32);
 
     // Action row.
     ui.horizontal(|ui| {
@@ -97,9 +100,9 @@ fn render_panel(
             notifications.clear();
         }
     });
-    ui.add_space(6.0);
+    ui.add_space(6.0_f32);
     hline(ui, palette.border);
-    ui.add_space(6.0);
+    ui.add_space(6.0_f32);
 
     if notifications.list().is_empty() {
         render_empty_state(ui, &palette);
@@ -111,7 +114,7 @@ fn render_panel(
     let mut clicked: Option<(u64, Option<u64>, Option<u64>)> = None;
 
     egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
-        ui.spacing_mut().item_spacing.y = 2.0;
+        ui.spacing_mut().item_spacing.y = 2.0_f32;
         for notification in notifications.list().iter().rev() {
             if render_row(ui, notification).clicked() {
                 clicked = Some((notification.id, notification.workspace_id, notification.pane_id));
@@ -132,17 +135,17 @@ fn render_panel(
 /// title, and are painted at 0.85 opacity.
 fn render_row(ui: &mut egui::Ui, notification: &Notification) -> egui::Response {
     let palette = theme::palette();
-    let title_font = egui::FontId::new(12.0, egui::FontFamily::Proportional);
-    let time_font = egui::FontId::new(10.0, egui::FontFamily::Proportional);
-    let body_font = egui::FontId::new(10.5, egui::FontFamily::Proportional);
+    let title_font = egui::FontId::new(12.0_f32, egui::FontFamily::Proportional);
+    let time_font = egui::FontId::new(10.0_f32, egui::FontFamily::Proportional);
+    let body_font = egui::FontId::new(10.5_f32, egui::FontFamily::Proportional);
 
     // Padding 8px h / 6px v; line 1 (title + time), 2px gap, line 2 (body).
     let title_height = ui.fonts(|f| f.row_height(&title_font));
     let body_height = ui.fonts(|f| f.row_height(&body_font));
-    let row_height = 6.0
+    let row_height = 6.0_f32
         + title_height
-        + if notification.body.is_some() { 2.0 + body_height } else { 0.0 }
-        + 6.0;
+        + if notification.body.is_some() { 2.0_f32 + body_height } else { 0.0_f32 }
+        + 6.0_f32;
 
     let (rect, response) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), row_height), egui::Sense::click());
@@ -151,7 +154,7 @@ fn render_row(ui: &mut egui::Ui, notification: &Notification) -> egui::Response 
     }
 
     // Read rows: whole card de-emphasized at 0.85 opacity.
-    let alpha = if notification.read { 0.85 } else { 1.0 };
+    let alpha = if notification.read { 0.85_f32 } else { 1.0_f32 };
     let fill = if response.hovered() { palette.panel_active_bg } else { palette.panel_bg };
     let title_color = if notification.read { palette.text_muted } else { palette.text_primary };
 
@@ -166,19 +169,19 @@ fn render_row(ui: &mut egui::Ui, notification: &Notification) -> egui::Response 
     if !notification.read {
         // 2px accent stripe hugging the card's left edge, inside the border.
         let stripe = egui::Rect::from_min_max(
-            egui::pos2(rect.left() + 1.0, rect.top() + 1.0),
-            egui::pos2(rect.left() + 3.0, rect.bottom() - 1.0),
+            egui::pos2(rect.left() + 1.0_f32, rect.top() + 1.0_f32),
+            egui::pos2(rect.left() + 3.0_f32, rect.bottom() - 1.0_f32),
         );
         painter.rect_filled(stripe, egui::CornerRadius::ZERO, palette.accent);
     }
 
-    let content = rect.shrink2(egui::vec2(8.0, 6.0));
+    let content = rect.shrink2(egui::vec2(8.0_f32, 6.0_f32));
 
     // Line 1: title 12px (ellipsized) + right-aligned relative time 10px.
     let time_color = palette.text_disabled.gamma_multiply(alpha);
     let time_galley =
         painter.layout_no_wrap(relative_time(notification.timestamp), time_font, time_color);
-    let title_max_width = (content.width() - time_galley.size().x - 8.0).max(0.0);
+    let title_max_width = (content.width() - time_galley.size().x - 8.0_f32).max(0.0);
     let title_galley = singleline_galley(
         ui,
         &notification.title,
@@ -188,7 +191,7 @@ fn render_row(ui: &mut egui::Ui, notification: &Notification) -> egui::Response 
     );
     let time_pos = egui::pos2(
         content.right() - time_galley.size().x,
-        content.top() + (title_height - time_galley.size().y) / 2.0,
+        content.top() + (title_height - time_galley.size().y) / 2.0_f32,
     );
     painter.galley(content.left_top(), title_galley, title_color.gamma_multiply(alpha));
     painter.galley(time_pos, time_galley, time_color);
@@ -198,7 +201,7 @@ fn render_row(ui: &mut egui::Ui, notification: &Notification) -> egui::Response 
         let body_color = palette.text_muted.gamma_multiply(alpha);
         let body_galley = singleline_galley(ui, body, body_font, body_color, content.width());
         painter.galley(
-            egui::pos2(content.left(), content.top() + title_height + 2.0),
+            egui::pos2(content.left(), content.top() + title_height + 2.0_f32),
             body_galley,
             body_color,
         );
@@ -209,12 +212,12 @@ fn render_row(ui: &mut egui::Ui, notification: &Notification) -> egui::Response 
 
 /// Centered empty state: "No notifications" + toggle hint below.
 fn render_empty_state(ui: &mut egui::Ui, palette: &theme::Palette) {
-    let offset = ((ui.available_height() - 40.0) / 2.0).max(8.0);
+    let offset = ((ui.available_height() - 40.0_f32) / 2.0_f32).max(8.0_f32);
     ui.add_space(offset);
     ui.vertical_centered(|ui| {
-        ui.label(egui::RichText::new("No notifications").size(12.0).color(palette.text_muted));
-        ui.add_space(2.0);
-        ui.label(egui::RichText::new("⌘I to toggle").size(10.0).color(palette.text_disabled));
+        ui.label(egui::RichText::new("No notifications").size(12.0_f32).color(palette.text_muted));
+        ui.add_space(2.0_f32);
+        ui.label(egui::RichText::new("⌘I to toggle").size(10.0_f32).color(palette.text_disabled));
     });
 }
 
@@ -223,10 +226,10 @@ fn render_empty_state(ui: &mut egui::Ui, palette: &theme::Palette) {
 fn action_button(ui: &mut egui::Ui, palette: &theme::Palette, label: &str) -> egui::Response {
     let galley = ui.painter().layout_no_wrap(
         label.to_owned(),
-        egui::FontId::new(11.0, egui::FontFamily::Proportional),
+        egui::FontId::new(11.0_f32, egui::FontFamily::Proportional),
         palette.text_primary,
     );
-    let size = egui::vec2(galley.size().x + 16.0, 22.0);
+    let size = egui::vec2(galley.size().x + 16.0_f32, 22.0_f32);
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
     if ui.is_rect_visible(rect) {
         let fill = if response.hovered() { palette.panel_active_bg } else { palette.panel_bg };
@@ -238,7 +241,7 @@ fn action_button(ui: &mut egui::Ui, palette: &theme::Palette, label: &str) -> eg
             egui::Stroke::new(1.0_f32, palette.border),
             egui::StrokeKind::Inside,
         );
-        painter.galley(rect.center() - galley.size() / 2.0, galley, palette.text_primary);
+        painter.galley(rect.center() - galley.size() / 2.0_f32, galley, palette.text_primary);
     }
     response
 }
@@ -248,10 +251,10 @@ fn action_button(ui: &mut egui::Ui, palette: &theme::Palette, label: &str) -> eg
 fn count_pill(ui: &mut egui::Ui, palette: &theme::Palette, count: usize) {
     let galley = ui.painter().layout_no_wrap(
         count.to_string(),
-        egui::FontId::new(9.0, egui::FontFamily::Monospace),
+        egui::FontId::new(9.0_f32, egui::FontFamily::Monospace),
         palette.text_muted,
     );
-    let size = egui::vec2((galley.size().x + 8.0).max(14.0), 14.0);
+    let size = egui::vec2((galley.size().x + 8.0_f32).max(14.0_f32), 14.0_f32);
     let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
@@ -262,14 +265,14 @@ fn count_pill(ui: &mut egui::Ui, palette: &theme::Palette, count: usize) {
             egui::Stroke::new(1.0_f32, palette.border),
             egui::StrokeKind::Inside,
         );
-        painter.galley(rect.center() - galley.size() / 2.0, galley, palette.text_muted);
+        painter.galley(rect.center() - galley.size() / 2.0_f32, galley, palette.text_muted);
     }
 }
 
 /// Full-width 1px horizontal separator line.
 fn hline(ui: &mut egui::Ui, color: egui::Color32) {
     let (rect, _) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), egui::Sense::hover());
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0_f32), egui::Sense::hover());
     ui.painter().hline(rect.x_range(), rect.center().y, egui::Stroke::new(1.0_f32, color));
 }
 

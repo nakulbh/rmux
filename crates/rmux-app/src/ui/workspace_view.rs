@@ -32,7 +32,7 @@ pub fn render_pane_tree(
 
     // Fill background
     let palette = theme::palette();
-    ui.painter().rect_filled(available, 0.0, palette.app_bg);
+    ui.painter().rect_filled(available, 0.0_f32, palette.app_bg);
 
     // If a pane is zoomed, render only that pane
     if let Some(zoom_id) = zoomed_pane {
@@ -44,8 +44,8 @@ pub fn render_pane_tree(
 
         // Zoom indicator: chrome pill in the top-right corner
         let label_rect = Rect::from_min_size(
-            available.right_top() - Vec2::new(220.0, -2.0),
-            Vec2::new(216.0, 18.0),
+            available.right_top() - Vec2::new(220.0_f32, -2.0_f32),
+            Vec2::new(216.0_f32, 18.0_f32),
         );
         let modifier = if cfg!(target_os = "macos") { "Cmd" } else { "Ctrl" };
         ui.painter().rect_filled(label_rect, egui::CornerRadius::same(6), palette.chrome_bg);
@@ -56,10 +56,10 @@ pub fn render_pane_tree(
             egui::StrokeKind::Inside,
         );
         ui.painter().text(
-            label_rect.left_center() + Vec2::new(8.0, 0.0),
+            label_rect.left_center() + Vec2::new(8.0_f32, 0.0_f32),
             egui::Align2::LEFT_CENTER,
             format!("Zoom: {modifier}+Shift+Enter to restore"),
-            egui::FontId::proportional(10.0),
+            egui::FontId::proportional(10.0_f32),
             palette.text_muted,
         );
         return;
@@ -110,9 +110,9 @@ fn render_leaf(
         // Show a loading placeholder if terminal hasn't been spawned yet
         let painter = child_ui.painter();
         let palette = theme::palette();
-        painter.rect_filled(rect, 0.0, palette.panel_bg);
+        painter.rect_filled(rect, 0.0_f32, palette.panel_bg);
         painter.rect_stroke(
-            rect.shrink(0.5),
+            rect.shrink(0.5_f32),
             egui::CornerRadius::ZERO,
             egui::Stroke::new(1.0_f32, palette.border),
             egui::StrokeKind::Inside,
@@ -121,7 +121,7 @@ fn render_leaf(
             rect.center(),
             egui::Align2::CENTER_CENTER,
             "Spawning terminal…",
-            egui::FontId::monospace(12.0),
+            egui::FontId::monospace(12.0_f32),
             palette.text_muted,
         );
     }
@@ -141,43 +141,43 @@ fn render_browser(
         ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::default()));
 
     // Fill background
-    child_ui.painter().rect_filled(rect, 0.0, palette.panel_bg);
+    child_ui.painter().rect_filled(rect, 0.0_f32, palette.panel_bg);
 
     // Focus border
     if is_active {
         child_ui.painter().rect_stroke(
-            rect.shrink(0.5),
+            rect.shrink(0.5_f32),
             egui::CornerRadius::ZERO,
-            egui::Stroke::new(1.5_f32, palette.accent.gamma_multiply(0.75)),
+            egui::Stroke::new(1.5_f32, palette.accent.gamma_multiply(0.75_f32)),
             egui::StrokeKind::Inside,
         );
     }
 
-    let toolbar_h = 32.0;
+    let toolbar_h = 32.0_f32;
     let toolbar_rect = Rect::from_min_size(rect.left_top(), Vec2::new(rect.width(), toolbar_h));
     let webview_rect = Rect::from_min_size(
-        rect.left_top() + Vec2::new(0.0, toolbar_h + SPLIT_BORDER),
+        rect.left_top() + Vec2::new(0.0_f32, toolbar_h + SPLIT_BORDER),
         Vec2::new(rect.width(), rect.height() - toolbar_h - SPLIT_BORDER),
     );
 
     // Toolbar background
-    child_ui.painter().rect_filled(toolbar_rect, 0.0, palette.chrome_bg);
+    child_ui.painter().rect_filled(toolbar_rect, 0.0_f32, palette.chrome_bg);
 
     // Layout toolbar with egui widgets
-    child_ui.allocate_new_ui(egui::UiBuilder::new().max_rect(toolbar_rect.shrink(4.0)), |ui| {
+    child_ui.allocate_new_ui(egui::UiBuilder::new().max_rect(toolbar_rect.shrink(4.0_f32)), |ui| {
         ui.horizontal(|ui| {
             // Back button
             let back_enabled = browser.can_go_back();
-            let back_btn = egui::Button::new(RichText::new("\u{2190}").size(14.0))
-                .min_size(Vec2::new(24.0, 22.0));
+            let back_btn = egui::Button::new(RichText::new("\u{2190}").size(14.0_f32))
+                .min_size(Vec2::new(24.0_f32, 22.0_f32));
             if ui.add_enabled(back_enabled, back_btn).clicked() {
                 let _ = browser.go_back();
             }
 
             // Forward button
             let fwd_enabled = browser.can_go_forward();
-            let fwd_btn = egui::Button::new(RichText::new("\u{2192}").size(14.0))
-                .min_size(Vec2::new(24.0, 22.0));
+            let fwd_btn = egui::Button::new(RichText::new("\u{2192}").size(14.0_f32))
+                .min_size(Vec2::new(24.0_f32, 22.0_f32));
             if ui.add_enabled(fwd_enabled, fwd_btn).clicked() {
                 let _ = browser.go_forward();
             }
@@ -185,8 +185,8 @@ fn render_browser(
             // Reload button
             if ui
                 .add(
-                    egui::Button::new(RichText::new("\u{21BB}").size(14.0))
-                        .min_size(Vec2::new(24.0, 22.0)),
+                    egui::Button::new(RichText::new("\u{21BB}").size(14.0_f32))
+                        .min_size(Vec2::new(24.0_f32, 22.0_f32)),
                 )
                 .clicked()
             {
@@ -197,10 +197,10 @@ fn render_browser(
             let mut url = browser.url().to_string();
             let url_id = ui.next_auto_id();
             let url_response = ui.add_sized(
-                Vec2::new(ui.available_width() - 4.0, 22.0),
+                Vec2::new(ui.available_width() - 4.0_f32, 22.0_f32),
                 egui::TextEdit::singleline(&mut url)
                     .id(url_id)
-                    .font(egui::FontId::proportional(12.0))
+                    .font(egui::FontId::proportional(12.0_f32))
                     .desired_width(f32::INFINITY),
             );
 
@@ -221,9 +221,9 @@ fn render_browser(
 
     // Webview area placeholder / real webview
     if !browser.is_open() {
-        child_ui.painter().rect_filled(webview_rect, 0.0, palette.app_bg);
+        child_ui.painter().rect_filled(webview_rect, 0.0_f32, palette.app_bg);
         child_ui.painter().rect_stroke(
-            webview_rect.shrink(0.5),
+            webview_rect.shrink(0.5_f32),
             egui::CornerRadius::ZERO,
             egui::Stroke::new(1.0_f32, palette.border),
             egui::StrokeKind::Inside,
@@ -232,7 +232,7 @@ fn render_browser(
             webview_rect.center(),
             egui::Align2::CENTER_CENTER,
             "Waiting for webview...",
-            egui::FontId::proportional(12.0),
+            egui::FontId::proportional(12.0_f32),
             palette.text_muted,
         );
     }
@@ -269,17 +269,17 @@ fn render_split(
     let mut offset = 0.0f32;
 
     for (i, child) in children.iter_mut().enumerate() {
-        let ratio = sizes.get(i).copied().unwrap_or(1.0 / num_children as f32);
+        let ratio = sizes.get(i).copied().unwrap_or(1.0_f32 / num_children as f32);
         let child_size = usable_space * ratio;
 
         let child_rect = if is_horizontal {
             Rect::from_min_size(
-                rect.left_top() + Vec2::new(offset, 0.0),
+                rect.left_top() + Vec2::new(offset, 0.0_f32),
                 Vec2::new(child_size, rect.height()),
             )
         } else {
             Rect::from_min_size(
-                rect.left_top() + Vec2::new(0.0, offset),
+                rect.left_top() + Vec2::new(0.0_f32, offset),
                 Vec2::new(rect.width(), child_size),
             )
         };
@@ -290,16 +290,16 @@ fn render_split(
         if i + 1 < num_children {
             let divider_rect = if is_horizontal {
                 Rect::from_min_size(
-                    rect.left_top() + Vec2::new(offset + child_size, 0.0),
+                    rect.left_top() + Vec2::new(offset + child_size, 0.0_f32),
                     Vec2::new(SPLIT_BORDER, rect.height()),
                 )
             } else {
                 Rect::from_min_size(
-                    rect.left_top() + Vec2::new(0.0, offset + child_size),
+                    rect.left_top() + Vec2::new(0.0_f32, offset + child_size),
                     Vec2::new(rect.width(), SPLIT_BORDER),
                 )
             };
-            ui.painter().rect_filled(divider_rect, 0.0, divider_color);
+            ui.painter().rect_filled(divider_rect, 0.0_f32, divider_color);
         }
 
         offset += child_size + SPLIT_BORDER;
