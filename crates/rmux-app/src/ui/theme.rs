@@ -196,20 +196,20 @@ impl Theme {
             v.dark_mode = self.dark;
             v.panel_fill = p.app_bg;
             v.window_fill = p.panel_bg;
-            v.window_stroke = Stroke::new(1.0, p.border);
+            v.window_stroke = Stroke::new(1.0_f32, p.border);
             v.extreme_bg_color = p.panel_bg;
             v.faint_bg_color = p.panel_active_bg;
             v.override_text_color = Some(p.text_primary);
             v.hyperlink_color = p.accent;
             v.selection.bg_fill = p.accent.gamma_multiply(0.35);
-            v.selection.stroke = Stroke::new(1.0, p.accent);
+            v.selection.stroke = Stroke::new(1.0_f32, p.accent);
             v.window_shadow = egui::Shadow::NONE;
             v.popup_shadow = egui::Shadow::NONE;
 
             // Widget visuals: flat panels, 1px borders, 2px radii
             v.widgets.noninteractive.bg_fill = p.app_bg;
-            v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, p.border);
-            v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, p.text_primary);
+            v.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, p.border);
+            v.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, p.text_primary);
             for w in [
                 &mut v.widgets.inactive,
                 &mut v.widgets.hovered,
@@ -218,8 +218,8 @@ impl Theme {
             ] {
                 w.bg_fill = p.panel_bg;
                 w.weak_bg_fill = p.panel_bg;
-                w.bg_stroke = Stroke::new(1.0, p.border);
-                w.fg_stroke = Stroke::new(1.0, p.text_primary);
+                w.bg_stroke = Stroke::new(1.0_f32, p.border);
+                w.fg_stroke = Stroke::new(1.0_f32, p.text_primary);
                 w.corner_radius = CornerRadius::same(self.radius_sm() as u8);
             }
             // Interaction surface for hover/active

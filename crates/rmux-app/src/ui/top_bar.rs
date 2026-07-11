@@ -34,7 +34,7 @@ pub fn show(
             ui.painter().hline(
                 rect.x_range(),
                 rect.bottom() - 0.5,
-                Stroke::new(1.0, p.chrome_border),
+                Stroke::new(1.0_f32, p.chrome_border),
             );
 
             // Center: workspace name (14px strong) + optional pane-count
@@ -121,7 +121,7 @@ pub fn show(
             ui.painter().rect_stroke(
                 bell_rect,
                 CornerRadius::same(2),
-                Stroke::new(1.0, p.border),
+                Stroke::new(1.0_f32, p.border),
                 StrokeKind::Inside,
             );
             let icon_pos =

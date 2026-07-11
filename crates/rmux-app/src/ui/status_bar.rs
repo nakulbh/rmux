@@ -23,7 +23,7 @@ pub fn show(ctx: &egui::Context, manager: &WorkspaceManager, notifications: &Not
             let font = FontId::proportional(11.0);
 
             // Top hairline
-            painter.hline(rect.x_range(), rect.top() + 0.5, Stroke::new(1.0, p.chrome_border));
+            painter.hline(rect.x_range(), rect.top() + 0.5, Stroke::new(1.0_f32, p.chrome_border));
 
             // Left: ● workspace • N panes
             let ws = manager.active();

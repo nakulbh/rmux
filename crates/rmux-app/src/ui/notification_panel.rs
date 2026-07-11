@@ -160,7 +160,7 @@ fn render_row(ui: &mut egui::Ui, notification: &Notification) -> egui::Response 
     painter.rect_stroke(
         rect,
         egui::CornerRadius::same(2),
-        egui::Stroke::new(1.0, palette.border.gamma_multiply(alpha)),
+        egui::Stroke::new(1.0_f32, palette.border.gamma_multiply(alpha)),
         egui::StrokeKind::Inside,
     );
     if !notification.read {
@@ -235,7 +235,7 @@ fn action_button(ui: &mut egui::Ui, palette: &theme::Palette, label: &str) -> eg
         painter.rect_stroke(
             rect,
             egui::CornerRadius::same(2),
-            egui::Stroke::new(1.0, palette.border),
+            egui::Stroke::new(1.0_f32, palette.border),
             egui::StrokeKind::Inside,
         );
         painter.galley(rect.center() - galley.size() / 2.0, galley, palette.text_primary);
@@ -259,7 +259,7 @@ fn count_pill(ui: &mut egui::Ui, palette: &theme::Palette, count: usize) {
         painter.rect_stroke(
             rect,
             egui::CornerRadius::same(7),
-            egui::Stroke::new(1.0, palette.border),
+            egui::Stroke::new(1.0_f32, palette.border),
             egui::StrokeKind::Inside,
         );
         painter.galley(rect.center() - galley.size() / 2.0, galley, palette.text_muted);
@@ -270,7 +270,7 @@ fn count_pill(ui: &mut egui::Ui, palette: &theme::Palette, count: usize) {
 fn hline(ui: &mut egui::Ui, color: egui::Color32) {
     let (rect, _) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), egui::Sense::hover());
-    ui.painter().hline(rect.x_range(), rect.center().y, egui::Stroke::new(1.0, color));
+    ui.painter().hline(rect.x_range(), rect.center().y, egui::Stroke::new(1.0_f32, color));
 }
 
 /// Lay out `text` on a single line, ellipsized with `…` at `max_width`.

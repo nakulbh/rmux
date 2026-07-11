@@ -254,7 +254,7 @@ impl SidebarView {
             painter.rect_stroke(
                 rect,
                 radius,
-                egui::Stroke::new(1.0, border_color),
+                egui::Stroke::new(1.0_f32, border_color),
                 egui::StrokeKind::Inside,
             );
 
@@ -292,7 +292,7 @@ impl SidebarView {
             painter.rect_stroke(
                 rect,
                 radius,
-                egui::Stroke::new(1.0, border_color),
+                egui::Stroke::new(1.0_f32, border_color),
                 egui::StrokeKind::Inside,
             );
 
@@ -417,7 +417,7 @@ fn render_header(ui: &mut egui::Ui, count: usize) {
     painter.rect_stroke(
         pill_rect,
         pill_radius,
-        egui::Stroke::new(1.0, p().border),
+        egui::Stroke::new(1.0_f32, p().border),
         egui::StrokeKind::Inside,
     );
     let text_pos = pill_rect.center() - galley.size() * 0.5;
@@ -447,7 +447,7 @@ fn render_new_workspace_button(ui: &mut egui::Ui) -> bool {
     painter.rect_stroke(
         rect,
         radius,
-        egui::Stroke::new(1.0, border_color),
+        egui::Stroke::new(1.0_f32, border_color),
         egui::StrokeKind::Inside,
     );
 

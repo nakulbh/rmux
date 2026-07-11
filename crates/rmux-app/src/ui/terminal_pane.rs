@@ -256,7 +256,7 @@ impl TerminalPane {
             painter.rect_stroke(
                 rect,
                 egui::CornerRadius::ZERO,
-                egui::Stroke::new(1.0, palette.accent),
+                egui::Stroke::new(1.0_f32, palette.accent),
                 egui::StrokeKind::Inside,
             );
         }
@@ -713,7 +713,7 @@ impl TerminalPane {
         bar_ui.painter().rect_stroke(
             input_rect,
             egui::CornerRadius::same(2),
-            egui::Stroke::new(1.0, input_border),
+            egui::Stroke::new(1.0_f32, input_border),
             egui::StrokeKind::Inside,
         );
 
@@ -750,7 +750,7 @@ impl TerminalPane {
                 egui::Button::new(
                     egui::RichText::new(label).color(palette.text_primary).size(12.0),
                 )
-                .stroke(egui::Stroke::new(1.0, palette.border))
+                .stroke(egui::Stroke::new(1.0_f32, palette.border))
                 .corner_radius(egui::CornerRadius::same(2)),
             )
         };

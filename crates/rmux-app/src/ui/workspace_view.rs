@@ -52,7 +52,7 @@ pub fn render_pane_tree(
         ui.painter().rect_stroke(
             label_rect,
             egui::CornerRadius::same(6),
-            egui::Stroke::new(1.0, palette.chrome_border),
+            egui::Stroke::new(1.0_f32, palette.chrome_border),
             egui::StrokeKind::Inside,
         );
         ui.painter().text(
@@ -114,7 +114,7 @@ fn render_leaf(
         painter.rect_stroke(
             rect.shrink(0.5),
             egui::CornerRadius::ZERO,
-            egui::Stroke::new(1.0, palette.border),
+            egui::Stroke::new(1.0_f32, palette.border),
             egui::StrokeKind::Inside,
         );
         painter.text(
@@ -148,7 +148,7 @@ fn render_browser(
         child_ui.painter().rect_stroke(
             rect.shrink(0.5),
             egui::CornerRadius::ZERO,
-            egui::Stroke::new(1.5, palette.accent.gamma_multiply(0.75)),
+            egui::Stroke::new(1.5_f32, palette.accent.gamma_multiply(0.75)),
             egui::StrokeKind::Inside,
         );
     }
@@ -225,7 +225,7 @@ fn render_browser(
         child_ui.painter().rect_stroke(
             webview_rect.shrink(0.5),
             egui::CornerRadius::ZERO,
-            egui::Stroke::new(1.0, palette.border),
+            egui::Stroke::new(1.0_f32, palette.border),
             egui::StrokeKind::Inside,
         );
         child_ui.painter().text(
