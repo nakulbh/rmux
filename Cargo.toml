@@ -42,8 +42,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # CLI
 clap = { version = "4", features = ["derive"] }
 
-# Browser / OS webview
-wry = { version = "0.50", default-features = false }
+# Browser / OS webview (default features auto-select WKWebView/macOS, webkit2gtk/Linux, WebView2/Windows)
+wry = "0.50"
 
 # Error handling
 thiserror = "2"
