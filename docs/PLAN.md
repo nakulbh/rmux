@@ -254,7 +254,7 @@ cross-platform Rust application targeting Linux, macOS, and Windows with a stric
 
 ### Tasks
 
-- [ ] **4.1** Integrate `wry` as a pane type:
+- [x] **4.1** Integrate `wry` as a pane type:
   - Add `PaneNode::Browser { webview }` variant
   - Embed wry webview in egui via texture/render callback
 - [ ] **4.2** Implement browser navigation:
@@ -500,6 +500,6 @@ rmux/
 | Phase 1: Terminal Pane | 🟢 Complete | 100% |
 | Phase 2: Workspaces | 🟢 Complete | 100% |
 | Phase 3: Notifications + API | 🟢 Complete | 100% |
-| Phase 4: Browser Pane | ⬜ Ready to start | 0% |
+| Phase 4: Browser Pane | 🟡 In Progress | 20% |
 | Phase 5: SSH + Sessions | ⬜ Blocked by Phase 4 | 0% |
 | Phase 6: Agent Hooks | ⬜ Blocked by Phase 5 | 0% |

@@ -10,6 +10,7 @@ use rmux_api::ApiEvent;
 use serde_json::json;
 
 use crate::api;
+use crate::browser::BrowserPane;
 use crate::notifications::NotificationManager;
 use crate::ui::DEFAULT_FONT_SIZE;
 use crate::ui::sidebar::SidebarView;
@@ -248,6 +249,35 @@ impl RmuxApp {
             json!({ "pane_id": pane_id, "workspace_id": workspace_id }),
         );
         Ok(())
+    }
+
+    /// Open a browser pane split in the active workspace.
+    ///
+    /// Shared by the Cmd/Ctrl+Shift+L shortcut and the socket API.
+    /// Publishes a `pane.created` event. Returns the raw id of the
+    /// new browser pane.
+    pub(crate) fn open_browser_split(&mut self, url: Option<&str>) -> Result<u64, PaneTreeError> {
+        let new_id = self.workspace_manager.split_active_right()?;
+        let browser = BrowserPane::new();
+        self.workspace_manager.active_mut().set_browser(new_id, browser);
+        let workspace_id = self.workspace_manager.active().id.0;
+        if let Some(u) = url
+            && let Some(b) = self.workspace_manager.active_mut().root.find_browser_mut(new_id)
+        {
+            let _ = b.navigate(u);
+        }
+        self.publish_event(
+            "pane.created",
+            json!({ "pane_id": new_id.0, "workspace_id": workspace_id }),
+        );
+        Ok(new_id.0)
+    }
+
+    /// Get a mutable reference to the active browser pane, if the active
+    /// pane is a browser pane.
+    pub(crate) fn active_browser_mut(&mut self) -> Option<&mut BrowserPane> {
+        let pane_id = self.workspace_manager.active().active_pane;
+        self.workspace_manager.active_mut().root.find_browser_mut(pane_id)
     }
 
     /// Close the active workspace and publish `workspace.closed`.

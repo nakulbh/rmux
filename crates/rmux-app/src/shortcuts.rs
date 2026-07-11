@@ -214,6 +214,30 @@ impl RmuxApp {
                 }
             }
 
+            // Cmd/Ctrl+Shift+L: Open browser split
+            if mod_active && shift_active && *key == Key::L {
+                match self.open_browser_split(None) {
+                    Ok(pane_id) => tracing::info!(pane_id, "Opened browser split"),
+                    Err(e) => tracing::warn!("Open browser split failed: {e}"),
+                }
+            }
+
+            // Cmd/Ctrl+L: Focus browser address bar (when active pane is browser)
+            if mod_active && !shift_active && *key == Key::L && self.active_browser_mut().is_some()
+            {
+                tracing::debug!("Focus browser address bar");
+            }
+
+            // Cmd/Ctrl+R: Reload browser page (when active pane is browser)
+            if mod_active
+                && !shift_active
+                && *key == Key::R
+                && let Some(browser) = self.active_browser_mut()
+            {
+                let _ = browser.reload();
+                tracing::debug!("Browser reload via shortcut");
+            }
+
             // Cmd/Ctrl+1..9: Switch to workspace by index
             if mod_active
                 && !shift_active

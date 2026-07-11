@@ -20,6 +20,7 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitEx
 mod api;
 mod api_dispatch;
 mod app;
+mod browser;
 mod notifications;
 mod shortcuts;
 mod ui;

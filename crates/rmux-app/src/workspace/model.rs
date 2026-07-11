@@ -8,6 +8,7 @@
 use rmux_terminal::OscNotification;
 
 use super::splits::{PaneId, PaneNode, PaneTreeError, SplitDirection, SplitId};
+use crate::browser::BrowserPane;
 use crate::ui::TerminalPane;
 
 /// A unique identifier for a workspace.
@@ -66,6 +67,12 @@ impl Workspace {
         if let Some(slot) = self.root.find_terminal_mut(pane_id) {
             *slot = Some(terminal);
         }
+    }
+
+    /// Replace the leaf pane at `pane_id` with a browser pane.
+    pub fn set_browser(&mut self, pane_id: PaneId, browser: BrowserPane) {
+        let browser_node = PaneNode::new_browser(pane_id, browser);
+        self.root.replace_pane(pane_id, browser_node);
     }
 
     /// Process PTY output for all panes in this workspace, collecting any

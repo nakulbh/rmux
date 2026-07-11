@@ -8,6 +8,7 @@
 use rmux_terminal::OscNotification;
 use thiserror::Error;
 
+use crate::browser::BrowserPane;
 use crate::ui::TerminalPane;
 
 /// Error type for pane tree operations.
@@ -53,6 +54,7 @@ impl SplitDirection {
 /// A node in the recursive pane tree.
 pub enum PaneNode {
     Leaf { id: PaneId, terminal: Box<Option<TerminalPane>> },
+    Browser { id: PaneId, browser: Box<BrowserPane> },
     Split { id: SplitId, direction: SplitDirection, children: Vec<PaneNode>, sizes: Vec<f32> },
 }
 
@@ -64,6 +66,11 @@ impl std::fmt::Debug for PaneNode {
                 .field("id", id)
                 .field("has_terminal", &terminal.is_some())
                 .finish(),
+            Self::Browser { id, .. } => f
+                .debug_struct("Browser")
+                .field("id", id)
+                .field("url", &browser_refs::url(self))
+                .finish(),
             Self::Split { id, direction, children, sizes } => f
                 .debug_struct("Split")
                 .field("id", id)
@@ -71,6 +78,16 @@ impl std::fmt::Debug for PaneNode {
                 .field("children", children)
                 .field("sizes", sizes)
                 .finish(),
+        }
+    }
+}
+
+mod browser_refs {
+    use super::PaneNode;
+    pub fn url(node: &PaneNode) -> String {
+        match node {
+            PaneNode::Browser { browser, .. } => browser.url(),
+            _ => String::new(),
         }
     }
 }
@@ -84,6 +101,10 @@ impl PaneNode {
         Self::Leaf { id, terminal: Box::new(Some(terminal)) }
     }
 
+    pub fn new_browser(id: PaneId, browser: BrowserPane) -> Self {
+        Self::Browser { id, browser: Box::new(browser) }
+    }
+
     pub fn new_split(id: SplitId, direction: SplitDirection, children: Vec<PaneNode>) -> Self {
         let count = children.len() as f32;
         let size = 1.0 / count;
@@ -95,13 +116,17 @@ impl PaneNode {
         matches!(self, Self::Leaf { .. })
     }
 
+    pub fn is_browser(&self) -> bool {
+        matches!(self, Self::Browser { .. })
+    }
+
     pub fn is_split(&self) -> bool {
         matches!(self, Self::Split { .. })
     }
 
     pub fn pane_id(&self) -> Option<PaneId> {
         match self {
-            Self::Leaf { id, .. } => Some(*id),
+            Self::Leaf { id, .. } | Self::Browser { id, .. } => Some(*id),
             Self::Split { .. } => None,
         }
     }
@@ -110,6 +135,7 @@ impl PaneNode {
         match self {
             Self::Leaf { id, terminal } if *id == target => Some(terminal.as_mut()),
             Self::Leaf { .. } => None,
+            Self::Browser { .. } => None,
             Self::Split { children, .. } => {
                 children.iter_mut().find_map(|c| c.find_terminal_mut(target))
             }
@@ -118,6 +144,45 @@ impl PaneNode {
 
     pub fn get_terminal(&mut self, target: PaneId) -> Option<&mut TerminalPane> {
         self.find_terminal_mut(target).and_then(|opt| opt.as_mut())
+    }
+
+    pub fn find_browser_mut(&mut self, target: PaneId) -> Option<&mut BrowserPane> {
+        match self {
+            Self::Browser { id, browser } if *id == target => Some(browser.as_mut()),
+            Self::Browser { .. } => None,
+            Self::Leaf { .. } => None,
+            Self::Split { children, .. } => {
+                children.iter_mut().find_map(|c| c.find_browser_mut(target))
+            }
+        }
+    }
+
+    /// Replace the pane at `target` with `new_node` in the tree.
+    ///
+    /// Returns `true` if the replacement was successful.
+    pub fn replace_pane(&mut self, target: PaneId, new_node: PaneNode) -> bool {
+        if self.pane_id() == Some(target) {
+            *self = new_node;
+            return true;
+        }
+        if let Self::Split { children, .. } = self {
+            for child in children.iter_mut() {
+                if child.replace_pane(target, PaneNode::new_leaf(PaneId(0))) {
+                    *child = std::mem::replace(child, new_node);
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Check if the node at `target` is a browser pane.
+    pub fn is_browser_pane(&self, target: PaneId) -> bool {
+        match self {
+            Self::Browser { id, .. } => *id == target,
+            Self::Leaf { .. } => false,
+            Self::Split { children, .. } => children.iter().any(|c| c.is_browser_pane(target)),
+        }
     }
 
     /// Process PTY output for every pane in this subtree, collecting any
@@ -130,6 +195,7 @@ impl PaneNode {
                     notifications.extend(t.take_notifications().into_iter().map(|n| (*id, n)));
                 }
             }
+            Self::Browser { .. } => {}
             Self::Split { children, .. } => {
                 for child in children.iter_mut() {
                     child.process_pty_outputs(notifications);
@@ -140,14 +206,14 @@ impl PaneNode {
 
     pub fn pane_ids(&self) -> Vec<PaneId> {
         match self {
-            Self::Leaf { id, .. } => vec![*id],
+            Self::Leaf { id, .. } | Self::Browser { id, .. } => vec![*id],
             Self::Split { children, .. } => children.iter().flat_map(|c| c.pane_ids()).collect(),
         }
     }
 
     pub fn pane_count(&self) -> usize {
         match self {
-            Self::Leaf { .. } => 1,
+            Self::Leaf { .. } | Self::Browser { .. } => 1,
             Self::Split { children, .. } => children.iter().map(|c| c.pane_count()).sum(),
         }
     }
@@ -156,6 +222,7 @@ impl PaneNode {
         match self {
             Self::Leaf { id, terminal } if *id == target => Some(terminal.as_ref()),
             Self::Leaf { .. } => None,
+            Self::Browser { .. } => None,
             Self::Split { children, .. } => children.iter().find_map(|c| c.find_leaf(target)),
         }
     }
@@ -167,7 +234,7 @@ impl PaneNode {
         new_pane_id: PaneId,
         new_split_id: SplitId,
     ) -> Result<PaneId, PaneTreeError> {
-        if let Self::Leaf { id, .. } = self {
+        if let Self::Leaf { id, .. } | Self::Browser { id, .. } = self {
             if *id == target_pane {
                 let old = std::mem::replace(self, Self::new_leaf(PaneId(0)));
                 *self = Self::Split {
@@ -183,7 +250,7 @@ impl PaneNode {
 
         if let Self::Split { children, .. } = self {
             for child in children.iter_mut() {
-                if let Self::Leaf { id, .. } = child {
+                if let Self::Leaf { id, .. } | Self::Browser { id, .. } = child {
                     if *id == target_pane {
                         let old = std::mem::replace(child, Self::new_leaf(PaneId(0)));
                         *child = Self::Split {
@@ -224,10 +291,10 @@ impl PaneNode {
     fn close_pane_impl(&mut self, target_pane: PaneId) -> Result<bool, PaneTreeError> {
         match self {
             Self::Split { children, sizes, .. } => {
-                // Find the index of the target leaf pane
-                let target_idx = children
-                    .iter()
-                    .position(|child| child.is_leaf() && child.pane_id() == Some(target_pane));
+                let target_idx = children.iter().position(|child| {
+                    let id = child.pane_id();
+                    !child.is_split() && id == Some(target_pane)
+                });
                 if let Some(i) = target_idx {
                     children.remove(i);
                     let count = children.len() as f32;
@@ -246,7 +313,7 @@ impl PaneNode {
                     }
                 }
             }
-            Self::Leaf { .. } => {
+            Self::Leaf { .. } | Self::Browser { .. } => {
                 if self.pane_id() == Some(target_pane) {
                     return Err(PaneTreeError::CannotCloseLastPane);
                 }
@@ -319,6 +386,7 @@ impl PaneNode {
     pub fn leaf_panes(&self) -> Vec<(PaneId, Option<&TerminalPane>)> {
         match self {
             Self::Leaf { id, terminal } => vec![(*id, terminal.as_ref().as_ref())],
+            Self::Browser { .. } => vec![],
             Self::Split { children, .. } => children.iter().flat_map(|c| c.leaf_panes()).collect(),
         }
     }
@@ -328,6 +396,7 @@ impl PaneNode {
     pub fn leaf_panes_mut(&mut self) -> Vec<(PaneId, &mut Option<TerminalPane>)> {
         match self {
             Self::Leaf { id, terminal } => vec![(*id, terminal.as_mut())],
+            Self::Browser { .. } => vec![],
             Self::Split { children, .. } => {
                 children.iter_mut().flat_map(|c| c.leaf_panes_mut()).collect()
             }
@@ -363,6 +432,7 @@ impl PaneNode {
                     vec![]
                 }
             }
+            Self::Browser { .. } => vec![],
             Self::Split { children, .. } => {
                 children.iter().flat_map(|c| c.collect_exited_panes()).collect()
             }

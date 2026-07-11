@@ -7,7 +7,7 @@
 
 use crate::ui::theme;
 use crate::workspace::splits::{PaneId, PaneNode, SplitDirection};
-use egui::{Rect, Vec2};
+use egui::{Rect, RichText, Vec2};
 
 /// Border width (in pixels) between split panes.
 const SPLIT_BORDER: f32 = 1.0;
@@ -35,10 +35,12 @@ pub fn render_pane_tree(
     ui.painter().rect_filled(available, 0.0, palette.app_bg);
 
     // If a pane is zoomed, render only that pane
-    if let Some(zoom_id) = zoomed_pane
-        && let Some(terminal) = root.find_terminal_mut(zoom_id)
-    {
-        render_leaf(ui, zoom_id, terminal, available, zoom_id == *active_pane, active_pane);
+    if let Some(zoom_id) = zoomed_pane {
+        if let Some(terminal) = root.find_terminal_mut(zoom_id) {
+            render_leaf(ui, zoom_id, terminal, available, zoom_id == *active_pane, active_pane);
+        } else if let Some(browser) = root.find_browser_mut(zoom_id) {
+            render_browser(ui, zoom_id, browser, available, zoom_id == *active_pane, active_pane);
+        }
 
         // Zoom indicator: chrome pill in the top-right corner
         let label_rect = Rect::from_min_size(
@@ -75,6 +77,10 @@ fn render_node(ui: &mut egui::Ui, node: &mut PaneNode, rect: Rect, active_pane: 
         PaneNode::Leaf { id, terminal } => {
             let is_active = *id == *active_pane;
             render_leaf(ui, *id, terminal.as_mut(), rect, is_active, active_pane);
+        }
+        PaneNode::Browser { id, browser } => {
+            let is_active = *id == *active_pane;
+            render_browser(ui, *id, browser.as_mut(), rect, is_active, active_pane);
         }
         PaneNode::Split { direction, children, sizes, .. } => {
             render_split(ui, direction, children, sizes, rect, active_pane);
@@ -118,6 +124,117 @@ fn render_leaf(
             egui::FontId::monospace(12.0),
             palette.text_muted,
         );
+    }
+}
+
+/// Render a browser pane with navigation controls and webview area.
+fn render_browser(
+    ui: &mut egui::Ui,
+    _pane_id: PaneId,
+    browser: &mut crate::browser::BrowserPane,
+    rect: Rect,
+    is_active: bool,
+    active_pane: &mut PaneId,
+) {
+    let palette = theme::palette();
+    let mut child_ui =
+        ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::default()));
+
+    // Fill background
+    child_ui.painter().rect_filled(rect, 0.0, palette.panel_bg);
+
+    // Focus border
+    if is_active {
+        child_ui.painter().rect_stroke(
+            rect.shrink(0.5),
+            egui::CornerRadius::ZERO,
+            egui::Stroke::new(1.5, palette.accent.gamma_multiply(0.75)),
+            egui::StrokeKind::Inside,
+        );
+    }
+
+    let toolbar_h = 32.0;
+    let toolbar_rect = Rect::from_min_size(rect.left_top(), Vec2::new(rect.width(), toolbar_h));
+    let webview_rect = Rect::from_min_size(
+        rect.left_top() + Vec2::new(0.0, toolbar_h + SPLIT_BORDER),
+        Vec2::new(rect.width(), rect.height() - toolbar_h - SPLIT_BORDER),
+    );
+
+    // Toolbar background
+    child_ui.painter().rect_filled(toolbar_rect, 0.0, palette.chrome_bg);
+
+    // Layout toolbar with egui widgets
+    child_ui.allocate_new_ui(egui::UiBuilder::new().max_rect(toolbar_rect.shrink(4.0)), |ui| {
+        ui.horizontal(|ui| {
+            // Back button
+            let back_enabled = browser.can_go_back();
+            let back_btn = egui::Button::new(RichText::new("\u{2190}").size(14.0))
+                .min_size(Vec2::new(24.0, 22.0));
+            if ui.add_enabled(back_enabled, back_btn).clicked() {
+                let _ = browser.go_back();
+            }
+
+            // Forward button
+            let fwd_enabled = browser.can_go_forward();
+            let fwd_btn = egui::Button::new(RichText::new("\u{2192}").size(14.0))
+                .min_size(Vec2::new(24.0, 22.0));
+            if ui.add_enabled(fwd_enabled, fwd_btn).clicked() {
+                let _ = browser.go_forward();
+            }
+
+            // Reload button
+            if ui
+                .add(
+                    egui::Button::new(RichText::new("\u{21BB}").size(14.0))
+                        .min_size(Vec2::new(24.0, 22.0)),
+                )
+                .clicked()
+            {
+                let _ = browser.reload();
+            }
+
+            // URL bar
+            let mut url = browser.url();
+            let url_response = ui.add_sized(
+                Vec2::new(ui.available_width() - 4.0, 22.0),
+                egui::TextEdit::singleline(&mut url)
+                    .font(egui::FontId::proportional(12.0))
+                    .desired_width(f32::INFINITY),
+            );
+            if url_response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                let _ = browser.navigate(&url);
+            }
+            if ui.input(|i| i.key_pressed(egui::Key::Enter)) && url_response.has_focus() {
+                let _ = browser.navigate(&url);
+            }
+        });
+    });
+
+    // Webview area placeholder / real webview
+    if !browser.is_open() {
+        child_ui.painter().rect_filled(webview_rect, 0.0, palette.app_bg);
+        child_ui.painter().rect_stroke(
+            webview_rect.shrink(0.5),
+            egui::CornerRadius::ZERO,
+            egui::Stroke::new(1.0, palette.border),
+            egui::StrokeKind::Inside,
+        );
+        child_ui.painter().text(
+            webview_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "Waiting for webview...",
+            egui::FontId::proportional(12.0),
+            palette.text_muted,
+        );
+    }
+
+    // Update browser bounds for native webview positioning
+    browser.set_bounds(webview_rect);
+    browser.reposition_webview();
+
+    // Set active pane on click
+    if child_ui.response().clicked() && !is_active {
+        *active_pane = _pane_id;
     }
 }
 
