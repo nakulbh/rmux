@@ -1,7 +1,3 @@
-#![allow(dead_code)]
-
-use std::sync::Mutex;
-
 use anyhow::Result;
 use egui::Rect;
 use tracing::{debug, info};
@@ -9,29 +5,34 @@ use tracing::{debug, info};
 const DEFAULT_URL: &str = "about:blank";
 
 pub struct BrowserPane {
-    url: Mutex<String>,
-    history: Mutex<Vec<String>>,
-    history_index: Mutex<usize>,
+    url: String,
+    history: Vec<String>,
+    history_index: usize,
     webview: Option<wry::WebView>,
     needs_reposition: bool,
-    bounds: Rect,
-    is_loading: Mutex<bool>,
-    page_title: Mutex<String>,
+    bounds_egui: Rect,
+    #[allow(dead_code)]
+    is_loading: bool,
+    #[allow(dead_code)]
+    page_title: String,
     is_open: bool,
+    /// Set by Cmd/Ctrl+L to request keyboard focus on the URL bar.
+    pub focus_url_bar: bool,
 }
 
 impl BrowserPane {
     pub fn new() -> Self {
         Self {
-            url: Mutex::new(DEFAULT_URL.to_string()),
-            history: Mutex::new(vec![DEFAULT_URL.to_string()]),
-            history_index: Mutex::new(0),
+            url: DEFAULT_URL.to_string(),
+            history: vec![DEFAULT_URL.to_string()],
+            history_index: 0,
             webview: None,
             needs_reposition: false,
-            bounds: Rect::ZERO,
-            is_loading: Mutex::new(false),
-            page_title: Mutex::new(String::new()),
+            bounds_egui: Rect::ZERO,
+            is_loading: false,
+            page_title: String::new(),
             is_open: false,
+            focus_url_bar: false,
         }
     }
 
@@ -39,24 +40,34 @@ impl BrowserPane {
         self.is_open
     }
 
+    #[allow(dead_code)]
     pub fn set_open(&mut self, open: bool) {
         self.is_open = open;
     }
 
-    pub fn url(&self) -> String {
-        self.url.lock().unwrap().clone()
+    pub fn url(&self) -> &str {
+        &self.url
     }
 
-    pub fn title(&self) -> String {
-        self.page_title.lock().unwrap().clone()
+    #[allow(dead_code)]
+    pub fn title(&self) -> &str {
+        &self.page_title
     }
 
+    #[allow(dead_code)]
     pub fn is_loading(&self) -> bool {
-        *self.is_loading.lock().unwrap()
+        self.is_loading
     }
 
-    pub fn history(&self) -> Vec<String> {
-        self.history.lock().unwrap().clone()
+    #[allow(dead_code)]
+    pub fn history(&self) -> &[String] {
+        &self.history
+    }
+
+    fn push_history(&mut self, url: String) {
+        self.history.truncate(self.history_index + 1);
+        self.history.push(url);
+        self.history_index = self.history.len() - 1;
     }
 
     pub fn navigate(&mut self, url: &str) -> Result<()> {
@@ -66,45 +77,34 @@ impl BrowserPane {
             wv.load_url(&url)?;
         }
 
-        self.url.lock().unwrap().clone_from(&url);
-
-        let mut hist = self.history.lock().unwrap();
-        let mut idx = self.history_index.lock().unwrap();
-        hist.truncate(*idx + 1);
-        hist.push(url.clone());
-        *idx = hist.len() - 1;
+        self.url.clone_from(&url);
+        self.push_history(url.clone());
 
         info!(?url, "Browser navigated");
         Ok(())
     }
 
     pub fn go_back(&mut self) -> Result<()> {
-        let mut idx = self.history_index.lock().unwrap();
-        if *idx > 0 {
-            *idx -= 1;
-            let url = self.history.lock().unwrap()[*idx].clone();
-            drop(idx);
+        if self.history_index > 0 {
+            self.history_index -= 1;
+            let url = self.history[self.history_index].clone();
             if let Some(ref wv) = self.webview {
                 wv.load_url(&url)?;
             }
-            self.url.lock().unwrap().clone_from(&url);
+            self.url.clone_from(&url);
             debug!(?url, "Browser went back");
         }
         Ok(())
     }
 
     pub fn go_forward(&mut self) -> Result<()> {
-        let hist = self.history.lock().unwrap();
-        let mut idx = self.history_index.lock().unwrap();
-        if *idx < hist.len() - 1 {
-            *idx += 1;
-            let url = hist[*idx].clone();
-            drop(idx);
-            drop(hist);
+        if self.history_index < self.history.len() - 1 {
+            self.history_index += 1;
+            let url = self.history[self.history_index].clone();
             if let Some(ref wv) = self.webview {
                 wv.load_url(&url)?;
             }
-            self.url.lock().unwrap().clone_from(&url);
+            self.url.clone_from(&url);
             debug!(?url, "Browser went forward");
         }
         Ok(())
@@ -119,13 +119,14 @@ impl BrowserPane {
     }
 
     pub fn can_go_back(&self) -> bool {
-        *self.history_index.lock().unwrap() > 0
+        self.history_index > 0
     }
 
     pub fn can_go_forward(&self) -> bool {
-        *self.history_index.lock().unwrap() < self.history.lock().unwrap().len() - 1
+        self.history_index < self.history.len() - 1
     }
 
+    #[allow(dead_code)]
     pub fn evaluate_javascript(&mut self, script: &str) -> Result<()> {
         if let Some(ref wv) = self.webview {
             wv.evaluate_script(script)?;
@@ -134,28 +135,30 @@ impl BrowserPane {
     }
 
     pub fn set_bounds(&mut self, bounds: Rect) {
-        self.bounds = bounds;
+        self.bounds_egui = bounds;
         self.needs_reposition = true;
     }
 
+    fn to_wry_bounds(&self) -> wry::Rect {
+        let pos = wry::dpi::Position::Logical(wry::dpi::LogicalPosition::new(
+            self.bounds_egui.min.x as f64,
+            self.bounds_egui.min.y as f64,
+        ));
+        let size = wry::dpi::Size::Logical(wry::dpi::LogicalSize::new(
+            self.bounds_egui.width() as f64,
+            self.bounds_egui.height() as f64,
+        ));
+        wry::Rect { position: pos, size }
+    }
+
+    #[allow(dead_code)]
     pub fn create_webview(
         &mut self,
         window: &impl wry::raw_window_handle::HasWindowHandle,
     ) -> Result<()> {
-        let url = { self.url.lock().unwrap().clone() };
-
         let webview = wry::WebViewBuilder::new()
-            .with_url(&url)
-            .with_bounds(wry::Rect {
-                position: wry::dpi::Position::Logical(wry::dpi::LogicalPosition::new(
-                    self.bounds.min.x as f64,
-                    self.bounds.min.y as f64,
-                )),
-                size: wry::dpi::Size::Logical(wry::dpi::LogicalSize::new(
-                    self.bounds.width() as f64,
-                    self.bounds.height() as f64,
-                )),
-            })
+            .with_url(&self.url)
+            .with_bounds(self.to_wry_bounds())
             .build_as_child(window)?;
 
         self.webview = Some(webview);
@@ -164,6 +167,7 @@ impl BrowserPane {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn destroy_webview(&mut self) {
         self.webview = None;
         self.is_open = false;
@@ -174,24 +178,9 @@ impl BrowserPane {
         if let Some(ref wv) = self.webview
             && self.needs_reposition
         {
-            let _ = wv.set_bounds(wry::Rect {
-                position: wry::dpi::Position::Logical(wry::dpi::LogicalPosition::new(
-                    self.bounds.min.x as f64,
-                    self.bounds.min.y as f64,
-                )),
-                size: wry::dpi::Size::Logical(wry::dpi::LogicalSize::new(
-                    self.bounds.width() as f64,
-                    self.bounds.height() as f64,
-                )),
-            });
+            let _ = wv.set_bounds(self.to_wry_bounds());
             self.needs_reposition = false;
         }
-    }
-}
-
-impl Drop for BrowserPane {
-    fn drop(&mut self) {
-        self.destroy_webview();
     }
 }
 

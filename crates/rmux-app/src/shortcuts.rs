@@ -223,9 +223,12 @@ impl RmuxApp {
             }
 
             // Cmd/Ctrl+L: Focus browser address bar (when active pane is browser)
-            if mod_active && !shift_active && *key == Key::L && self.active_browser_mut().is_some()
+            if mod_active
+                && !shift_active
+                && *key == Key::L
+                && let Some(browser) = self.active_browser_mut()
             {
-                tracing::debug!("Focus browser address bar");
+                browser.focus_url_bar = true;
             }
 
             // Cmd/Ctrl+R: Reload browser page (when active pane is browser)

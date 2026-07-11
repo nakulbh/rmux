@@ -194,13 +194,22 @@ fn render_browser(
             }
 
             // URL bar
-            let mut url = browser.url();
+            let mut url = browser.url().to_string();
+            let url_id = ui.next_auto_id();
             let url_response = ui.add_sized(
                 Vec2::new(ui.available_width() - 4.0, 22.0),
                 egui::TextEdit::singleline(&mut url)
+                    .id(url_id)
                     .font(egui::FontId::proportional(12.0))
                     .desired_width(f32::INFINITY),
             );
+
+            // Cmd/Ctrl+L: request focus on URL bar
+            if browser.focus_url_bar {
+                ui.memory_mut(|mem| mem.request_focus(url_id));
+                browser.focus_url_bar = false;
+            }
+
             if url_response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 let _ = browser.navigate(&url);
             }

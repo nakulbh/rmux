@@ -66,11 +66,9 @@ impl std::fmt::Debug for PaneNode {
                 .field("id", id)
                 .field("has_terminal", &terminal.is_some())
                 .finish(),
-            Self::Browser { id, .. } => f
-                .debug_struct("Browser")
-                .field("id", id)
-                .field("url", &browser_refs::url(self))
-                .finish(),
+            Self::Browser { id, browser } => {
+                f.debug_struct("Browser").field("id", id).field("url", &browser.url()).finish()
+            }
             Self::Split { id, direction, children, sizes } => f
                 .debug_struct("Split")
                 .field("id", id)
@@ -78,16 +76,6 @@ impl std::fmt::Debug for PaneNode {
                 .field("children", children)
                 .field("sizes", sizes)
                 .finish(),
-        }
-    }
-}
-
-mod browser_refs {
-    use super::PaneNode;
-    pub fn url(node: &PaneNode) -> String {
-        match node {
-            PaneNode::Browser { browser, .. } => browser.url(),
-            _ => String::new(),
         }
     }
 }
@@ -157,23 +145,33 @@ impl PaneNode {
         }
     }
 
-    /// Replace the pane at `target` with `new_node` in the tree.
-    ///
-    /// Returns `true` if the replacement was successful.
-    pub fn replace_pane(&mut self, target: PaneId, new_node: PaneNode) -> bool {
+    /// Find a mutable reference to a pane node by ID anywhere in the tree.
+    pub fn find_pane_mut(&mut self, target: PaneId) -> Option<&mut PaneNode> {
         if self.pane_id() == Some(target) {
-            *self = new_node;
-            return true;
+            return Some(self);
         }
         if let Self::Split { children, .. } = self {
             for child in children.iter_mut() {
-                if child.replace_pane(target, PaneNode::new_leaf(PaneId(0))) {
-                    *child = std::mem::replace(child, new_node);
-                    return true;
+                let found = child.find_pane_mut(target);
+                if found.is_some() {
+                    return found;
                 }
             }
         }
-        false
+        None
+    }
+
+    /// Replace the pane at `target` with `new_node` in the tree.
+    ///
+    /// Uses `find_pane_mut` to locate the target without creating
+    /// sacrificial probe nodes. Returns `true` if replacement succeeded.
+    pub fn replace_pane(&mut self, target: PaneId, new_node: PaneNode) -> bool {
+        if let Some(node) = self.find_pane_mut(target) {
+            *node = new_node;
+            true
+        } else {
+            false
+        }
     }
 
     /// Check if the node at `target` is a browser pane.
