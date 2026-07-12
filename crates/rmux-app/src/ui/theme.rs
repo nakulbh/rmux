@@ -146,7 +146,7 @@ pub struct Theme {
 impl Theme {
     /// Arbor One Dark theme.
     pub fn dark() -> Self {
-        Self { palette: Palette::dark(), radius: 2.0, dark: true }
+        Self { palette: Palette::dark(), radius: 2.0_f32, dark: true }
     }
 
     /// Small radius — rows, buttons, inputs, cards, tabs.
@@ -158,13 +158,13 @@ impl Theme {
     /// Medium radius — popovers, overlays, zoom indicator.
     #[allow(dead_code)]
     pub fn radius_md(&self) -> f32 {
-        6.0
+        6.0_f32
     }
 
     /// Large radius — reserved for modals.
     #[allow(dead_code)]
     pub fn radius_lg(&self) -> f32 {
-        8.0
+        8.0_f32
     }
 
     /// Push theme into the egui context: fonts, type scale, spacing, colors.
@@ -177,39 +177,39 @@ impl Theme {
         ctx.style_mut(|s| {
             // Typography scale: 12px dominant, 14px headings (dense chrome)
             s.text_styles = [
-                (TextStyle::Small, FontId::new(10.0, FontFamily::Proportional)),
-                (TextStyle::Body, FontId::new(12.0, FontFamily::Proportional)),
-                (TextStyle::Button, FontId::new(12.0, FontFamily::Proportional)),
-                (TextStyle::Monospace, FontId::new(12.0, FontFamily::Monospace)),
-                (TextStyle::Heading, FontId::new(14.0, FontFamily::Proportional)),
+                (TextStyle::Small, FontId::new(10.0_f32, FontFamily::Proportional)),
+                (TextStyle::Body, FontId::new(12.0_f32, FontFamily::Proportional)),
+                (TextStyle::Button, FontId::new(12.0_f32, FontFamily::Proportional)),
+                (TextStyle::Monospace, FontId::new(12.0_f32, FontFamily::Monospace)),
+                (TextStyle::Heading, FontId::new(14.0_f32, FontFamily::Proportional)),
             ]
             .into();
 
             // 4px spacing grid, 24px control rhythm
-            s.spacing.item_spacing = egui::vec2(4.0, 4.0);
-            s.spacing.button_padding = egui::vec2(8.0, 4.0);
+            s.spacing.item_spacing = egui::vec2(4.0_f32, 4.0_f32);
+            s.spacing.button_padding = egui::vec2(8.0_f32, 4.0_f32);
             s.spacing.window_margin = egui::Margin::same(4);
-            s.spacing.interact_size.y = 24.0;
+            s.spacing.interact_size.y = 24.0_f32;
 
             // Visuals: three-surface depth model, zero shadows
             let v = &mut s.visuals;
             v.dark_mode = self.dark;
             v.panel_fill = p.app_bg;
             v.window_fill = p.panel_bg;
-            v.window_stroke = Stroke::new(1.0, p.border);
+            v.window_stroke = Stroke::new(1.0_f32, p.border);
             v.extreme_bg_color = p.panel_bg;
             v.faint_bg_color = p.panel_active_bg;
             v.override_text_color = Some(p.text_primary);
             v.hyperlink_color = p.accent;
-            v.selection.bg_fill = p.accent.gamma_multiply(0.35);
-            v.selection.stroke = Stroke::new(1.0, p.accent);
+            v.selection.bg_fill = p.accent.gamma_multiply(0.35_f32);
+            v.selection.stroke = Stroke::new(1.0_f32, p.accent);
             v.window_shadow = egui::Shadow::NONE;
             v.popup_shadow = egui::Shadow::NONE;
 
             // Widget visuals: flat panels, 1px borders, 2px radii
             v.widgets.noninteractive.bg_fill = p.app_bg;
-            v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, p.border);
-            v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, p.text_primary);
+            v.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, p.border);
+            v.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, p.text_primary);
             for w in [
                 &mut v.widgets.inactive,
                 &mut v.widgets.hovered,
@@ -218,8 +218,8 @@ impl Theme {
             ] {
                 w.bg_fill = p.panel_bg;
                 w.weak_bg_fill = p.panel_bg;
-                w.bg_stroke = Stroke::new(1.0, p.border);
-                w.fg_stroke = Stroke::new(1.0, p.text_primary);
+                w.bg_stroke = Stroke::new(1.0_f32, p.border);
+                w.fg_stroke = Stroke::new(1.0_f32, p.text_primary);
                 w.corner_radius = CornerRadius::same(self.radius_sm() as u8);
             }
             // Interaction surface for hover/active

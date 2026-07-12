@@ -174,10 +174,10 @@ Font size change triggers PTY resize for all panes (recalculates grid cols/rows)
 
 | cmux Shortcut | Action | Status |
 |---------------|--------|--------|
-| `Cmd+Shift+L` | Open browser | Not implemented |
-| `Cmd+L` | Focus address bar | Not implemented |
+| `Cmd+Shift+L` | Open browser | Implemented |
+| `Cmd+L` | Focus address bar | Implemented |
 | `Cmd+[` / `Cmd+]` | Browser back/forward | Not implemented |
-| `Cmd+R` | Reload page | Not implemented |
+| `Cmd+R` | Reload page | Implemented |
 | `Cmd+Shift+R` | Hard refresh | Not implemented (used for rename) |
 | `Alt+Cmd+I` | Toggle devtools | Not implemented |
 | `Alt+Cmd+C` | JS console | Not implemented (used for copy) |

@@ -6,7 +6,7 @@
 //! only that pane is rendered at full workspace size.
 
 use crate::ui::theme;
-use crate::workspace::splits::{PaneId, PaneNode, SplitDirection};
+use crate::workspace::splits::{PaneId, PaneNode, SplitDirection, SplitId};
 use egui::{Rect, Vec2};
 
 /// Border width (in pixels) between split panes.
@@ -32,32 +32,34 @@ pub fn render_pane_tree(
 
     // Fill background
     let palette = theme::palette();
-    ui.painter().rect_filled(available, 0.0, palette.app_bg);
+    ui.painter().rect_filled(available, 0.0_f32, palette.app_bg);
 
     // If a pane is zoomed, render only that pane
-    if let Some(zoom_id) = zoomed_pane
-        && let Some(terminal) = root.find_terminal_mut(zoom_id)
-    {
-        render_leaf(ui, zoom_id, terminal, available, zoom_id == *active_pane, active_pane);
+    if let Some(zoom_id) = zoomed_pane {
+        if let Some(terminal) = root.find_terminal_mut(zoom_id) {
+            render_leaf(ui, zoom_id, terminal, available, zoom_id == *active_pane, active_pane);
+        } else if let Some(browser) = root.find_browser_mut(zoom_id) {
+            render_browser(ui, zoom_id, browser, available, zoom_id == *active_pane, active_pane);
+        }
 
         // Zoom indicator: chrome pill in the top-right corner
         let label_rect = Rect::from_min_size(
-            available.right_top() - Vec2::new(220.0, -2.0),
-            Vec2::new(216.0, 18.0),
+            available.right_top() - Vec2::new(220.0_f32, -2.0_f32),
+            Vec2::new(216.0_f32, 18.0_f32),
         );
         let modifier = if cfg!(target_os = "macos") { "Cmd" } else { "Ctrl" };
         ui.painter().rect_filled(label_rect, egui::CornerRadius::same(6), palette.chrome_bg);
         ui.painter().rect_stroke(
             label_rect,
             egui::CornerRadius::same(6),
-            egui::Stroke::new(1.0, palette.chrome_border),
+            egui::Stroke::new(1.0_f32, palette.chrome_border),
             egui::StrokeKind::Inside,
         );
         ui.painter().text(
-            label_rect.left_center() + Vec2::new(8.0, 0.0),
+            label_rect.left_center() + Vec2::new(8.0_f32, 0.0_f32),
             egui::Align2::LEFT_CENTER,
             format!("Zoom: {modifier}+Shift+Enter to restore"),
-            egui::FontId::proportional(10.0),
+            egui::FontId::proportional(10.0_f32),
             palette.text_muted,
         );
         return;
@@ -71,14 +73,28 @@ pub fn render_pane_tree(
 
 /// Recursively render a single `PaneNode` within the given rectangle.
 fn render_node(ui: &mut egui::Ui, node: &mut PaneNode, rect: Rect, active_pane: &mut PaneId) {
-    match node {
+    // The match borrows `node`. We collect a resize request (if any) so we can
+    // apply it *after* the match releases the borrow.
+    let resize_request: Option<(SplitId, usize, f32)> = match node {
         PaneNode::Leaf { id, terminal } => {
             let is_active = *id == *active_pane;
             render_leaf(ui, *id, terminal.as_mut(), rect, is_active, active_pane);
+            None
         }
-        PaneNode::Split { direction, children, sizes, .. } => {
-            render_split(ui, direction, children, sizes, rect, active_pane);
+        PaneNode::Browser { id, browser } => {
+            let is_active = *id == *active_pane;
+            render_browser(ui, *id, browser.as_mut(), rect, is_active, active_pane);
+            None
         }
+        PaneNode::Split { id, direction, children, sizes } => {
+            let split_id = *id;
+            render_split(ui, direction, children, sizes, rect, active_pane)
+                .map(|(child_idx, delta)| (split_id, child_idx, delta))
+        }
+    };
+    // Borrow of `node` ends here; safe to call resize_split mutably.
+    if let Some((split_id, child_idx, delta)) = resize_request {
+        let _ = node.resize_split(split_id, child_idx, delta);
     }
 }
 
@@ -104,27 +120,43 @@ fn render_leaf(
         // Show a loading placeholder if terminal hasn't been spawned yet
         let painter = child_ui.painter();
         let palette = theme::palette();
-        painter.rect_filled(rect, 0.0, palette.panel_bg);
+        painter.rect_filled(rect, 0.0_f32, palette.panel_bg);
         painter.rect_stroke(
-            rect.shrink(0.5),
+            rect.shrink(0.5_f32),
             egui::CornerRadius::ZERO,
-            egui::Stroke::new(1.0, palette.border),
+            egui::Stroke::new(1.0_f32, palette.border),
             egui::StrokeKind::Inside,
         );
         painter.text(
             rect.center(),
             egui::Align2::CENTER_CENTER,
             "Spawning terminal…",
-            egui::FontId::monospace(12.0),
+            egui::FontId::monospace(12.0_f32),
             palette.text_muted,
         );
     }
 }
 
+/// Render a browser pane — delegates to [`crate::browser::webview::render_browser_pane`].
+fn render_browser(
+    ui: &mut egui::Ui,
+    pane_id: PaneId,
+    browser: &mut crate::browser::BrowserPane,
+    rect: Rect,
+    is_active: bool,
+    active_pane: &mut PaneId,
+) {
+    crate::browser::webview::render_browser_pane(
+        ui,
+        pane_id,
+        browser,
+        rect,
+        is_active,
+        active_pane,
+    );
+}
+
 /// Render a split node by dividing the rect among children.
-///
-/// A 1px hairline in the `border` color is drawn inside each gap between
-/// adjacent children (Arbor's visible split divider).
 fn render_split(
     ui: &mut egui::Ui,
     direction: &SplitDirection,
@@ -132,50 +164,105 @@ fn render_split(
     sizes: &[f32],
     rect: Rect,
     active_pane: &mut PaneId,
-) {
+) -> Option<(usize, f32)> {
     let is_horizontal = direction.is_horizontal();
     let available_dimension = if is_horizontal { rect.width() } else { rect.height() };
     let num_children = children.len();
     let total_borders = SPLIT_BORDER * (num_children.saturating_sub(1)) as f32;
     let usable_space = available_dimension - total_borders;
 
-    let divider_color = theme::palette().border;
-    let mut offset = 0.0f32;
+    let palette = theme::palette();
+    let mut offset = 0.0_f32;
+    let mut resize_request: Option<(usize, f32)> = None;
+
+    // 2.5 px of invisible padding on each side of the 1-px hairline → 6-px total hit width.
+    const HIT_HALF_EXTRA: f32 = 2.5_f32;
 
     for (i, child) in children.iter_mut().enumerate() {
-        let ratio = sizes.get(i).copied().unwrap_or(1.0 / num_children as f32);
+        let ratio = sizes.get(i).copied().unwrap_or(1.0_f32 / num_children as f32);
         let child_size = usable_space * ratio;
 
         let child_rect = if is_horizontal {
             Rect::from_min_size(
-                rect.left_top() + Vec2::new(offset, 0.0),
+                rect.left_top() + Vec2::new(offset, 0.0_f32),
                 Vec2::new(child_size, rect.height()),
             )
         } else {
             Rect::from_min_size(
-                rect.left_top() + Vec2::new(0.0, offset),
+                rect.left_top() + Vec2::new(0.0_f32, offset),
                 Vec2::new(rect.width(), child_size),
             )
         };
 
         render_node(ui, child, child_rect, active_pane);
 
-        // Draw the 1px divider hairline in the gap after this child
         if i + 1 < num_children {
+            let hairline_min = if is_horizontal {
+                rect.left_top() + Vec2::new(offset + child_size, 0.0_f32)
+            } else {
+                rect.left_top() + Vec2::new(0.0_f32, offset + child_size)
+            };
+
             let divider_rect = if is_horizontal {
+                Rect::from_min_size(hairline_min, Vec2::new(SPLIT_BORDER, rect.height()))
+            } else {
+                Rect::from_min_size(hairline_min, Vec2::new(rect.width(), SPLIT_BORDER))
+            };
+
+            let hit_rect = if is_horizontal {
                 Rect::from_min_size(
-                    rect.left_top() + Vec2::new(offset + child_size, 0.0),
-                    Vec2::new(SPLIT_BORDER, rect.height()),
+                    hairline_min - Vec2::new(HIT_HALF_EXTRA, 0.0_f32),
+                    Vec2::new(SPLIT_BORDER + 2.0_f32 * HIT_HALF_EXTRA, rect.height()),
                 )
             } else {
                 Rect::from_min_size(
-                    rect.left_top() + Vec2::new(0.0, offset + child_size),
-                    Vec2::new(rect.width(), SPLIT_BORDER),
+                    hairline_min - Vec2::new(0.0_f32, HIT_HALF_EXTRA),
+                    Vec2::new(rect.width(), SPLIT_BORDER + 2.0_f32 * HIT_HALF_EXTRA),
                 )
             };
-            ui.painter().rect_filled(divider_rect, 0.0, divider_color);
+
+            let response = ui.allocate_rect(hit_rect, egui::Sense::drag());
+
+            if response.hovered() || response.dragged() {
+                ui.ctx().set_cursor_icon(if is_horizontal {
+                    egui::CursorIcon::ResizeHorizontal
+                } else {
+                    egui::CursorIcon::ResizeVertical
+                });
+            }
+
+            if response.dragged() && usable_space > 0.0_f32 {
+                let pixel_delta =
+                    if is_horizontal { response.drag_delta().x } else { response.drag_delta().y };
+                resize_request = Some((i, pixel_delta / usable_space));
+            }
+
+            if response.dragged() {
+                let accent_rect = if is_horizontal {
+                    Rect::from_min_size(
+                        hairline_min - Vec2::new(0.5_f32, 0.0_f32),
+                        Vec2::new(2.0_f32, rect.height()),
+                    )
+                } else {
+                    Rect::from_min_size(
+                        hairline_min - Vec2::new(0.0_f32, 0.5_f32),
+                        Vec2::new(rect.width(), 2.0_f32),
+                    )
+                };
+                ui.painter().rect_filled(accent_rect, 0.0_f32, palette.accent);
+            } else if response.hovered() {
+                ui.painter().rect_filled(
+                    divider_rect,
+                    0.0_f32,
+                    palette.border.gamma_multiply(1.5_f32),
+                );
+            } else {
+                ui.painter().rect_filled(divider_rect, 0.0_f32, palette.border);
+            }
         }
 
         offset += child_size + SPLIT_BORDER;
     }
+
+    resize_request
 }

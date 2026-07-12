@@ -67,6 +67,13 @@ pub struct TerminalPane {
     find_results: Vec<(usize, usize)>,
     /// Index into `find_results` for the currently highlighted match.
     find_index: usize,
+
+    // Dimension overlay state
+    /// Whether the "cols×rows" dimension overlay is currently visible.
+    dimension_overlay_visible: bool,
+    /// Timestamp (in seconds, from `ui.input(|i| i.time)`) when the overlay
+    /// was last shown. Used to fade the overlay out after 2 seconds.
+    dimension_overlay_timer: f64,
 }
 
 impl TerminalPane {
@@ -144,6 +151,8 @@ impl TerminalPane {
             find_query: String::new(),
             find_results: Vec::new(),
             find_index: 0,
+            dimension_overlay_visible: false,
+            dimension_overlay_timer: 0.0_f64,
         })
     }
 
@@ -193,7 +202,7 @@ impl TerminalPane {
         // Determine available space, reserving room for find bar if visible
         let available = ui.available_size();
         let find_bar_space =
-            if self.find_visible { egui::vec2(0.0, FIND_BAR_HEIGHT) } else { egui::Vec2::ZERO };
+            if self.find_visible { egui::vec2(0.0_f32, FIND_BAR_HEIGHT) } else { egui::Vec2::ZERO };
         let terminal_available = available - find_bar_space;
 
         // Calculate terminal dimensions
@@ -207,6 +216,10 @@ impl TerminalPane {
             self.rows = new_rows;
             self.state.resize(new_cols, new_rows);
             self.backend.resize(new_cols, new_rows).ok();
+            if self.has_focus {
+                self.dimension_overlay_visible = true;
+                self.dimension_overlay_timer = ui.input(|i| i.time);
+            }
         }
 
         // Allocate space for the terminal
@@ -224,7 +237,7 @@ impl TerminalPane {
         // Handle scroll wheel for terminal scrollback
         if term_response.hovered() {
             let scroll_delta = ui.input(|i| i.smooth_scroll_delta);
-            if scroll_delta.y != 0.0 {
+            if scroll_delta.y != 0.0_f32 {
                 let lines = (-scroll_delta.y / self.renderer.cell_size().y) as i32;
                 if lines != 0 {
                     self.state.scroll(lines);
@@ -249,16 +262,22 @@ impl TerminalPane {
             self.highlight_matches(ui, rect, &snapshot);
         }
 
-        // Show pane border when focused: 1px accent hairline inside the edge
         if self.has_focus {
             let palette = theme::palette();
             let painter = ui.painter();
-            painter.rect_stroke(
-                rect,
-                egui::CornerRadius::ZERO,
-                egui::Stroke::new(1.0, palette.accent),
-                egui::StrokeKind::Inside,
-            );
+            let glow = [
+                (2.0_f32, palette.accent.gamma_multiply(0.4_f32)),
+                (1.5_f32, palette.accent.gamma_multiply(0.7_f32)),
+                (1.0_f32, palette.accent),
+            ];
+            for (width, color) in glow {
+                painter.rect_stroke(
+                    rect,
+                    egui::CornerRadius::ZERO,
+                    egui::Stroke::new(width, color),
+                    egui::StrokeKind::Inside,
+                );
+            }
         }
 
         // Render find bar if visible
@@ -272,9 +291,42 @@ impl TerminalPane {
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
                 format!("Process exited (code: {:?})", self.backend.try_wait()),
-                egui::FontId::monospace(13.0),
+                egui::FontId::monospace(13.0_f32),
                 theme::palette().danger,
             );
+        }
+
+        // Render dimension overlay if visible and still within 2s window
+        if self.dimension_overlay_visible && self.has_focus {
+            let now = ui.input(|i| i.time);
+            if now - self.dimension_overlay_timer < 2.0_f64 {
+                let palette = theme::palette();
+                let painter = ui.painter();
+                let text = format!("{}\u{00d7}{}", self.cols, self.rows);
+                let font = egui::FontId::monospace(10.0_f32);
+
+                let galley =
+                    painter.layout_no_wrap(text.clone(), font.clone(), palette.text_disabled);
+                let pad = 2.0_f32;
+                let badge_size =
+                    egui::vec2(galley.size().x + pad * 2.0_f32, galley.size().y + pad * 2.0_f32);
+                let badge_min = egui::Pos2::new(
+                    rect.right() - badge_size.x - 4.0_f32,
+                    rect.bottom() - badge_size.y - 4.0_f32,
+                );
+                let badge_rect = egui::Rect::from_min_size(badge_min, badge_size);
+
+                painter.rect_filled(badge_rect, egui::CornerRadius::same(2), palette.panel_bg);
+                painter.text(
+                    badge_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    text,
+                    font,
+                    palette.text_disabled,
+                );
+            } else {
+                self.dimension_overlay_visible = false;
+            }
         }
     }
 
@@ -634,8 +686,8 @@ impl TerminalPane {
         let painter = ui.painter();
 
         let palette = theme::palette();
-        let match_bg = palette.warning.gamma_multiply(0.35);
-        let active_bg = palette.accent.gamma_multiply(0.45);
+        let match_bg = palette.warning.gamma_multiply(0.35_f32);
+        let active_bg = palette.accent.gamma_multiply(0.45_f32);
 
         for (i, &(row, col)) in self.find_results.iter().enumerate() {
             if row >= snapshot.rows as usize || col >= snapshot.cols as usize {
@@ -658,7 +710,7 @@ impl TerminalPane {
             );
 
             let color = if is_active { active_bg } else { match_bg };
-            painter.rect_filled(highlight_rect, 0.0, color);
+            painter.rect_filled(highlight_rect, 0.0_f32, color);
         }
     }
 
@@ -685,27 +737,30 @@ impl TerminalPane {
         let palette = theme::palette();
 
         // Background: chrome strip with a 1px top hairline
-        bar_ui.painter().rect_filled(bar_rect, 0.0, palette.chrome_bg);
+        bar_ui.painter().rect_filled(bar_rect, 0.0_f32, palette.chrome_bg);
         bar_ui.painter().rect_filled(
-            egui::Rect::from_min_size(bar_rect.left_top(), egui::Vec2::new(bar_rect.width(), 1.0)),
-            0.0,
+            egui::Rect::from_min_size(
+                bar_rect.left_top(),
+                egui::Vec2::new(bar_rect.width(), 1.0_f32),
+            ),
+            0.0_f32,
             palette.chrome_border,
         );
 
         // Spacing
-        bar_ui.add_space(8.0);
+        bar_ui.add_space(8.0_f32);
 
         // Query text input: panel_bg fill, 1px border (accent when focused)
         let input_rect = egui::Rect::from_min_size(
-            egui::Pos2::new(bar_ui.cursor().min.x, bar_rect.center().y - 10.0),
-            egui::Vec2::new(200.0, 20.0),
+            egui::Pos2::new(bar_ui.cursor().min.x, bar_rect.center().y - 10.0_f32),
+            egui::Vec2::new(200.0_f32, 20.0_f32),
         );
         bar_ui.painter().rect_filled(input_rect, egui::CornerRadius::same(2), palette.panel_bg);
         let text_response = bar_ui.put(
-            input_rect.shrink2(egui::Vec2::new(6.0, 1.0)),
+            input_rect.shrink2(egui::Vec2::new(6.0_f32, 1.0_f32)),
             egui::TextEdit::singleline(&mut self.find_query)
                 .hint_text("Find...")
-                .font(egui::FontId::monospace(12.0))
+                .font(egui::FontId::monospace(12.0_f32))
                 .vertical_align(egui::Align::Center)
                 .frame(false),
         );
@@ -713,7 +768,7 @@ impl TerminalPane {
         bar_ui.painter().rect_stroke(
             input_rect,
             egui::CornerRadius::same(2),
-            egui::Stroke::new(1.0, input_border),
+            egui::Stroke::new(1.0_f32, input_border),
             egui::StrokeKind::Inside,
         );
 
@@ -721,7 +776,7 @@ impl TerminalPane {
             self.perform_find();
         }
 
-        bar_ui.add_space(8.0);
+        bar_ui.add_space(8.0_f32);
 
         // Match count label
         let count_text = if self.find_results.is_empty() && !self.find_query.is_empty() {
@@ -735,22 +790,22 @@ impl TerminalPane {
         if !count_text.is_empty() {
             bar_ui.label(
                 egui::RichText::new(count_text)
-                    .font(egui::FontId::monospace(10.0))
+                    .font(egui::FontId::monospace(10.0_f32))
                     .color(palette.text_muted),
             );
         }
 
-        bar_ui.add_space(8.0);
+        bar_ui.add_space(8.0_f32);
 
         // Nav/close buttons: 20x20, panel_bg + 1px border, hover panel_active_bg
         // (hover fill comes from the theme's widget visuals).
         let button = |bar_ui: &mut egui::Ui, label: &str| {
             bar_ui.add_sized(
-                [20.0, 20.0],
+                [20.0_f32, 20.0_f32],
                 egui::Button::new(
-                    egui::RichText::new(label).color(palette.text_primary).size(12.0),
+                    egui::RichText::new(label).color(palette.text_primary).size(12.0_f32),
                 )
-                .stroke(egui::Stroke::new(1.0, palette.border))
+                .stroke(egui::Stroke::new(1.0_f32, palette.border))
                 .corner_radius(egui::CornerRadius::same(2)),
             )
         };
@@ -769,7 +824,7 @@ impl TerminalPane {
             self.find_next_match();
         }
 
-        bar_ui.add_space(8.0);
+        bar_ui.add_space(8.0_f32);
 
         // Close button
         if button(&mut bar_ui, "\u{2715}").clicked() {

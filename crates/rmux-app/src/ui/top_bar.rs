@@ -11,7 +11,7 @@ use crate::workspace::WorkspaceManager;
 
 /// Horizontal offset of the leftmost control (clears macOS traffic lights).
 fn left_offset() -> f32 {
-    if cfg!(target_os = "macos") { 76.0 } else { 12.0 }
+    if cfg!(target_os = "macos") { 76.0_f32 } else { 12.0_f32 }
 }
 
 /// Render the top bar. Call before any side panels so it spans the window.
@@ -33,8 +33,8 @@ pub fn show(
             // Bottom hairline
             ui.painter().hline(
                 rect.x_range(),
-                rect.bottom() - 0.5,
-                Stroke::new(1.0, p.chrome_border),
+                rect.bottom() - 0.5_f32,
+                Stroke::new(1.0_f32, p.chrome_border),
             );
 
             // Center: workspace name (14px strong) + optional pane-count
@@ -42,32 +42,32 @@ pub fn show(
             let ws = manager.active();
             let name_galley = ui.painter().layout_no_wrap(
                 ws.name.clone(),
-                FontId::proportional(14.0),
+                FontId::proportional(14.0_f32),
                 p.text_primary,
             );
             let panes = ws.pane_count();
             let suffix_galley = (panes > 1).then(|| {
                 ui.painter().layout_no_wrap(
                     format!(" · {panes} panes"),
-                    FontId::proportional(11.0),
+                    FontId::proportional(11.0_f32),
                     p.text_muted,
                 )
             });
             let total_width =
-                name_galley.size().x + suffix_galley.as_ref().map_or(0.0, |g| g.size().x);
-            let mut cursor_x = rect.center().x - total_width / 2.0;
-            let name_pos = pos2(cursor_x, rect.center().y - name_galley.size().y / 2.0);
+                name_galley.size().x + suffix_galley.as_ref().map_or(0.0_f32, |g| g.size().x);
+            let mut cursor_x = rect.center().x - total_width / 2.0_f32;
+            let name_pos = pos2(cursor_x, rect.center().y - name_galley.size().y / 2.0_f32);
             cursor_x += name_galley.size().x;
             ui.painter().galley(name_pos, name_galley, p.text_primary);
             if let Some(suffix) = suffix_galley {
-                let suffix_pos = pos2(cursor_x, rect.center().y - suffix.size().y / 2.0);
+                let suffix_pos = pos2(cursor_x, rect.center().y - suffix.size().y / 2.0_f32);
                 ui.painter().galley(suffix_pos, suffix, p.text_muted);
             }
 
             // Sidebar toggle (left): 20×20, radius 2, no fill
             let toggle_rect = Rect::from_center_size(
-                pos2(rect.left() + left_offset() + 10.0, rect.center().y),
-                vec2(20.0, 20.0),
+                pos2(rect.left() + left_offset() + 10.0_f32, rect.center().y),
+                vec2(20.0_f32, 20.0_f32),
             );
             let toggle = ui
                 .interact(toggle_rect, ui.id().with("sidebar_toggle"), Sense::click())
@@ -83,7 +83,7 @@ pub fn show(
                 toggle_rect.center(),
                 egui::Align2::CENTER_CENTER,
                 "☰",
-                FontId::proportional(12.0),
+                FontId::proportional(12.0_f32),
                 icon_color,
             );
             if toggle.clicked() {
@@ -95,22 +95,22 @@ pub fn show(
             let unread = notifications.unread_count();
             let icon_galley = ui.painter().layout_no_wrap(
                 "🔔".to_string(),
-                FontId::proportional(11.0),
+                FontId::proportional(11.0_f32),
                 p.text_muted,
             );
             let count_galley = (unread > 0).then(|| {
                 ui.painter().layout_no_wrap(
                     format!(" {unread}"),
-                    FontId::proportional(11.0),
+                    FontId::proportional(11.0_f32),
                     p.accent,
                 )
             });
             let content_width =
-                icon_galley.size().x + count_galley.as_ref().map_or(0.0, |g| g.size().x);
-            let bell_width = content_width + 2.0 * 6.0;
+                icon_galley.size().x + count_galley.as_ref().map_or(0.0_f32, |g| g.size().x);
+            let bell_width = content_width + 2.0_f32 * 6.0_f32;
             let bell_rect = Rect::from_min_size(
-                pos2(rect.right() - 12.0 - bell_width, rect.center().y - 11.0),
-                vec2(bell_width, 22.0),
+                pos2(rect.right() - 12.0_f32 - bell_width, rect.center().y - 11.0_f32),
+                vec2(bell_width, 22.0_f32),
             );
             let bell = ui
                 .interact(bell_rect, ui.id().with("notification_bell"), Sense::click())
@@ -121,15 +121,17 @@ pub fn show(
             ui.painter().rect_stroke(
                 bell_rect,
                 CornerRadius::same(2),
-                Stroke::new(1.0, p.border),
+                Stroke::new(1.0_f32, p.border),
                 StrokeKind::Inside,
             );
-            let icon_pos =
-                pos2(bell_rect.left() + 6.0, bell_rect.center().y - icon_galley.size().y / 2.0);
+            let icon_pos = pos2(
+                bell_rect.left() + 6.0_f32,
+                bell_rect.center().y - icon_galley.size().y / 2.0_f32,
+            );
             let count_x = icon_pos.x + icon_galley.size().x;
             ui.painter().galley(icon_pos, icon_galley, p.text_muted);
             if let Some(count) = count_galley {
-                let count_pos = pos2(count_x, bell_rect.center().y - count.size().y / 2.0);
+                let count_pos = pos2(count_x, bell_rect.center().y - count.size().y / 2.0_f32);
                 ui.painter().galley(count_pos, count, p.accent);
             }
             if bell.clicked() {

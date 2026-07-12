@@ -8,6 +8,7 @@
 use rmux_terminal::OscNotification;
 use thiserror::Error;
 
+use crate::browser::BrowserPane;
 use crate::ui::TerminalPane;
 
 /// Error type for pane tree operations.
@@ -40,6 +41,36 @@ pub enum SplitDirection {
     Vertical,
 }
 
+/// Spatial direction for pane focus movement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpatialDirection {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+/// A rectangle describing a pane's position in normalized coordinates (0.0..=1.0).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PaneRect {
+    pub min_x: f32,
+    pub min_y: f32,
+    pub max_x: f32,
+    pub max_y: f32,
+}
+
+impl PaneRect {
+    /// Create a unit rectangle covering (0,0) to (1,1).
+    pub fn unit() -> Self {
+        Self { min_x: 0.0, min_y: 0.0, max_x: 1.0, max_y: 1.0 }
+    }
+
+    /// Compute the center point of this rectangle.
+    pub fn center(&self) -> (f32, f32) {
+        ((self.min_x + self.max_x) / 2.0, (self.min_y + self.max_y) / 2.0)
+    }
+}
+
 impl SplitDirection {
     pub fn is_horizontal(&self) -> bool {
         matches!(self, Self::Horizontal)
@@ -53,6 +84,7 @@ impl SplitDirection {
 /// A node in the recursive pane tree.
 pub enum PaneNode {
     Leaf { id: PaneId, terminal: Box<Option<TerminalPane>> },
+    Browser { id: PaneId, browser: Box<BrowserPane> },
     Split { id: SplitId, direction: SplitDirection, children: Vec<PaneNode>, sizes: Vec<f32> },
 }
 
@@ -64,6 +96,9 @@ impl std::fmt::Debug for PaneNode {
                 .field("id", id)
                 .field("has_terminal", &terminal.is_some())
                 .finish(),
+            Self::Browser { id, browser } => {
+                f.debug_struct("Browser").field("id", id).field("url", &browser.url()).finish()
+            }
             Self::Split { id, direction, children, sizes } => f
                 .debug_struct("Split")
                 .field("id", id)
@@ -84,6 +119,10 @@ impl PaneNode {
         Self::Leaf { id, terminal: Box::new(Some(terminal)) }
     }
 
+    pub fn new_browser(id: PaneId, browser: BrowserPane) -> Self {
+        Self::Browser { id, browser: Box::new(browser) }
+    }
+
     pub fn new_split(id: SplitId, direction: SplitDirection, children: Vec<PaneNode>) -> Self {
         let count = children.len() as f32;
         let size = 1.0 / count;
@@ -95,13 +134,17 @@ impl PaneNode {
         matches!(self, Self::Leaf { .. })
     }
 
+    pub fn is_browser(&self) -> bool {
+        matches!(self, Self::Browser { .. })
+    }
+
     pub fn is_split(&self) -> bool {
         matches!(self, Self::Split { .. })
     }
 
     pub fn pane_id(&self) -> Option<PaneId> {
         match self {
-            Self::Leaf { id, .. } => Some(*id),
+            Self::Leaf { id, .. } | Self::Browser { id, .. } => Some(*id),
             Self::Split { .. } => None,
         }
     }
@@ -110,6 +153,7 @@ impl PaneNode {
         match self {
             Self::Leaf { id, terminal } if *id == target => Some(terminal.as_mut()),
             Self::Leaf { .. } => None,
+            Self::Browser { .. } => None,
             Self::Split { children, .. } => {
                 children.iter_mut().find_map(|c| c.find_terminal_mut(target))
             }
@@ -118,6 +162,55 @@ impl PaneNode {
 
     pub fn get_terminal(&mut self, target: PaneId) -> Option<&mut TerminalPane> {
         self.find_terminal_mut(target).and_then(|opt| opt.as_mut())
+    }
+
+    pub fn find_browser_mut(&mut self, target: PaneId) -> Option<&mut BrowserPane> {
+        match self {
+            Self::Browser { id, browser } if *id == target => Some(browser.as_mut()),
+            Self::Browser { .. } => None,
+            Self::Leaf { .. } => None,
+            Self::Split { children, .. } => {
+                children.iter_mut().find_map(|c| c.find_browser_mut(target))
+            }
+        }
+    }
+
+    /// Find a mutable reference to a pane node by ID anywhere in the tree.
+    pub fn find_pane_mut(&mut self, target: PaneId) -> Option<&mut PaneNode> {
+        if self.pane_id() == Some(target) {
+            return Some(self);
+        }
+        if let Self::Split { children, .. } = self {
+            for child in children.iter_mut() {
+                let found = child.find_pane_mut(target);
+                if found.is_some() {
+                    return found;
+                }
+            }
+        }
+        None
+    }
+
+    /// Replace the pane at `target` with `new_node` in the tree.
+    ///
+    /// Uses `find_pane_mut` to locate the target without creating
+    /// sacrificial probe nodes. Returns `true` if replacement succeeded.
+    pub fn replace_pane(&mut self, target: PaneId, new_node: PaneNode) -> bool {
+        if let Some(node) = self.find_pane_mut(target) {
+            *node = new_node;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Check if the node at `target` is a browser pane.
+    pub fn is_browser_pane(&self, target: PaneId) -> bool {
+        match self {
+            Self::Browser { id, .. } => *id == target,
+            Self::Leaf { .. } => false,
+            Self::Split { children, .. } => children.iter().any(|c| c.is_browser_pane(target)),
+        }
     }
 
     /// Process PTY output for every pane in this subtree, collecting any
@@ -130,6 +223,7 @@ impl PaneNode {
                     notifications.extend(t.take_notifications().into_iter().map(|n| (*id, n)));
                 }
             }
+            Self::Browser { .. } => {}
             Self::Split { children, .. } => {
                 for child in children.iter_mut() {
                     child.process_pty_outputs(notifications);
@@ -140,14 +234,14 @@ impl PaneNode {
 
     pub fn pane_ids(&self) -> Vec<PaneId> {
         match self {
-            Self::Leaf { id, .. } => vec![*id],
+            Self::Leaf { id, .. } | Self::Browser { id, .. } => vec![*id],
             Self::Split { children, .. } => children.iter().flat_map(|c| c.pane_ids()).collect(),
         }
     }
 
     pub fn pane_count(&self) -> usize {
         match self {
-            Self::Leaf { .. } => 1,
+            Self::Leaf { .. } | Self::Browser { .. } => 1,
             Self::Split { children, .. } => children.iter().map(|c| c.pane_count()).sum(),
         }
     }
@@ -156,6 +250,7 @@ impl PaneNode {
         match self {
             Self::Leaf { id, terminal } if *id == target => Some(terminal.as_ref()),
             Self::Leaf { .. } => None,
+            Self::Browser { .. } => None,
             Self::Split { children, .. } => children.iter().find_map(|c| c.find_leaf(target)),
         }
     }
@@ -167,7 +262,7 @@ impl PaneNode {
         new_pane_id: PaneId,
         new_split_id: SplitId,
     ) -> Result<PaneId, PaneTreeError> {
-        if let Self::Leaf { id, .. } = self {
+        if let Self::Leaf { id, .. } | Self::Browser { id, .. } = self {
             if *id == target_pane {
                 let old = std::mem::replace(self, Self::new_leaf(PaneId(0)));
                 *self = Self::Split {
@@ -183,7 +278,7 @@ impl PaneNode {
 
         if let Self::Split { children, .. } = self {
             for child in children.iter_mut() {
-                if let Self::Leaf { id, .. } = child {
+                if let Self::Leaf { id, .. } | Self::Browser { id, .. } = child {
                     if *id == target_pane {
                         let old = std::mem::replace(child, Self::new_leaf(PaneId(0)));
                         *child = Self::Split {
@@ -224,10 +319,10 @@ impl PaneNode {
     fn close_pane_impl(&mut self, target_pane: PaneId) -> Result<bool, PaneTreeError> {
         match self {
             Self::Split { children, sizes, .. } => {
-                // Find the index of the target leaf pane
-                let target_idx = children
-                    .iter()
-                    .position(|child| child.is_leaf() && child.pane_id() == Some(target_pane));
+                let target_idx = children.iter().position(|child| {
+                    let id = child.pane_id();
+                    !child.is_split() && id == Some(target_pane)
+                });
                 if let Some(i) = target_idx {
                     children.remove(i);
                     let count = children.len() as f32;
@@ -246,7 +341,7 @@ impl PaneNode {
                     }
                 }
             }
-            Self::Leaf { .. } => {
+            Self::Leaf { .. } | Self::Browser { .. } => {
                 if self.pane_id() == Some(target_pane) {
                     return Err(PaneTreeError::CannotCloseLastPane);
                 }
@@ -319,7 +414,51 @@ impl PaneNode {
     pub fn leaf_panes(&self) -> Vec<(PaneId, Option<&TerminalPane>)> {
         match self {
             Self::Leaf { id, terminal } => vec![(*id, terminal.as_ref().as_ref())],
+            Self::Browser { .. } => vec![],
             Self::Split { children, .. } => children.iter().flat_map(|c| c.leaf_panes()).collect(),
+        }
+    }
+
+    /// Collect all leaf and browser pane rectangles into `out`.
+    ///
+    /// `rect` is the area allocated to this node in normalized coordinates.
+    /// Split children are assigned sub-rectangles proportional to their sizes.
+    pub fn collect_pane_rects(&self, rect: &PaneRect, out: &mut Vec<(PaneId, PaneRect)>) {
+        match self {
+            Self::Leaf { id, .. } | Self::Browser { id, .. } => {
+                out.push((*id, *rect));
+            }
+            Self::Split { direction, children, sizes, .. } => {
+                let is_horizontal = direction.is_horizontal();
+                let available =
+                    if is_horizontal { rect.max_x - rect.min_x } else { rect.max_y - rect.min_y };
+                let num_children = children.len();
+                let mut offset = 0.0_f32;
+
+                for (i, child) in children.iter().enumerate() {
+                    let ratio = sizes.get(i).copied().unwrap_or(1.0_f32 / num_children as f32);
+                    let child_size = available * ratio;
+
+                    let child_rect = if is_horizontal {
+                        PaneRect {
+                            min_x: rect.min_x + offset,
+                            min_y: rect.min_y,
+                            max_x: rect.min_x + offset + child_size,
+                            max_y: rect.max_y,
+                        }
+                    } else {
+                        PaneRect {
+                            min_x: rect.min_x,
+                            min_y: rect.min_y + offset,
+                            max_x: rect.max_x,
+                            max_y: rect.min_y + offset + child_size,
+                        }
+                    };
+
+                    child.collect_pane_rects(&child_rect, out);
+                    offset += child_size;
+                }
+            }
         }
     }
 }
@@ -328,6 +467,7 @@ impl PaneNode {
     pub fn leaf_panes_mut(&mut self) -> Vec<(PaneId, &mut Option<TerminalPane>)> {
         match self {
             Self::Leaf { id, terminal } => vec![(*id, terminal.as_mut())],
+            Self::Browser { .. } => vec![],
             Self::Split { children, .. } => {
                 children.iter_mut().flat_map(|c| c.leaf_panes_mut()).collect()
             }
@@ -363,11 +503,62 @@ impl PaneNode {
                     vec![]
                 }
             }
+            Self::Browser { .. } => vec![],
             Self::Split { children, .. } => {
                 children.iter().flat_map(|c| c.collect_exited_panes()).collect()
             }
         }
     }
+}
+
+/// Find the spatially nearest pane in `direction` from `from`.
+///
+/// Walks the pane tree to collect normalized rectangles for every leaf/browser
+/// pane, then scores candidates by alignment and distance.
+pub fn find_pane_in_direction(
+    root: &PaneNode,
+    from: PaneId,
+    direction: SpatialDirection,
+) -> Option<PaneId> {
+    let mut rects = Vec::new();
+    root.collect_pane_rects(&PaneRect::unit(), &mut rects);
+
+    let from_rect = rects.iter().find(|(id, _)| *id == from).map(|(_, r)| *r)?;
+    let from_center = from_rect.center();
+
+    let mut best: Option<(PaneId, f32)> = None;
+
+    for (id, rect) in rects {
+        if id == from {
+            continue;
+        }
+
+        let center = rect.center();
+        let delta_x = center.0 - from_center.0;
+        let delta_y = center.1 - from_center.1;
+
+        let in_direction = match direction {
+            SpatialDirection::Left => delta_x < 0.0,
+            SpatialDirection::Right => delta_x > 0.0,
+            SpatialDirection::Up => delta_y < 0.0,
+            SpatialDirection::Down => delta_y > 0.0,
+        };
+
+        if !in_direction {
+            continue;
+        }
+
+        let score = match direction {
+            SpatialDirection::Left | SpatialDirection::Right => delta_y.abs() * 2.0 + delta_x.abs(),
+            SpatialDirection::Up | SpatialDirection::Down => delta_x.abs() * 2.0 + delta_y.abs(),
+        };
+
+        if best.map(|(_, s)| score < s).unwrap_or(true) {
+            best = Some((id, score));
+        }
+    }
+
+    best.map(|(id, _)| id)
 }
 
 #[cfg(test)]

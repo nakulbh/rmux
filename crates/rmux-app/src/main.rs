@@ -1,4 +1,6 @@
 #![forbid(unsafe_code)]
+#![allow(unknown_lints)]
+#![allow(ambiguous_float_literals)]
 //! rmux — A cross-platform, memory-efficient terminal multiplexer GUI.
 //!
 //! # Architecture
@@ -20,7 +22,9 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitEx
 mod api;
 mod api_dispatch;
 mod app;
+mod browser;
 mod notifications;
+mod shortcut_handler;
 mod shortcuts;
 mod ui;
 mod workspace;

@@ -7,7 +7,11 @@
 
 use rmux_terminal::OscNotification;
 
-use super::splits::{PaneId, PaneNode, PaneTreeError, SplitDirection, SplitId};
+use super::splits::{
+    PaneId, PaneNode, PaneTreeError, SpatialDirection, SplitDirection, SplitId,
+    find_pane_in_direction,
+};
+use crate::browser::BrowserPane;
 use crate::ui::TerminalPane;
 
 /// A unique identifier for a workspace.
@@ -21,6 +25,8 @@ pub enum FocusDirection {
     Next,
     /// Move focus to the previous pane in DFS order.
     Previous,
+    /// Move focus spatially by delta (dx, dy).
+    Spatial { dx: i32, dy: i32 },
 }
 
 /// A workspace containing a pane tree and metadata.
@@ -39,6 +45,15 @@ pub struct Workspace {
     /// Progress in `0.0..=1.0` shown as a bar in the sidebar tab
     /// (set via `sidebar.set_progress`).
     pub progress: Option<f32>,
+    /// Current git branch name for the workspace's directory, if known.
+    /// Displayed on the sidebar card (set via `update_git_info`).
+    pub git_branch: Option<String>,
+    /// Short git status summary (e.g. "clean", "modified", "untracked").
+    /// Displayed on the sidebar card (set via `update_git_info`).
+    pub git_status: Option<String>,
+    /// TCP ports currently listening in this workspace's directory.
+    /// Displayed as badges on the sidebar card (set via `update_ports`).
+    pub ports: Vec<u16>,
     /// When `Some`, only this pane is rendered (zoomed/maximized mode).
     /// Toggled by `Cmd/Ctrl+Shift+Enter`.
     pub zoomed_pane: Option<PaneId>,
@@ -57,6 +72,9 @@ impl Workspace {
             active_pane: PaneId(pane_id),
             status: None,
             progress: None,
+            git_branch: None,
+            git_status: None,
+            ports: Vec::new(),
             zoomed_pane: None,
         }
     }
@@ -66,6 +84,12 @@ impl Workspace {
         if let Some(slot) = self.root.find_terminal_mut(pane_id) {
             *slot = Some(terminal);
         }
+    }
+
+    /// Replace the leaf pane at `pane_id` with a browser pane.
+    pub fn set_browser(&mut self, pane_id: PaneId, browser: BrowserPane) {
+        let browser_node = PaneNode::new_browser(pane_id, browser);
+        self.root.replace_pane(pane_id, browser_node);
     }
 
     /// Process PTY output for all panes in this workspace, collecting any
@@ -148,11 +172,58 @@ impl Workspace {
         }
     }
 
+    /// Move focus to the pane on the left.
+    pub fn focus_left(&mut self) {
+        if let Some(id) =
+            find_pane_in_direction(&self.root, self.active_pane, SpatialDirection::Left)
+        {
+            self.active_pane = id;
+        }
+    }
+
+    /// Move focus to the pane on the right.
+    pub fn focus_right(&mut self) {
+        if let Some(id) =
+            find_pane_in_direction(&self.root, self.active_pane, SpatialDirection::Right)
+        {
+            self.active_pane = id;
+        }
+    }
+
+    /// Move focus to the pane above.
+    pub fn focus_up(&mut self) {
+        if let Some(id) = find_pane_in_direction(&self.root, self.active_pane, SpatialDirection::Up)
+        {
+            self.active_pane = id;
+        }
+    }
+
+    /// Move focus to the pane below.
+    pub fn focus_down(&mut self) {
+        if let Some(id) =
+            find_pane_in_direction(&self.root, self.active_pane, SpatialDirection::Down)
+        {
+            self.active_pane = id;
+        }
+    }
+
     /// Move focus in a given direction.
     pub fn focus_direction(&mut self, direction: FocusDirection) {
         match direction {
             FocusDirection::Next => self.focus_next(),
             FocusDirection::Previous => self.focus_prev(),
+            FocusDirection::Spatial { dx, dy } => {
+                let spatial = match (dx, dy) {
+                    (-1, 0) => SpatialDirection::Left,
+                    (1, 0) => SpatialDirection::Right,
+                    (0, -1) => SpatialDirection::Up,
+                    (0, 1) => SpatialDirection::Down,
+                    _ => return,
+                };
+                if let Some(id) = find_pane_in_direction(&self.root, self.active_pane, spatial) {
+                    self.active_pane = id;
+                }
+            }
         }
     }
 
@@ -175,75 +246,35 @@ impl Workspace {
     pub fn active_terminal(&mut self) -> Option<&mut TerminalPane> {
         self.root.get_terminal(self.active_pane)
     }
+
+    /// Update the git branch and status for this workspace's sidebar card.
+    /// Either field may be `None` to indicate "not yet known / not in a repo".
+    pub fn update_git_info(&mut self, branch: Option<String>, status: Option<String>) {
+        self.git_branch = branch;
+        self.git_status = status;
+    }
+
+    /// Replace the list of listening ports displayed on the sidebar card.
+    pub fn update_ports(&mut self, ports: Vec<u16>) {
+        self.ports = ports;
+    }
+
+    /// Current git branch name, if known.
+    pub fn git_branch(&self) -> Option<&str> {
+        self.git_branch.as_deref()
+    }
+
+    /// Current git status summary, if known.
+    pub fn git_status(&self) -> Option<&str> {
+        self.git_status.as_deref()
+    }
+
+    /// Listening ports associated with this workspace.
+    pub fn ports(&self) -> &[u16] {
+        &self.ports
+    }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn make_workspace(id: u64, name: &str, next_pane_id: &mut u64) -> Workspace {
-        Workspace::new(WorkspaceId(id), name.to_string(), next_pane_id)
-    }
-
-    #[test]
-    fn test_workspace_creation() {
-        let mut pane_id = 1;
-        let ws = make_workspace(1, "Test", &mut pane_id);
-        assert_eq!(ws.pane_count(), 1);
-        assert!(!ws.pane_ids().is_empty());
-    }
-
-    #[test]
-    fn test_split_right() {
-        let mut pane_id = 1;
-        let mut split_id = 1;
-        let mut ws = make_workspace(1, "Test", &mut pane_id);
-        let original_active = ws.active_pane;
-        let new_id = ws.split_right(original_active, &mut pane_id, &mut split_id).unwrap();
-        assert_eq!(ws.pane_count(), 2);
-        assert_ne!(new_id, original_active);
-    }
-
-    #[test]
-    fn test_close_pane_updates_focus() {
-        let mut pane_id = 1;
-        let mut split_id = 1;
-        let mut ws = make_workspace(1, "Test", &mut pane_id);
-        let p1 = ws.active_pane;
-        let p2 = ws.split_right(p1, &mut pane_id, &mut split_id).unwrap();
-
-        ws.focus_pane(p2);
-        ws.close_pane(p1).unwrap();
-        assert_eq!(ws.pane_count(), 1);
-        assert_eq!(ws.active_pane, p2);
-
-        let result = ws.close_pane(p2);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_focus_next_prev() {
-        let mut pane_id = 1;
-        let mut split_id = 1;
-        let mut ws = make_workspace(1, "Test", &mut pane_id);
-        let p1 = ws.active_pane;
-        let p2 = ws.split_right(p1, &mut pane_id, &mut split_id).unwrap();
-        let _p3 = ws.split_down(p2, &mut pane_id, &mut split_id).unwrap();
-
-        let panes = ws.pane_ids();
-        assert_eq!(panes.len(), 3);
-
-        ws.focus_pane(p1);
-        ws.focus_next();
-        assert_eq!(ws.active_pane, panes[1]);
-        ws.focus_next();
-        assert_eq!(ws.active_pane, panes[2]);
-        ws.focus_next();
-        assert_eq!(ws.active_pane, panes[0]);
-
-        ws.focus_prev();
-        assert_eq!(ws.active_pane, panes[2]);
-        ws.focus_prev();
-        assert_eq!(ws.active_pane, panes[1]);
-    }
-}
+#[path = "model_tests.rs"]
+mod tests;
