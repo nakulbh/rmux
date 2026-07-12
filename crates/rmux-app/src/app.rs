@@ -49,6 +49,8 @@ pub struct RmuxApp {
     /// detect switches (keyboard, sidebar, or API) and publish
     /// `workspace.changed` exactly once per switch.
     last_active_workspace: u64,
+    /// Global shortcut registry built once at startup.
+    pub(crate) shortcut_registry: crate::shortcuts::ShortcutRegistry,
 }
 
 impl RmuxApp {
@@ -66,6 +68,7 @@ impl RmuxApp {
             api_request_rx: channels.request_rx,
             api_event_tx: channels.event_tx,
             last_active_workspace: 0,
+            shortcut_registry: crate::shortcuts::ShortcutRegistry::default(),
         };
 
         let pane_id = app.workspace_manager.active().active_pane;

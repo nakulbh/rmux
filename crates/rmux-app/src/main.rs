@@ -24,6 +24,7 @@ mod api_dispatch;
 mod app;
 mod browser;
 mod notifications;
+mod shortcut_handler;
 mod shortcuts;
 mod ui;
 mod workspace;

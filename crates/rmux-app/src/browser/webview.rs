@@ -189,3 +189,135 @@ impl Default for BrowserPane {
         Self::new()
     }
 }
+
+/// Render a browser pane with navigation controls and webview area.
+///
+/// Called from the workspace view when a [`BrowserPane`] leaf is encountered.
+pub(crate) fn render_browser_pane(
+    ui: &mut egui::Ui,
+    pane_id: crate::workspace::splits::PaneId,
+    browser: &mut BrowserPane,
+    rect: egui::Rect,
+    is_active: bool,
+    active_pane: &mut crate::workspace::splits::PaneId,
+) {
+    let palette = crate::ui::theme::palette();
+    let mut child_ui =
+        ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::default()));
+
+    // Fill background
+    child_ui.painter().rect_filled(rect, 0.0_f32, palette.panel_bg);
+
+    if is_active {
+        let painter = child_ui.painter();
+        let border_rect = rect.shrink(0.5_f32);
+        let glow = [
+            (2.0_f32, palette.accent.gamma_multiply(0.4_f32)),
+            (1.5_f32, palette.accent.gamma_multiply(0.7_f32)),
+            (1.0_f32, palette.accent),
+        ];
+        for (width, color) in glow {
+            painter.rect_stroke(
+                border_rect,
+                egui::CornerRadius::ZERO,
+                egui::Stroke::new(width, color),
+                egui::StrokeKind::Inside,
+            );
+        }
+    }
+
+    let toolbar_h = 32.0_f32;
+    let toolbar_border = 1.0_f32;
+    let toolbar_rect =
+        egui::Rect::from_min_size(rect.left_top(), egui::Vec2::new(rect.width(), toolbar_h));
+    let webview_rect = egui::Rect::from_min_size(
+        rect.left_top() + egui::Vec2::new(0.0_f32, toolbar_h + toolbar_border),
+        egui::Vec2::new(rect.width(), rect.height() - toolbar_h - toolbar_border),
+    );
+
+    // Toolbar background
+    child_ui.painter().rect_filled(toolbar_rect, 0.0_f32, palette.chrome_bg);
+
+    // Layout toolbar with egui widgets
+    child_ui.allocate_new_ui(egui::UiBuilder::new().max_rect(toolbar_rect.shrink(4.0_f32)), |ui| {
+        ui.horizontal(|ui| {
+            // Back button
+            let back_enabled = browser.can_go_back();
+            let back_btn = egui::Button::new(egui::RichText::new("\u{2190}").size(14.0_f32))
+                .min_size(egui::Vec2::new(24.0_f32, 22.0_f32));
+            if ui.add_enabled(back_enabled, back_btn).clicked() {
+                let _ = browser.go_back();
+            }
+
+            // Forward button
+            let fwd_enabled = browser.can_go_forward();
+            let fwd_btn = egui::Button::new(egui::RichText::new("\u{2192}").size(14.0_f32))
+                .min_size(egui::Vec2::new(24.0_f32, 22.0_f32));
+            if ui.add_enabled(fwd_enabled, fwd_btn).clicked() {
+                let _ = browser.go_forward();
+            }
+
+            // Reload button
+            if ui
+                .add(
+                    egui::Button::new(egui::RichText::new("\u{21BB}").size(14.0_f32))
+                        .min_size(egui::Vec2::new(24.0_f32, 22.0_f32)),
+                )
+                .clicked()
+            {
+                let _ = browser.reload();
+            }
+
+            // URL bar
+            let mut url = browser.url().to_string();
+            let url_id = ui.next_auto_id();
+            let url_response = ui.add_sized(
+                egui::Vec2::new(ui.available_width() - 4.0_f32, 22.0_f32),
+                egui::TextEdit::singleline(&mut url)
+                    .id(url_id)
+                    .font(egui::FontId::proportional(12.0_f32))
+                    .desired_width(f32::INFINITY),
+            );
+
+            // Cmd/Ctrl+L: request focus on URL bar
+            if browser.focus_url_bar {
+                ui.memory_mut(|mem| mem.request_focus(url_id));
+                browser.focus_url_bar = false;
+            }
+
+            if url_response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                let _ = browser.navigate(&url);
+            }
+            if ui.input(|i| i.key_pressed(egui::Key::Enter)) && url_response.has_focus() {
+                let _ = browser.navigate(&url);
+            }
+        });
+    });
+
+    // Webview area placeholder / real webview
+    if !browser.is_open() {
+        child_ui.painter().rect_filled(webview_rect, 0.0_f32, palette.app_bg);
+        child_ui.painter().rect_stroke(
+            webview_rect.shrink(0.5_f32),
+            egui::CornerRadius::ZERO,
+            egui::Stroke::new(1.0_f32, palette.border),
+            egui::StrokeKind::Inside,
+        );
+        child_ui.painter().text(
+            webview_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "Waiting for webview...",
+            egui::FontId::proportional(12.0_f32),
+            palette.text_muted,
+        );
+    }
+
+    // Update browser bounds for native webview positioning
+    browser.set_bounds(webview_rect);
+    browser.reposition_webview();
+
+    // Set active pane on click
+    if child_ui.response().clicked() && !is_active {
+        *active_pane = pane_id;
+    }
+}

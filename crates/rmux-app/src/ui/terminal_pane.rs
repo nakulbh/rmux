@@ -67,6 +67,13 @@ pub struct TerminalPane {
     find_results: Vec<(usize, usize)>,
     /// Index into `find_results` for the currently highlighted match.
     find_index: usize,
+
+    // Dimension overlay state
+    /// Whether the "cols×rows" dimension overlay is currently visible.
+    dimension_overlay_visible: bool,
+    /// Timestamp (in seconds, from `ui.input(|i| i.time)`) when the overlay
+    /// was last shown. Used to fade the overlay out after 2 seconds.
+    dimension_overlay_timer: f64,
 }
 
 impl TerminalPane {
@@ -144,6 +151,8 @@ impl TerminalPane {
             find_query: String::new(),
             find_results: Vec::new(),
             find_index: 0,
+            dimension_overlay_visible: false,
+            dimension_overlay_timer: 0.0_f64,
         })
     }
 
@@ -207,6 +216,10 @@ impl TerminalPane {
             self.rows = new_rows;
             self.state.resize(new_cols, new_rows);
             self.backend.resize(new_cols, new_rows).ok();
+            if self.has_focus {
+                self.dimension_overlay_visible = true;
+                self.dimension_overlay_timer = ui.input(|i| i.time);
+            }
         }
 
         // Allocate space for the terminal
@@ -249,16 +262,22 @@ impl TerminalPane {
             self.highlight_matches(ui, rect, &snapshot);
         }
 
-        // Show pane border when focused: 1px accent hairline inside the edge
         if self.has_focus {
             let palette = theme::palette();
             let painter = ui.painter();
-            painter.rect_stroke(
-                rect,
-                egui::CornerRadius::ZERO,
-                egui::Stroke::new(1.0_f32, palette.accent),
-                egui::StrokeKind::Inside,
-            );
+            let glow = [
+                (2.0_f32, palette.accent.gamma_multiply(0.4_f32)),
+                (1.5_f32, palette.accent.gamma_multiply(0.7_f32)),
+                (1.0_f32, palette.accent),
+            ];
+            for (width, color) in glow {
+                painter.rect_stroke(
+                    rect,
+                    egui::CornerRadius::ZERO,
+                    egui::Stroke::new(width, color),
+                    egui::StrokeKind::Inside,
+                );
+            }
         }
 
         // Render find bar if visible
@@ -275,6 +294,39 @@ impl TerminalPane {
                 egui::FontId::monospace(13.0_f32),
                 theme::palette().danger,
             );
+        }
+
+        // Render dimension overlay if visible and still within 2s window
+        if self.dimension_overlay_visible && self.has_focus {
+            let now = ui.input(|i| i.time);
+            if now - self.dimension_overlay_timer < 2.0_f64 {
+                let palette = theme::palette();
+                let painter = ui.painter();
+                let text = format!("{}\u{00d7}{}", self.cols, self.rows);
+                let font = egui::FontId::monospace(10.0_f32);
+
+                let galley =
+                    painter.layout_no_wrap(text.clone(), font.clone(), palette.text_disabled);
+                let pad = 2.0_f32;
+                let badge_size =
+                    egui::vec2(galley.size().x + pad * 2.0_f32, galley.size().y + pad * 2.0_f32);
+                let badge_min = egui::Pos2::new(
+                    rect.right() - badge_size.x - 4.0_f32,
+                    rect.bottom() - badge_size.y - 4.0_f32,
+                );
+                let badge_rect = egui::Rect::from_min_size(badge_min, badge_size);
+
+                painter.rect_filled(badge_rect, egui::CornerRadius::same(2), palette.panel_bg);
+                painter.text(
+                    badge_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    text,
+                    font,
+                    palette.text_disabled,
+                );
+            } else {
+                self.dimension_overlay_visible = false;
+            }
         }
     }
 

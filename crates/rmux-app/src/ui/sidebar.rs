@@ -44,6 +44,12 @@ struct TabData {
     progress: Option<f32>,
     /// Number of unread notifications for this workspace.
     unread: usize,
+    /// Current git branch name, if known.
+    git_branch: Option<String>,
+    /// Short git status summary (e.g. "clean", "modified").
+    git_status: Option<String>,
+    /// TCP ports currently listening in this workspace.
+    ports: Vec<u16>,
 }
 
 /// The sidebar view renders workspace cards and handles workspace switching.
@@ -140,6 +146,9 @@ impl SidebarView {
                 status: w.status.clone(),
                 progress: w.progress,
                 unread: notifications.unread_count_for_workspace(w.id.0),
+                git_branch: w.git_branch.clone(),
+                git_status: w.git_status.clone(),
+                ports: w.ports.clone(),
             })
             .collect();
         let active_index = manager.active_index();
@@ -217,8 +226,10 @@ impl SidebarView {
         index: usize,
         manager: &mut WorkspaceManager,
     ) -> egui::Response {
-        // Taller card when a status segment extends the metadata line.
-        let height = if tab.status.is_some() { 52.0_f32 } else { 42.0_f32 };
+        let base_height = if tab.status.is_some() { 52.0_f32 } else { 42.0_f32 };
+        let git_extra = if tab.git_branch.is_some() { 14.0_f32 } else { 0.0_f32 };
+        let port_extra = if !tab.ports.is_empty() { 14.0_f32 } else { 0.0_f32 };
+        let height = base_height + git_extra + port_extra;
         let desired_size = egui::Vec2::new(ui.available_width(), height);
         let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
 
@@ -354,9 +365,77 @@ impl SidebarView {
                     egui::Pos2::new(sep_rect.right(), line2_pos.y),
                     egui::Align2::LEFT_TOP,
                     status,
-                    mono,
+                    mono.clone(),
                     p().warning.gamma_multiply(dim),
                 );
+            }
+
+            // Line 3: git branch with optional status indicator (⎇ branch · status).
+            let git_line_y = content.top() + 29.0_f32;
+            if let Some(branch) = &tab.git_branch {
+                let icon_rect = painter.text(
+                    egui::Pos2::new(content.left(), git_line_y),
+                    egui::Align2::LEFT_TOP,
+                    "\u{2387} ",
+                    mono.clone(),
+                    p().text_muted.gamma_multiply(dim),
+                );
+                let branch_rect = painter.text(
+                    egui::Pos2::new(icon_rect.right(), git_line_y),
+                    egui::Align2::LEFT_TOP,
+                    branch.as_str(),
+                    mono.clone(),
+                    p().text_muted.gamma_multiply(dim),
+                );
+                if let Some(git_st) = &tab.git_status {
+                    let status_color = if git_st == "clean" { p().success } else { p().warning };
+                    let sep_rect = painter.text(
+                        egui::Pos2::new(branch_rect.right(), git_line_y),
+                        egui::Align2::LEFT_TOP,
+                        " \u{b7} ",
+                        mono.clone(),
+                        p().text_muted.gamma_multiply(dim),
+                    );
+                    painter.text(
+                        egui::Pos2::new(sep_rect.right(), git_line_y),
+                        egui::Align2::LEFT_TOP,
+                        git_st.as_str(),
+                        mono.clone(),
+                        status_color.gamma_multiply(dim),
+                    );
+                }
+            }
+
+            // Port badges: small accent-outlined pills below the git line.
+            if !tab.ports.is_empty() {
+                let port_y = git_line_y + if tab.git_branch.is_some() { 14.0_f32 } else { 0.0_f32 };
+                let mut pill_x = content.left();
+                let pill_h = 12.0_f32;
+                let pill_radius = egui::CornerRadius::same((pill_h / 2.0_f32) as u8);
+                for port in &tab.ports {
+                    let galley = painter.layout_no_wrap(
+                        port.to_string(),
+                        egui::FontId::monospace(9.0_f32),
+                        p().accent.gamma_multiply(dim),
+                    );
+                    let pill_w = (galley.size().x + 6.0_f32).max(pill_h);
+                    let pill_rect = egui::Rect::from_min_size(
+                        egui::Pos2::new(pill_x, port_y),
+                        egui::Vec2::new(pill_w, pill_h),
+                    );
+                    painter.rect_stroke(
+                        pill_rect,
+                        pill_radius,
+                        egui::Stroke::new(1.0_f32, p().accent.gamma_multiply(dim)),
+                        egui::StrokeKind::Inside,
+                    );
+                    painter.galley(
+                        pill_rect.center() - galley.size() * 0.5_f32,
+                        galley,
+                        p().accent.gamma_multiply(dim),
+                    );
+                    pill_x += pill_w + 3.0_f32;
+                }
             }
         }
 

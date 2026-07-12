@@ -41,6 +41,36 @@ pub enum SplitDirection {
     Vertical,
 }
 
+/// Spatial direction for pane focus movement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpatialDirection {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+/// A rectangle describing a pane's position in normalized coordinates (0.0..=1.0).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PaneRect {
+    pub min_x: f32,
+    pub min_y: f32,
+    pub max_x: f32,
+    pub max_y: f32,
+}
+
+impl PaneRect {
+    /// Create a unit rectangle covering (0,0) to (1,1).
+    pub fn unit() -> Self {
+        Self { min_x: 0.0, min_y: 0.0, max_x: 1.0, max_y: 1.0 }
+    }
+
+    /// Compute the center point of this rectangle.
+    pub fn center(&self) -> (f32, f32) {
+        ((self.min_x + self.max_x) / 2.0, (self.min_y + self.max_y) / 2.0)
+    }
+}
+
 impl SplitDirection {
     pub fn is_horizontal(&self) -> bool {
         matches!(self, Self::Horizontal)
@@ -388,6 +418,49 @@ impl PaneNode {
             Self::Split { children, .. } => children.iter().flat_map(|c| c.leaf_panes()).collect(),
         }
     }
+
+    /// Collect all leaf and browser pane rectangles into `out`.
+    ///
+    /// `rect` is the area allocated to this node in normalized coordinates.
+    /// Split children are assigned sub-rectangles proportional to their sizes.
+    pub fn collect_pane_rects(&self, rect: &PaneRect, out: &mut Vec<(PaneId, PaneRect)>) {
+        match self {
+            Self::Leaf { id, .. } | Self::Browser { id, .. } => {
+                out.push((*id, *rect));
+            }
+            Self::Split { direction, children, sizes, .. } => {
+                let is_horizontal = direction.is_horizontal();
+                let available =
+                    if is_horizontal { rect.max_x - rect.min_x } else { rect.max_y - rect.min_y };
+                let num_children = children.len();
+                let mut offset = 0.0_f32;
+
+                for (i, child) in children.iter().enumerate() {
+                    let ratio = sizes.get(i).copied().unwrap_or(1.0_f32 / num_children as f32);
+                    let child_size = available * ratio;
+
+                    let child_rect = if is_horizontal {
+                        PaneRect {
+                            min_x: rect.min_x + offset,
+                            min_y: rect.min_y,
+                            max_x: rect.min_x + offset + child_size,
+                            max_y: rect.max_y,
+                        }
+                    } else {
+                        PaneRect {
+                            min_x: rect.min_x,
+                            min_y: rect.min_y + offset,
+                            max_x: rect.max_x,
+                            max_y: rect.min_y + offset + child_size,
+                        }
+                    };
+
+                    child.collect_pane_rects(&child_rect, out);
+                    offset += child_size;
+                }
+            }
+        }
+    }
 }
 
 impl PaneNode {
@@ -436,6 +509,56 @@ impl PaneNode {
             }
         }
     }
+}
+
+/// Find the spatially nearest pane in `direction` from `from`.
+///
+/// Walks the pane tree to collect normalized rectangles for every leaf/browser
+/// pane, then scores candidates by alignment and distance.
+pub fn find_pane_in_direction(
+    root: &PaneNode,
+    from: PaneId,
+    direction: SpatialDirection,
+) -> Option<PaneId> {
+    let mut rects = Vec::new();
+    root.collect_pane_rects(&PaneRect::unit(), &mut rects);
+
+    let from_rect = rects.iter().find(|(id, _)| *id == from).map(|(_, r)| *r)?;
+    let from_center = from_rect.center();
+
+    let mut best: Option<(PaneId, f32)> = None;
+
+    for (id, rect) in rects {
+        if id == from {
+            continue;
+        }
+
+        let center = rect.center();
+        let delta_x = center.0 - from_center.0;
+        let delta_y = center.1 - from_center.1;
+
+        let in_direction = match direction {
+            SpatialDirection::Left => delta_x < 0.0,
+            SpatialDirection::Right => delta_x > 0.0,
+            SpatialDirection::Up => delta_y < 0.0,
+            SpatialDirection::Down => delta_y > 0.0,
+        };
+
+        if !in_direction {
+            continue;
+        }
+
+        let score = match direction {
+            SpatialDirection::Left | SpatialDirection::Right => delta_y.abs() * 2.0 + delta_x.abs(),
+            SpatialDirection::Up | SpatialDirection::Down => delta_x.abs() * 2.0 + delta_y.abs(),
+        };
+
+        if best.map(|(_, s)| score < s).unwrap_or(true) {
+            best = Some((id, score));
+        }
+    }
+
+    best.map(|(id, _)| id)
 }
 
 #[cfg(test)]
