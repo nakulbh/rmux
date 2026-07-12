@@ -1,0 +1,43 @@
+[package]
+name = "rmux-tauri-ui"
+version = "0.1.0"
+description = "rmux terminal multiplexer - Tauri UI"
+authors = ["rmux contributors"]
+edition = "2021"
+rust-version = "1.70"
+
+[build-dependencies]
+tauri-build = { version = "2.0.0", features = [] }
+
+[dependencies]
+tauri = { version = "2.0.0", features = [] }
+tauri-plugin-shell = "2.0.0"
+
+# Re-use existing rmux crates
+rmux-terminal = { path = "../../crates/rmux-terminal" }
+rmux-api = { path = "../../crates/rmux-api" }
+rmux-config = { path = "../../crates/rmux-config" }
+
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "net", "fs", "io-util", "time"] }
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# PTY
+portable-pty = "0.8"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Base64 encoding for PTY output
+base64 = "0.22"
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]

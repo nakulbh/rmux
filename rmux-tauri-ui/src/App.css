@@ -1,0 +1,208 @@
+/* ═══════════════════════════════════════════════════════════════════
+   Arbor One Dark — theme tokens sourced from rmux theme.rs Palette::dark()
+   ═════════════════════════════════════════════════════════════════════ */
+
+:root {
+  /* Surfaces (darkest → lightest) */
+  --app-bg: #282c33;
+  --terminal-bg: #282c34;
+  --sidebar-bg: #2f343e;
+  --panel-bg: #2e343e;
+  --panel-active-bg: #363c46;
+  --chrome-bg: #3b414d;
+
+  /* Lines */
+  --border: #363c46;
+  --chrome-border: #464b57;
+
+  /* Text */
+  --text-primary: #c8ccd4;
+  --text-muted: #838994;
+  --text-disabled: #696b77;
+
+  /* Accent + status */
+  --accent: #74ade8;
+  --accent-fg: #1d2127;
+  --success: #72d69c;
+  --danger: #eb6f92;
+  --warning: #e5c07b;
+  --info: #61afef;
+
+  /* Terminal */
+  --terminal-cursor: #ebdbb2;
+  --terminal-selection-bg: #3e4451;
+
+  /* Metrics (shared with components) */
+  --radius-sm: 2px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --button-height: 24px;
+  --sidebar-min-width: 200px;
+  --sidebar-max-width: 320px;
+  --sidebar-default-width: 240px;
+  --notif-panel-min-width: 220px;
+  --notif-panel-max-width: 360px;
+  --notif-panel-default-width: 280px;
+
+  /* Fonts */
+  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    Helvetica, Arial, sans-serif;
+  --font-mono: "SF Mono", "Fira Code", "Cascadia Code", "JetBrains Mono",
+    Menlo, Monaco, "Courier New", monospace;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Reset & Base
+   ═════════════════════════════════════════════════════════════════════ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  background: var(--app-bg);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   App Layout
+   ═════════════════════════════════════════════════════════════════════ */
+
+.app-layout {
+  display: flex;
+  flex-wrap: wrap;
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+}
+
+/* ── Top bar spans full width ── */
+.app-layout > .app-top-bar {
+  width: 100%;
+  flex-basis: 34px;
+  flex-shrink: 0;
+}
+
+/* ── Sidebar, main, notification panel share remaining height ── */
+.app-layout > .app-sidebar,
+.app-layout > .app-main,
+.app-layout > .app-notif-panel {
+  flex-basis: 0;
+  flex-grow: 1;
+  height: calc(100vh - 60px); /* 34 top + 26 status */
+}
+
+/* ── Sidebar sets its own width ── */
+.app-layout > .app-sidebar {
+  flex-grow: 0;
+  flex-shrink: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  border-right: 1px solid var(--border);
+}
+
+/* ── Main grows to fill space ── */
+.app-layout > .app-main {
+  flex: 1;
+}
+
+/* ── Notification panel sets its own width ── */
+.app-layout > .app-notif-panel {
+  flex-grow: 0;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+/* ── Status bar spans full width, at bottom ── */
+.app-layout > .status-bar {
+  width: 100%;
+  flex-basis: 26px;
+  flex-shrink: 0;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Component Shared Styles
+   ═════════════════════════════════════════════════════════════════════ */
+
+/* ── Sidebar cards ── */
+
+.sidebar-card {
+  transition: background 80ms ease, border-color 80ms ease;
+}
+
+.sidebar-card:hover {
+  background: var(--panel-active-bg);
+}
+
+.unread-badge {
+  user-select: none;
+}
+
+.new-workspace-btn {
+  transition: background 80ms ease, border-color 80ms ease;
+}
+
+/* ── Empty state ── */
+
+.empty-state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--text-muted);
+  text-align: center;
+  padding: 24px;
+}
+
+/* ── Find bar ── */
+
+.find-bar {
+  user-select: none;
+}
+
+/* ── Monospace utility ── */
+
+.mono {
+  font-family: var(--font-mono);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Scrollbar (minimal, dark)
+   ═════════════════════════════════════════════════════════════════════ */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--chrome-border);
+}
