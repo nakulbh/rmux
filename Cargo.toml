@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/*"]
+members = ["crates/*", "rmux-tauri-ui/src-tauri"]
 default-members = ["crates/rmux-app"]
 resolver = "2"
 

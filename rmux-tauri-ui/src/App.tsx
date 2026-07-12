@@ -1,12 +1,9 @@
 /**
- * App — rmux root component.
- *
- * Minimal shell that imports all UI components to verify they compile.
- * The full orchestrator (state management, Tauri invoke bridge, keyboard
- * shortcuts) is created by another task.
+ * App — rmux root component with real Tauri backend integration.
  */
 
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 import {
   Sidebar,
@@ -17,98 +14,212 @@ import {
 } from "./components";
 import type { Workspace, PaneNode, Notification } from "./types";
 
-// ── Initial demo data ──────────────────────────────────────────────────────
-
-const DEMO_WORKSPACES: Workspace[] = [
-  { id: 1, index: 0, name: "main", paneCount: 2, status: "Working" },
-  { id: 2, index: 1, name: "api-server", paneCount: 1 },
-  { id: 3, index: 2, name: "database", paneCount: 3, progress: 0.65 },
-];
-
-const DEMO_PANE_TREE: PaneNode = {
-  type: "split",
-  id: 0,
-  direction: "horizontal",
-  sizes: [0.5, 0.5],
-  children: [
-    { type: "leaf", id: 101 },
-    {
-      type: "split",
-      id: 1,
-      direction: "vertical",
-      sizes: [0.6, 0.4],
-      children: [
-        { type: "leaf", id: 102 },
-        { type: "leaf", id: 103 },
-      ],
-    },
-  ],
-};
-
-const DEMO_NOTIFICATIONS: Notification[] = [
-  {
-    id: 1,
-    title: "Build complete",
-    body: "api-server compiled successfully in 2.3s",
-    level: "success",
-    timestamp: new Date(Date.now() - 120_000).toISOString(),
-    workspaceId: 2,
-    read: false,
-  },
-  {
-    id: 2,
-    title: "Connection lost",
-    body: "database connection timed out after 30s",
-    level: "error",
-    timestamp: new Date(Date.now() - 3600_000).toISOString(),
-    workspaceId: 3,
-    read: false,
-  },
-  {
-    id: 3,
-    title: "Lint warnings",
-    body: "12 warnings in crates/rmux-app/",
-    level: "warning",
-    timestamp: new Date(Date.now() - 7200_000).toISOString(),
-    workspaceId: 1,
-    read: true,
-  },
-];
-
-const DEMO_UNREAD: Record<string, number> = {
-  "1": 1,
-  "2": 2,
-  "3": 5,
-};
-
 // ── Component ──────────────────────────────────────────────────────────────
 
 export function App() {
-  const [workspaces, _setWorkspaces] = useState<Workspace[]>(DEMO_WORKSPACES);
-  const [activeIndex, setActiveIndex] = useState(0);
-  const [notifications, setNotifications] = useState<Notification[]>(DEMO_NOTIFICATIONS);
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState<number | null>(null);
+  const [notifications, setNotifications] = useState<Notification[]>([]);
   const [sidebarVisible, setSidebarVisible] = useState(true);
   const [notifVisible, setNotifVisible] = useState(false);
-  const [activePaneId, _setActivePaneId] = useState(101);
-  const [zoomedPaneId, _setZoomedPaneId] = useState<number | null>(null);
+  const [activePaneId, setActivePaneId] = useState<number>(1);
+  const [zoomedPaneId, setZoomedPaneId] = useState<number | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
 
-  const activeWs = workspaces[activeIndex];
+  // Load workspaces and notifications on mount
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        const wsList = await invoke<Workspace[]>("list_workspaces");
+        setWorkspaces(wsList);
+        if (wsList.length > 0) {
+          setActiveWorkspaceId(wsList[0].id);
+          setActivePaneId(wsList[0].active_pane ?? 1);
+        }
 
-  const handleMarkRead = (id: number) => {
-    setNotifications((prev) =>
-      prev.map((n) => (n.id === id ? { ...n, read: true } : n))
-    );
-  };
+        const notifs = await invoke<Notification[]>("get_notifications");
+        setNotifications(notifs);
+      } catch (e) {
+        console.error("Failed to load initial data:", e);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    loadData();
+  }, []);
 
-  const handleMarkAllRead = () => {
-    setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
-  };
+  const activeWs = workspaces.find((w) => w.id === activeWorkspaceId);
 
-  const handleClear = () => {
+  const handleSwitchWorkspace = useCallback(
+    async (index: number) => {
+      const ws = workspaces[index];
+      if (!ws) return;
+      try {
+        await invoke("switch_workspace", { workspace_id: ws.id });
+        setActiveWorkspaceId(ws.id);
+        setActivePaneId(ws.active_pane ?? 1);
+      } catch (e) {
+        console.error("Failed to switch workspace:", e);
+      }
+    },
+    [workspaces]
+  );
+
+  const handleCreateWorkspace = useCallback(async () => {
+    try {
+      const newId = await invoke<number>("create_workspace", {
+        name: `workspace-${workspaces.length + 1}`,
+      });
+      const wsList = await invoke<Workspace[]>("list_workspaces");
+      setWorkspaces(wsList);
+      setActiveWorkspaceId(newId);
+      // Find the new workspace and set its initial pane
+      const newWs = wsList.find((w) => w.id === newId);
+      if (newWs) {
+        setActivePaneId(newWs.active_pane ?? 1);
+      }
+    } catch (e) {
+      console.error("Failed to create workspace:", e);
+    }
+  }, [workspaces.length]);
+
+  const handleRenameWorkspace = useCallback(
+    async (index: number, name: string) => {
+      const ws = workspaces[index];
+      if (!ws) return;
+      try {
+        await invoke("rename_workspace", { workspace_id: ws.id, name });
+        const wsList = await invoke<Workspace[]>("list_workspaces");
+        setWorkspaces(wsList);
+      } catch (e) {
+        console.error("Failed to rename workspace:", e);
+      }
+    },
+    [workspaces]
+  );
+
+  const handleCloseWorkspace = useCallback(
+    async (id: number) => {
+      try {
+        await invoke("close_workspace", { workspace_id: id });
+        const wsList = await invoke<Workspace[]>("list_workspaces");
+        setWorkspaces(wsList);
+        if (activeWorkspaceId === id && wsList.length > 0) {
+          setActiveWorkspaceId(wsList[0].id);
+          setActivePaneId(wsList[0].active_pane ?? 1);
+        }
+      } catch (e) {
+        console.error("Failed to close workspace:", e);
+      }
+    },
+    [activeWorkspaceId]
+  );
+
+  const handleActivatePane = useCallback(
+    async (paneId: number) => {
+      if (!activeWorkspaceId) return;
+      try {
+        await invoke("focus_pane", {
+          workspace_id: activeWorkspaceId,
+          pane_id: paneId,
+        });
+        setActivePaneId(paneId);
+      } catch (e) {
+        console.error("Failed to focus pane:", e);
+      }
+    },
+    [activeWorkspaceId]
+  );
+
+  const handleSplitPaneRight = useCallback(async () => {
+    if (!activeWorkspaceId || !activePaneId) return;
+    try {
+      await invoke("split_pane_right", {
+        workspace_id: activeWorkspaceId,
+        pane_id: activePaneId,
+      });
+      const wsList = await invoke<Workspace[]>("list_workspaces");
+      setWorkspaces(wsList);
+    } catch (e) {
+      console.error("Failed to split pane:", e);
+    }
+  }, [activeWorkspaceId, activePaneId]);
+
+  const handleSplitPaneDown = useCallback(async () => {
+    if (!activeWorkspaceId || !activePaneId) return;
+    try {
+      await invoke("split_pane_down", {
+        workspace_id: activeWorkspaceId,
+        pane_id: activePaneId,
+      });
+      const wsList = await invoke<Workspace[]>("list_workspaces");
+      setWorkspaces(wsList);
+    } catch (e) {
+      console.error("Failed to split pane:", e);
+    }
+  }, [activeWorkspaceId, activePaneId]);
+
+  const handleClosePane = useCallback(async () => {
+    if (!activeWorkspaceId || !activePaneId) return;
+    try {
+      await invoke("close_pane", {
+        workspace_id: activeWorkspaceId,
+        pane_id: activePaneId,
+      });
+      const wsList = await invoke<Workspace[]>("list_workspaces");
+      setWorkspaces(wsList);
+    } catch (e) {
+      console.error("Failed to close pane:", e);
+    }
+  }, [activeWorkspaceId, activePaneId]);
+
+  const handleMarkRead = useCallback(async (id: number) => {
+    try {
+      await invoke("dismiss_notification", { notification_id: id });
+      setNotifications((prev) =>
+        prev.map((n) => (n.id === id ? { ...n, read: true } : n))
+      );
+    } catch (e) {
+      console.error("Failed to dismiss notification:", e);
+    }
+  }, []);
+
+  const handleMarkAllRead = useCallback(async () => {
+    try {
+      await invoke("dismiss_all_notifications");
+      setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+    } catch (e) {
+      console.error("Failed to dismiss all notifications:", e);
+    }
+  }, []);
+
+  const handleClearNotifications = useCallback(() => {
     setNotifications([]);
-  };
+  }, []);
 
   const unreadCount = notifications.filter((n) => !n.read).length;
+
+  // Build unread map from notifications
+  const unreadMap: Record<string, number> = {};
+  for (const n of notifications) {
+    if (!n.read && n.workspaceId) {
+      unreadMap[n.workspaceId] = (unreadMap[n.workspaceId] || 0) + 1;
+    }
+  }
+
+  // Get active workspace index
+  const activeIndex = workspaces.findIndex((w) => w.id === activeWorkspaceId);
+
+  // Get pane tree for active workspace
+  const paneTree: PaneNode = activeWs?.root ?? { type: "leaf", id: 1 };
+
+  if (isLoading) {
+    return (
+      <div className="app-layout" style={{ alignItems: "center", justifyContent: "center" }}>
+        <div style={{ color: "var(--text-muted)", fontSize: 14 }}>Loading rmux...</div>
+      </div>
+    );
+  }
 
   return (
     <div className="app-layout">
@@ -122,47 +233,41 @@ export function App() {
         onToggleNotifications={() => setNotifVisible((v) => !v)}
       />
 
-      {sidebarVisible && (
-        <Sidebar
-          workspaces={workspaces}
-          activeIndex={activeIndex}
-          unreadMap={DEMO_UNREAD}
-          onSwitch={setActiveIndex}
-          onRename={(index, name) => {
-            _setWorkspaces((prev) =>
-              prev.map((w, i) => (i === index ? { ...w, name } : w))
-            );
-          }}
-          onNew={() => {
-            const newId = Date.now();
-            _setWorkspaces((prev) => [
-              ...prev,
-              {
-                id: newId,
-                index: prev.length,
-                name: `workspace-${prev.length + 1}`,
-                paneCount: 1,
-              },
-            ]);
-          }}
+      <div className="main-content">
+        {sidebarVisible && (
+          <div className="sidebar">
+            <Sidebar
+              workspaces={workspaces}
+              activeIndex={activeIndex >= 0 ? activeIndex : 0}
+              unreadMap={unreadMap}
+              onSwitch={handleSwitchWorkspace}
+              onRename={handleRenameWorkspace}
+              onNew={handleCreateWorkspace}
+            />
+          </div>
+        )}
+
+        <WorkspaceView
+          root={paneTree}
+          activePaneId={activePaneId}
+          zoomedPaneId={zoomedPaneId}
+          onActivatePane={handleActivatePane}
+          workspaceId={activeWorkspaceId ?? 0}
         />
-      )}
 
-      <WorkspaceView
-        root={DEMO_PANE_TREE}
-        activePaneId={activePaneId}
-        zoomedPaneId={zoomedPaneId}
-        onActivatePane={_setActivePaneId}
-      />
-
-      <NotificationPanel
-        visible={notifVisible}
-        notifications={notifications}
-        onClose={() => setNotifVisible(false)}
-        onMarkRead={handleMarkRead}
-        onMarkAllRead={handleMarkAllRead}
-        onClear={handleClear}
-      />
+        {notifVisible && (
+          <div className="notification-panel">
+            <NotificationPanel
+              visible={notifVisible}
+              notifications={notifications}
+              onClose={() => setNotifVisible(false)}
+              onMarkRead={handleMarkRead}
+              onMarkAllRead={handleMarkAllRead}
+              onClear={handleClearNotifications}
+            />
+          </div>
+        )}
+      </div>
 
       <StatusBar
         workspaceName={activeWs?.name ?? "rmux"}

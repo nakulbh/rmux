@@ -1,14 +1,10 @@
 /**
- * TerminalPane — xterm.js terminal emulator widget.
- *
- * Matches `crates/rmux-app/src/ui/terminal_pane.rs`.
- * Embeds a full xterm.js Terminal with FitAddon for auto-resize.
- * Shows a 1px accent focus border when active.
- * Find bar (Cmd/Ctrl+F): 28px chrome strip with query input,
- * match counter (mono 10px), and prev/next/close buttons.
+ * TerminalPane — xterm.js terminal emulator with PTY backend integration.
  */
 
 import { useRef, useEffect, useCallback, useState, type KeyboardEvent } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { PaneId } from "../types";
 import "../App.css";
 
@@ -20,19 +16,20 @@ import "xterm/css/xterm.css";
 
 export interface TerminalPaneProps {
   paneId: PaneId;
+  workspaceId: number;
   isActive: boolean;
 }
-
-// ── Find bar height (from terminal_pane.rs) ───────────────────────────────
 
 const FIND_BAR_HEIGHT = 28;
 
 // ── Component ──────────────────────────────────────────────────────────────
 
-export function TerminalPane({ paneId: _paneId, isActive }: TerminalPaneProps) {
+export function TerminalPane({ paneId, workspaceId, isActive }: TerminalPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const terminalIdRef = useRef<number | null>(null);
+  const unlistenRef = useRef<UnlistenFn | null>(null);
 
   // Find bar state
   const [findVisible, setFindVisible] = useState(false);
@@ -41,7 +38,7 @@ export function TerminalPane({ paneId: _paneId, isActive }: TerminalPaneProps) {
   const [findIndex, setFindIndex] = useState(0);
   const findInputRef = useRef<HTMLInputElement>(null);
 
-  // Initialize xterm.js terminal
+  // Initialize terminal and spawn PTY
   useEffect(() => {
     if (!containerRef.current) return;
 
@@ -82,25 +79,84 @@ export function TerminalPane({ paneId: _paneId, isActive }: TerminalPaneProps) {
     term.open(containerRef.current);
     fit.fit();
 
-    // Demo welcome message
-    term.writeln("rmux \u2014 Terminal Multiplexer");
-    term.writeln("");
-    term.write("$ ");
-
     terminalRef.current = term;
     fitAddonRef.current = fit;
+
+    // Spawn PTY backend
+    const spawnPty = async () => {
+      try {
+        const dims = fit.proposeDimensions();
+        const cols = dims?.cols ?? 80;
+        const rows = dims?.rows ?? 24;
+
+        const result = await invoke<{ id: number }>("spawn_terminal", {
+          workspace_id: workspaceId,
+          pane_id: paneId,
+          cols,
+          rows,
+        });
+        terminalIdRef.current = result.id;
+
+        // Listen for PTY output events
+        const unlisten = await listen<{
+          terminal_id: number;
+          data: number[];
+        }>("pty-output", (event) => {
+          if (event.payload.terminal_id === result.id) {
+            const bytes = new Uint8Array(event.payload.data);
+            term.write(bytes);
+          }
+        });
+        unlistenRef.current = unlisten;
+      } catch (e) {
+        console.error("Failed to spawn terminal:", e);
+        term.writeln("\r\nFailed to spawn terminal. Check backend logs.");
+      }
+    };
+
+    spawnPty();
+
+    // Handle keyboard input
+    const dataDisposable = term.onData(async (data) => {
+      const id = terminalIdRef.current;
+      if (id === null) return;
+      try {
+        const encoder = new TextEncoder();
+        const bytes = Array.from(encoder.encode(data));
+        await invoke("write_terminal", { terminal_id: id, data: bytes });
+      } catch (e) {
+        console.error("Failed to write to terminal:", e);
+      }
+    });
 
     // Resize observer
     const observer = new ResizeObserver(() => {
       fit.fit();
+      const dims = fit.proposeDimensions();
+      if (dims && terminalIdRef.current !== null) {
+        invoke("resize_terminal", {
+          terminal_id: terminalIdRef.current,
+          cols: dims.cols,
+          rows: dims.rows,
+        }).catch((e) => console.error("Resize failed:", e));
+      }
     });
     observer.observe(containerRef.current);
 
     return () => {
       observer.disconnect();
+      dataDisposable.dispose();
+      if (unlistenRef.current) {
+        unlistenRef.current();
+      }
+      if (terminalIdRef.current !== null) {
+        invoke("close_terminal", { terminal_id: terminalIdRef.current }).catch(
+          (e) => console.error("Close terminal failed:", e)
+        );
+      }
       term.dispose();
     };
-  }, []);
+  }, [paneId, workspaceId]);
 
   // Focus find input when find bar opens
   useEffect(() => {
@@ -115,28 +171,12 @@ export function TerminalPane({ paneId: _paneId, isActive }: TerminalPaneProps) {
       if ((e.metaKey || e.ctrlKey) && e.key === "f") {
         e.preventDefault();
         setFindVisible((v) => !v);
-        if (!findVisible) {
-          // Pre-populate with terminal selection
-          const term = terminalRef.current;
-          if (term) {
-            const sel = term.getSelection();
-            if (sel) {
-              setFindQuery(sel);
-              doFind(sel, term);
-            }
-          }
-        }
-      }
-      // Forward keyboard to terminal (simplified — full PTY integration in real impl)
-      if (terminalRef.current && !findVisible) {
-        // In a real implementation, keyboard events would be forwarded to the PTY
-        // via Tauri invoke() calls.
       }
     },
-    [findVisible]
+    []
   );
 
-  // Search the terminal buffer for the query
+  // Search the terminal buffer
   const doFind = (query: string, term: Terminal) => {
     if (!query) {
       setFindResults([]);
@@ -227,7 +267,7 @@ export function TerminalPane({ paneId: _paneId, isActive }: TerminalPaneProps) {
         }}
       />
 
-      {/* Find bar (28px chrome strip at bottom) */}
+      {/* Find bar */}
       {findVisible && (
         <div
           className="find-bar"
@@ -242,7 +282,6 @@ export function TerminalPane({ paneId: _paneId, isActive }: TerminalPaneProps) {
             flexShrink: 0,
           }}
         >
-          {/* Query input */}
           <div
             style={{
               display: "flex",
@@ -274,7 +313,6 @@ export function TerminalPane({ paneId: _paneId, isActive }: TerminalPaneProps) {
             />
           </div>
 
-          {/* Match count */}
           {findQuery && (
             <span
               className="mono"
@@ -286,17 +324,14 @@ export function TerminalPane({ paneId: _paneId, isActive }: TerminalPaneProps) {
             </span>
           )}
 
-          {/* Navigation buttons (20x20) */}
           <FindButton onClick={handleFindPrev} disabled={findResults.length === 0}>
             {"\u2039"}
           </FindButton>
           <FindButton onClick={handleFindNext} disabled={findResults.length === 0}>
             {"\u203A"}
           </FindButton>
-
-          {/* Close button */}
-          <FindButton onClick={handleFindClose}>
-            {"\u2715"}
+          <FindButton onClick={handleFindClose}>{
+"\u2715"}
           </FindButton>
         </div>
       )}
@@ -304,7 +339,7 @@ export function TerminalPane({ paneId: _paneId, isActive }: TerminalPaneProps) {
   );
 }
 
-// ── Find Button (20x20, panel_bg + 1px border) ────────────────────────────
+// ── Find Button ────────────────────────────────────────────────────────────
 
 function FindButton({
   onClick,
@@ -323,7 +358,7 @@ function FindButton({
         width: 20,
         height: 20,
         borderRadius: 2,
-        background: disabled ? "var(--panel-bg)" : "var(--panel-bg)",
+        background: "var(--panel-bg)",
         border: "1px solid var(--border)",
         color: disabled ? "var(--text-disabled)" : "var(--text-primary)",
         fontSize: 12,

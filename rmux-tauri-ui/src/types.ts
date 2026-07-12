@@ -42,6 +42,10 @@ export interface Workspace {
   index: number;
   name: string;
   paneCount: number;
+  /** Pane tree root. */
+  root?: PaneNode;
+  /** Currently active pane ID. */
+  active_pane?: number;
   /** Optional status string (e.g., "building…"). */
   status?: string;
   /** Optional progress fraction (0.0–1.0) for status bar capsule. */

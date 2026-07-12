@@ -1,11 +1,5 @@
 /**
  * WorkspaceView — recursive pane tree with split layout.
- *
- * Matches `crates/rmux-app/src/ui/workspace_view.rs`.
- * Renders the PaneNode tree into the central area. Split nodes divide
- * space proportionally with 1px border-color hairlines between children.
- * Leaf nodes render TerminalPane or browser placeholders.
- * Zoom mode renders only one pane with a restore indicator.
  */
 
 import { useCallback } from "react";
@@ -13,49 +7,37 @@ import type { PaneNode, PaneId } from "../types";
 import { TerminalPane } from "./TerminalPane";
 import "../App.css";
 
-// ── Props ──────────────────────────────────────────────────────────────────
+const SPLIT_BORDER = 1;
 
 export interface WorkspaceViewProps {
   root: PaneNode;
   activePaneId: PaneId;
   zoomedPaneId: PaneId | null;
   onActivatePane: (id: PaneId) => void;
+  workspaceId: number;
 }
-
-// ── Split border constant (from workspace_view.rs) ─────────────────────────
-
-const SPLIT_BORDER = 1;
-
-// ── Component ──────────────────────────────────────────────────────────────
 
 export function WorkspaceView({
   root,
   activePaneId,
   zoomedPaneId,
   onActivatePane,
+  workspaceId,
 }: WorkspaceViewProps) {
   const isMac = navigator.platform.includes("Mac");
   const modifier = isMac ? "Cmd" : "Ctrl";
 
   return (
-    <main
-      className="app-main"
-      style={{
-        background: "var(--app-bg)",
-        position: "relative",
-        overflow: "hidden",
-      }}
-    >
+    <main className="workspace-area">
       {zoomedPaneId !== null ? (
         <>
-          {/* Render only the zoomed pane */}
           <RenderZoomed
             node={root}
             zoomedId={zoomedPaneId}
             activePaneId={activePaneId}
             onActivatePane={onActivatePane}
+            workspaceId={workspaceId}
           />
-          {/* Zoom indicator pill (top-right) */}
           <div
             style={{
               position: "absolute",
@@ -81,22 +63,23 @@ export function WorkspaceView({
           node={root}
           activePaneId={activePaneId}
           onActivatePane={onActivatePane}
+          workspaceId={workspaceId}
         />
       )}
     </main>
   );
 }
 
-// ── Node Renderer ──────────────────────────────────────────────────────────
-
 function RenderNode({
   node,
   activePaneId,
   onActivatePane,
+  workspaceId,
 }: {
   node: PaneNode;
   activePaneId: PaneId;
   onActivatePane: (id: PaneId) => void;
+  workspaceId: number;
 }) {
   if (node.type === "leaf") {
     return (
@@ -104,6 +87,7 @@ function RenderNode({
         id={node.id}
         isActive={node.id === activePaneId}
         onActivate={() => onActivatePane(node.id)}
+        workspaceId={workspaceId}
       />
     );
   }
@@ -118,26 +102,26 @@ function RenderNode({
     );
   }
 
-  // Split
   return (
     <RenderSplit
       node={node}
       activePaneId={activePaneId}
       onActivatePane={onActivatePane}
+      workspaceId={workspaceId}
     />
   );
 }
-
-// ── Leaf (Terminal Pane) ───────────────────────────────────────────────────
 
 function RenderLeaf({
   id,
   isActive,
   onActivate,
+  workspaceId,
 }: {
   id: PaneId;
   isActive: boolean;
   onActivate: () => void;
+  workspaceId: number;
 }) {
   return (
     <div
@@ -152,12 +136,10 @@ function RenderLeaf({
         boxSizing: "border-box",
       }}
     >
-      <TerminalPane paneId={id} isActive={isActive} />
+      <TerminalPane paneId={id} workspaceId={workspaceId} isActive={isActive} />
     </div>
   );
 }
-
-// ── Browser Placeholder ────────────────────────────────────────────────────
 
 function RenderBrowserPlaceholder({
   id: _id,
@@ -190,20 +172,19 @@ function RenderBrowserPlaceholder({
   );
 }
 
-// ── Split ──────────────────────────────────────────────────────────────────
-
 function RenderSplit({
   node,
   activePaneId,
   onActivatePane,
+  workspaceId,
 }: {
   node: PaneNode & { type: "split" };
   activePaneId: PaneId;
   onActivatePane: (id: PaneId) => void;
+  workspaceId: number;
 }) {
   const { direction, children, sizes } = node;
   const isHorizontal = direction === "horizontal";
-  const totalBorders = SPLIT_BORDER * (children.length - 1);
 
   return (
     <div
@@ -216,19 +197,17 @@ function RenderSplit({
     >
       {children.map((child, i) => {
         const ratio = sizes[i] ?? 1 / children.length;
-        const sizePct = ratio * 100;
 
         return (
           <div key={i} style={{ display: "flex", flexDirection: isHorizontal ? "row" : "column", flex: ratio }}>
-            {/* Child */}
             <div style={{ flex: "1 1 0", minWidth: 0, minHeight: 0 }}>
               <RenderNode
                 node={child}
                 activePaneId={activePaneId}
                 onActivatePane={onActivatePane}
+                workspaceId={workspaceId}
               />
             </div>
-            {/* Divider hairline (1px border-color) */}
             {i < children.length - 1 && (
               <div
                 style={{
@@ -246,20 +225,19 @@ function RenderSplit({
   );
 }
 
-// ── Zoomed Pane ────────────────────────────────────────────────────────────
-
 function RenderZoomed({
   node,
   zoomedId,
   activePaneId,
   onActivatePane,
+  workspaceId,
 }: {
   node: PaneNode;
   zoomedId: PaneId;
   activePaneId: PaneId;
   onActivatePane: (id: PaneId) => void;
+  workspaceId: number;
 }) {
-  // Recursively find the zoomed leaf/browser in the tree.
   const found = findNode(node, zoomedId);
 
   if (!found) {
@@ -268,6 +246,7 @@ function RenderZoomed({
         node={node}
         activePaneId={activePaneId}
         onActivatePane={onActivatePane}
+        workspaceId={workspaceId}
       />
     );
   }
@@ -278,11 +257,11 @@ function RenderZoomed({
         id={found.id}
         isActive={found.id === activePaneId}
         onActivate={() => onActivatePane(found.id)}
+        workspaceId={workspaceId}
       />
     );
   }
 
-  // found must be "browser" (findNode never returns "split")
   if (found.type === "browser") {
     return (
       <RenderBrowserPlaceholder
@@ -293,12 +272,12 @@ function RenderZoomed({
     );
   }
 
-  // Fallback: render the full tree
   return (
     <RenderNode
       node={node}
       activePaneId={activePaneId}
       onActivatePane={onActivatePane}
+      workspaceId={workspaceId}
     />
   );
 }
