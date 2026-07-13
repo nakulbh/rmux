@@ -139,11 +139,15 @@ impl eframe::App for RmuxApp {
         // Render the notification panel (right panel, before the central
         // panel). The panel is shown when EITHER `Cmd+Opt+B` (right
         // sidebar toggle) OR `Cmd+I` (legacy notification bell) is on.
-        // `visible = true` is forced for this frame so the panel's
-        // self-gate lets the call through when the right sidebar is
-        // the driver; both toggles remain independently owned.
-        if self.sidebar.is_right_visible() || self.notification_panel.visible {
-            self.notification_panel.visible = true;
+        // Both toggles remain independently owned — the right sidebar
+        // temporarily forces visibility for this frame only so the
+        // Show() self-gate lets the call through, without mutating
+        // `self.notification_panel.visible` permanently.
+        let right_drive = self.sidebar.is_right_visible();
+        if right_drive || self.notification_panel.visible {
+            if right_drive {
+                self.notification_panel.visible = true;
+            }
             self.notification_panel.show(ctx, &mut self.notifications, &mut self.workspace_manager);
         }
 
