@@ -9,6 +9,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  RUSTDOCFLAGS: "-Dwarnings"
 
 jobs:
   verify:
@@ -46,19 +47,37 @@ jobs:
         run: cargo doc --no-deps --workspace
 
   test-macos:
-    name: Test (macOS)
+    name: Test + Clippy (macOS)
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
 
   test-windows:
-    name: Test (Windows)
+    name: Test + Clippy (Windows)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
