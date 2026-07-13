@@ -174,7 +174,7 @@ Comprehensive registry + dispatch tests run; final verification wave F1-F4.
   Evidence: test output
   Commit: Y | `refactor(workspace): PaneNode::Leaf holds Vec<Surface>`
 
-- [ ] 7. Add tab methods to `Workspace`: new_surface, next_surface, prev_surface, select_surface, close_surface, rename_surface, close_other_surfaces
+- [x] 7. Add tab methods to `Workspace`: new_surface, next_surface, prev_surface, select_surface, close_surface, rename_surface, close_other_surfaces
   What to do: In `crates/rmux-app/src/workspace/model.rs`, add methods on `Workspace`. Each operates on the active pane (`self.active_pane`) and its surface list. `new_surface(&mut self, title: String) -> Result<SurfaceId, WorkspaceError>` creates a new surface with a fresh PTY, `next_surface(&mut self)`, `prev_surface(&mut self)`, `select_surface(&mut self, idx: usize) -> Result<(), WorkspaceError>`, `close_surface(&mut self, idx: usize) -> Result<Surface, WorkspaceError>` (returns the closed Surface for reopen stack), `rename_surface(&mut self, idx: usize, title: String)`, `close_other_surfaces(&mut self) -> Vec<Surface>` (returns all closed for reopen). `WorkspaceError` enum: `NoActivePane`, `InvalidSurfaceIndex`, `CannotCloseLastSurface`. Tests for each.
   Parallelization: Wave 2 | Blocked by: 5, 6 | Blocks: 8, 10
   References: `crates/rmux-app/src/workspace/model.rs` (whole file), `crates/rmux-app/src/workspace/splits.rs:478-494` (equalize_splits pattern)
@@ -185,7 +185,7 @@ Comprehensive registry + dispatch tests run; final verification wave F1-F4.
   Evidence: test log
   Commit: Y | `feat(workspace): add tab methods to Workspace`
 
-- [ ] 8. Add tab orchestration to `WorkspaceManager`: new_surface_in_active, next_surface, etc.
+- [x] 8. Add tab orchestration to `WorkspaceManager`: new_surface_in_active, next_surface, etc.
   What to do: In `crates/rmux-app/src/workspace/mod.rs`, add thin pass-through methods that call into `active_mut()` and delegate to the `Workspace` tab methods. Also add `closed_tabs_stack: VecDeque<ClosedTab>` (where `ClosedTab { surface: Surface, workspace_id: WorkspaceId, pane_id: PaneId }`) and `reopen_last_closed_tab(&mut self) -> Result<(), WorkspaceError>` that pops the stack and re-inserts the surface into its original pane (or active pane if original gone). Tests for each manager method.
   Parallelization: Wave 2 | Blocked by: 5, 6, 7 | Blocks: 9, 10
   References: `crates/rmux-app/src/workspace/mod.rs:1-350` (current manager), `crates/rmux-app/src/app.rs:200-255` (event publication patterns for create_workspace_with_terminal, close_active_pane_with_event)

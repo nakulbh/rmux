@@ -247,3 +247,209 @@ fn test_ports_and_git_accessors_return_borrows() {
     assert_eq!(status, Some("untracked"));
     assert_eq!(ports, &[443]);
 }
+
+// ====================================================================
+// W2.2 — Workspace surface (tab) management methods
+// ====================================================================
+
+/// Borrow the active leaf's surface list, panicking on a non-leaf
+/// (the test workspace always has a leaf at `active_pane`).
+fn leaf_surfaces_of(ws: &Workspace) -> &Vec<Surface> {
+    fn walk(node: &PaneNode, target: PaneId) -> Option<&Vec<Surface>> {
+        match node {
+            PaneNode::Leaf { id, surfaces, .. } if *id == target => Some(surfaces),
+            PaneNode::Leaf { .. } | PaneNode::Browser { .. } => None,
+            PaneNode::Split { children, .. } => children.iter().find_map(|c| walk(c, target)),
+        }
+    }
+    walk(&ws.root, ws.active_pane).expect("active pane is a Leaf")
+}
+
+#[test]
+fn test_workspace_new_surface_creates_with_id() {
+    let mut pane_id = 1;
+    let mut ws = make_workspace(1, "Test", &mut pane_id);
+    let id = ws.new_surface("Terminal A".to_string()).unwrap();
+    assert_eq!(id, SurfaceId(1));
+    let surfaces = leaf_surfaces_of(&ws);
+    assert_eq!(surfaces.len(), 1);
+    assert_eq!(surfaces[0].id, SurfaceId(1));
+    assert_eq!(surfaces[0].title, "Terminal A");
+    assert_eq!(ws.active_surface_index(), 0);
+}
+
+#[test]
+fn test_workspace_new_surface_increments_id() {
+    let mut pane_id = 1;
+    let mut ws = make_workspace(1, "Test", &mut pane_id);
+    let id1 = ws.new_surface("T1".to_string()).unwrap();
+    let id2 = ws.new_surface("T2".to_string()).unwrap();
+    let id3 = ws.new_surface("T3".to_string()).unwrap();
+    assert_eq!(id1, SurfaceId(1));
+    assert_eq!(id2, SurfaceId(2));
+    assert_eq!(id3, SurfaceId(3));
+}
+
+#[test]
+fn test_workspace_next_surface_id_persists_across_calls() {
+    let mut pane_id = 1;
+    let mut ws = make_workspace(1, "Test", &mut pane_id);
+    let id1 = ws.new_surface("T1".to_string()).unwrap();
+    let id2 = ws.new_surface("T2".to_string()).unwrap();
+    let id3 = ws.new_surface("T3".to_string()).unwrap();
+    assert_eq!(id1, SurfaceId(1));
+    assert_eq!(id2, SurfaceId(2));
+    assert_eq!(id3, SurfaceId(3));
+    let surfaces = leaf_surfaces_of(&ws);
+    assert_eq!(surfaces[0].id, SurfaceId(1));
+    assert_eq!(surfaces[1].id, SurfaceId(2));
+    assert_eq!(surfaces[2].id, SurfaceId(3));
+}
+
+#[test]
+fn test_workspace_next_surface_wraps() {
+    let mut pane_id = 1;
+    let mut ws = make_workspace(1, "Test", &mut pane_id);
+    ws.new_surface("T1".to_string()).unwrap();
+    ws.new_surface("T2".to_string()).unwrap();
+    ws.new_surface("T3".to_string()).unwrap();
+    ws.select_surface(2).unwrap();
+    assert_eq!(ws.active_surface_index(), 2);
+
+    // 2 -> 0 (wrap)
+    ws.next_surface().unwrap();
+    assert_eq!(ws.active_surface_index(), 0);
+    // 0 -> 1
+    ws.next_surface().unwrap();
+    assert_eq!(ws.active_surface_index(), 1);
+    // 1 -> 2
+    ws.next_surface().unwrap();
+    assert_eq!(ws.active_surface_index(), 2);
+}
+
+#[test]
+fn test_workspace_previous_surface_wraps() {
+    let mut pane_id = 1;
+    let mut ws = make_workspace(1, "Test", &mut pane_id);
+    ws.new_surface("T1".to_string()).unwrap();
+    ws.new_surface("T2".to_string()).unwrap();
+    ws.new_surface("T3".to_string()).unwrap();
+    ws.select_surface(0).unwrap();
+    assert_eq!(ws.active_surface_index(), 0);
+
+    // 0 -> 2 (wrap)
+    ws.previous_surface().unwrap();
+    assert_eq!(ws.active_surface_index(), 2);
+    // 2 -> 1
+    ws.previous_surface().unwrap();
+    assert_eq!(ws.active_surface_index(), 1);
+    // 1 -> 0
+    ws.previous_surface().unwrap();
+    assert_eq!(ws.active_surface_index(), 0);
+}
+
+#[test]
+fn test_workspace_select_surface_bounds_check() {
+    let mut pane_id = 1;
+    let mut ws = make_workspace(1, "Test", &mut pane_id);
+    ws.new_surface("T1".to_string()).unwrap();
+    ws.new_surface("T2".to_string()).unwrap();
+
+    assert_eq!(ws.select_surface(0).unwrap(), ());
+    assert_eq!(ws.active_surface_index(), 0);
+    assert_eq!(ws.select_surface(1).unwrap(), ());
+    assert_eq!(ws.active_surface_index(), 1);
+
+    let result = ws.select_surface(2);
+    assert!(matches!(result, Err(WorkspaceError::InvalidSurfaceIndex(2))));
+
+    let result = ws.select_surface(usize::MAX);
+    assert!(matches!(result, Err(WorkspaceError::InvalidSurfaceIndex(usize::MAX))));
+}
+
+#[test]
+fn test_workspace_close_surface_last_errors() {
+    let mut pane_id = 1;
+    let mut ws = make_workspace(1, "Test", &mut pane_id);
+    ws.new_surface("Only".to_string()).unwrap();
+
+    let result = ws.close_surface(0);
+    assert!(matches!(result, Err(WorkspaceError::CannotCloseLastSurface)));
+    let surfaces = leaf_surfaces_of(&ws);
+    assert_eq!(surfaces.len(), 1);
+    assert_eq!(surfaces[0].title, "Only");
+}
+
+#[test]
+fn test_workspace_close_surface_returns_surface() {
+    let mut pane_id = 1;
+    let mut ws = make_workspace(1, "Test", &mut pane_id);
+    ws.new_surface("T1".to_string()).unwrap();
+    ws.new_surface("T2".to_string()).unwrap();
+    ws.new_surface("T3".to_string()).unwrap();
+
+    let closed = ws.close_surface(1).unwrap();
+    assert_eq!(closed.title, "T2");
+    assert_eq!(closed.id, SurfaceId(2));
+
+    let surfaces = leaf_surfaces_of(&ws);
+    assert_eq!(surfaces.len(), 2);
+    assert_eq!(surfaces[0].title, "T1");
+    assert_eq!(surfaces[1].title, "T3");
+}
+
+#[test]
+fn test_workspace_rename_surface_changes_title() {
+    let mut pane_id = 1;
+    let mut ws = make_workspace(1, "Test", &mut pane_id);
+    ws.new_surface("Old".to_string()).unwrap();
+    ws.new_surface("Keep".to_string()).unwrap();
+
+    ws.rename_surface(0, "Renamed".to_string()).unwrap();
+    let surfaces = leaf_surfaces_of(&ws);
+    assert_eq!(surfaces[0].title, "Renamed");
+    assert_eq!(surfaces[1].title, "Keep");
+
+    let result = ws.rename_surface(99, "X".to_string());
+    assert!(matches!(result, Err(WorkspaceError::InvalidSurfaceIndex(99))));
+}
+
+#[test]
+fn test_workspace_close_other_surfaces_keeps_active() {
+    let mut pane_id = 1;
+    let mut ws = make_workspace(1, "Test", &mut pane_id);
+    ws.new_surface("T1".to_string()).unwrap();
+    ws.new_surface("T2".to_string()).unwrap();
+    ws.new_surface("T3".to_string()).unwrap();
+    ws.select_surface(1).unwrap();
+
+    let closed = ws.close_other_surfaces().unwrap();
+    assert_eq!(closed.len(), 2);
+    let mut closed_titles: Vec<&str> = closed.iter().map(|s| s.title.as_str()).collect();
+    closed_titles.sort();
+    assert_eq!(closed_titles, vec!["T1", "T3"]);
+
+    let surfaces = leaf_surfaces_of(&ws);
+    assert_eq!(surfaces.len(), 1);
+    assert_eq!(surfaces[0].title, "T2");
+    assert_eq!(ws.active_surface_index(), 0);
+}
+
+#[test]
+fn test_workspace_close_other_surfaces_with_six_surfaces() {
+    let mut pane_id = 1;
+    let mut ws = make_workspace(1, "Test", &mut pane_id);
+    for i in 1..=6 {
+        ws.new_surface(format!("T{i}")).unwrap();
+    }
+    ws.select_surface(2).unwrap();
+    assert_eq!(ws.active_surface_index(), 2);
+
+    let closed = ws.close_other_surfaces().unwrap();
+    assert_eq!(closed.len(), 5);
+
+    let surfaces = leaf_surfaces_of(&ws);
+    assert_eq!(surfaces.len(), 1);
+    assert_eq!(surfaces[0].title, "T3");
+    assert_eq!(ws.active_surface_index(), 0);
+}

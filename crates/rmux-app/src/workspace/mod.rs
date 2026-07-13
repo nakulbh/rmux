@@ -13,9 +13,10 @@ pub mod model;
 pub mod splits;
 pub mod surface;
 
-use model::{Workspace, WorkspaceId};
+use model::{Workspace, WorkspaceError, WorkspaceId};
 use rmux_terminal::OscNotification;
 use splits::PaneId;
+use surface::{Surface, SurfaceId};
 
 /// The maximum number of panes before a warning is emitted.
 const MAX_PANES_BEFORE_WARN: usize = 50;
@@ -348,6 +349,87 @@ impl WorkspaceManager {
         self.active_mut().root.equalize_splits();
         tracing::debug!("Split sizes equalized");
     }
+
+    /// Count the surfaces in the active leaf, walking the pane tree.
+    #[allow(dead_code)]
+    fn active_leaf_surface_count(&self) -> usize {
+        fn walk(node: &splits::PaneNode, target: PaneId) -> usize {
+            match node {
+                splits::PaneNode::Leaf { id, surfaces, .. } if *id == target => surfaces.len(),
+                splits::PaneNode::Leaf { .. } | splits::PaneNode::Browser { .. } => 0,
+                splits::PaneNode::Split { children, .. } => {
+                    children.iter().map(|c| walk(c, target)).sum()
+                }
+            }
+        }
+        walk(
+            &self.workspaces[self.active_index].root,
+            self.workspaces[self.active_index].active_pane,
+        )
+    }
+
+    /// Append a new surface (tab) to the active leaf in the active
+    /// workspace. When `title` is `None`, a default of
+    /// `"Terminal {n}"` is used where `n` is the *new* surface count.
+    #[allow(dead_code)]
+    pub fn new_surface_in_active(
+        &mut self,
+        title: Option<String>,
+    ) -> Result<SurfaceId, WorkspaceError> {
+        let count = self.active_leaf_surface_count();
+        let title = title.unwrap_or_else(|| format!("Terminal {}", count + 1));
+        self.active_mut().new_surface(title)
+    }
+
+    /// Cycle to the next surface within the active workspace's active leaf.
+    #[allow(dead_code)]
+    pub fn next_surface_in_active(&mut self) -> Result<(), WorkspaceError> {
+        self.active_mut().next_surface()
+    }
+
+    /// Cycle to the previous surface within the active workspace's active leaf.
+    #[allow(dead_code)]
+    pub fn previous_surface_in_active(&mut self) -> Result<(), WorkspaceError> {
+        self.active_mut().previous_surface()
+    }
+
+    /// Focus the surface at `idx` in the active workspace's active leaf.
+    #[allow(dead_code)]
+    pub fn select_surface_in_active(&mut self, idx: usize) -> Result<(), WorkspaceError> {
+        self.active_mut().select_surface(idx)
+    }
+
+    /// Close the surface at `idx` in the active workspace's active leaf.
+    /// `None` targets the currently focused surface.
+    #[allow(dead_code)]
+    pub fn close_surface_in_active(
+        &mut self,
+        idx: Option<usize>,
+    ) -> Result<Surface, WorkspaceError> {
+        let target = match idx {
+            Some(i) => i,
+            None => self.workspaces[self.active_index].active_surface_index(),
+        };
+        self.active_mut().close_surface(target)
+    }
+
+    /// Rename the surface at `idx` in the active workspace's active leaf.
+    #[allow(dead_code)]
+    pub fn rename_surface_in_active(
+        &mut self,
+        idx: usize,
+        title: String,
+    ) -> Result<(), WorkspaceError> {
+        self.active_mut().rename_surface(idx, title)
+    }
+
+    /// Close every surface in the active workspace's active leaf except
+    /// the currently focused one. Returns the closed surfaces in their
+    /// original order.
+    #[allow(dead_code)]
+    pub fn close_other_surfaces_in_active(&mut self) -> Result<Vec<Surface>, WorkspaceError> {
+        self.active_mut().close_other_surfaces()
+    }
 }
 
 impl Default for WorkspaceManager {
@@ -359,6 +441,8 @@ impl Default for WorkspaceManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use splits::PaneNode;
+    use surface::{Surface, SurfaceId};
 
     #[test]
     fn test_workspace_manager_creation() {
@@ -556,5 +640,94 @@ mod tests {
             assert!((sizes[0] - 0.5).abs() < f32::EPSILON);
             assert!((sizes[1] - 0.5).abs() < f32::EPSILON);
         }
+    }
+
+    // ----- W2.2: WorkspaceManager surface pass-throughs -----
+
+    fn leaf_surfaces_of(ws: &Workspace) -> &Vec<Surface> {
+        fn walk(node: &PaneNode, target: PaneId) -> Option<&Vec<Surface>> {
+            match node {
+                PaneNode::Leaf { id, surfaces, .. } if *id == target => Some(surfaces),
+                PaneNode::Leaf { .. } | PaneNode::Browser { .. } => None,
+                PaneNode::Split { children, .. } => children.iter().find_map(|c| walk(c, target)),
+            }
+        }
+        walk(&ws.root, ws.active_pane).expect("active pane is a Leaf")
+    }
+
+    #[test]
+    fn test_manager_new_surface_in_active_default_title() {
+        let mut manager = WorkspaceManager::new();
+        let id = manager.new_surface_in_active(None).unwrap();
+        assert_eq!(id, SurfaceId(1));
+        let surfaces = leaf_surfaces_of(manager.active());
+        assert_eq!(surfaces.len(), 1);
+        assert_eq!(surfaces[0].title, "Terminal 1");
+
+        manager.new_surface_in_active(None).unwrap();
+        manager.new_surface_in_active(None).unwrap();
+        let surfaces = leaf_surfaces_of(manager.active());
+        assert_eq!(surfaces[0].title, "Terminal 1");
+        assert_eq!(surfaces[1].title, "Terminal 2");
+        assert_eq!(surfaces[2].title, "Terminal 3");
+    }
+
+    #[test]
+    fn test_manager_new_surface_in_active_custom_title() {
+        let mut manager = WorkspaceManager::new();
+        let id = manager.new_surface_in_active(Some("My Tab".to_string())).unwrap();
+        assert_eq!(id, SurfaceId(1));
+        let surfaces = leaf_surfaces_of(manager.active());
+        assert_eq!(surfaces[0].title, "My Tab");
+    }
+
+    #[test]
+    fn test_manager_next_surface_in_active() {
+        let mut manager = WorkspaceManager::new();
+        manager.new_surface_in_active(None).unwrap();
+        manager.new_surface_in_active(None).unwrap();
+        manager.new_surface_in_active(None).unwrap();
+        assert_eq!(manager.active().active_surface_index(), 2);
+
+        manager.next_surface_in_active().unwrap();
+        assert_eq!(manager.active().active_surface_index(), 0);
+        manager.next_surface_in_active().unwrap();
+        assert_eq!(manager.active().active_surface_index(), 1);
+    }
+
+    #[test]
+    fn test_manager_close_surface_in_active_none_means_active() {
+        let mut manager = WorkspaceManager::new();
+        manager.new_surface_in_active(None).unwrap();
+        manager.new_surface_in_active(None).unwrap();
+        manager.new_surface_in_active(None).unwrap();
+        // `new_surface_in_active` makes the new surface the active one,
+        // so after 3 inserts the focus is on idx 2 (Terminal 3).
+        assert_eq!(manager.active().active_surface_index(), 2);
+
+        let closed = manager.close_surface_in_active(None).unwrap();
+        assert_eq!(closed.title, "Terminal 3");
+        assert_eq!(closed.id, SurfaceId(3));
+
+        let surfaces = leaf_surfaces_of(manager.active());
+        assert_eq!(surfaces.len(), 2);
+        assert_eq!(surfaces[0].title, "Terminal 1");
+        assert_eq!(surfaces[1].title, "Terminal 2");
+    }
+
+    #[test]
+    fn test_manager_close_surface_in_active_specific_index() {
+        let mut manager = WorkspaceManager::new();
+        manager.new_surface_in_active(None).unwrap();
+        manager.new_surface_in_active(None).unwrap();
+        manager.new_surface_in_active(None).unwrap();
+
+        let closed = manager.close_surface_in_active(Some(0)).unwrap();
+        assert_eq!(closed.title, "Terminal 1");
+
+        let surfaces = leaf_surfaces_of(manager.active());
+        assert_eq!(surfaces.len(), 2);
+        assert_eq!(surfaces[0].title, "Terminal 2");
+        assert_eq!(surfaces[1].title, "Terminal 3");
     }
 }

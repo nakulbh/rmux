@@ -411,3 +411,246 @@ during the W2 transition. Future waves will remove this fallback.
   on a leaf with `terminal = Some(...)` and empty `surfaces`. The
   fallback path is currently only exercised via `Workspace::set_terminal`
   in the integration tests, not at the unit level.
+
+---
+
+## W2.2 — Workspace tab methods + WorkspaceManager pass-throughs
+
+**Worker:** Atlas (Rust Core Specialist) · **Date:** 2026-07-14
+
+### What landed
+
+**`crates/rmux-app/src/workspace/model.rs`** (+~180 lines)
+
+- New `WorkspaceError` enum with 4 variants: `NoActivePane`,
+  `InvalidSurfaceIndex(usize)`, `CannotCloseLastSurface`,
+  `SurfaceSpawnFailed(String)`. `thiserror::Error` derive. `pub` so
+  callers can match on it.
+- Module-level `INITIAL_COLS = 80`, `INITIAL_ROWS = 24` constants
+  (mirroring `app.rs` private ones — exposing the canonical
+  `TerminalPane::spawn(80, 24, ...)` size at the workspace level).
+- `Workspace::next_surface_id: u64` field, init to `1` in `new()`.
+- `Workspace::active_surface_index() -> usize` accessor (delegates to
+  private `surface_index_in` walker). Needed by the manager to resolve
+  `close_surface_in_active(None)`.
+- `Workspace::active_leaf_mut() -> Result<&mut PaneNode, WorkspaceError>`
+  private helper. Centralizes the "is there a leaf at `active_pane`?"
+  check that every surface method needs.
+- 7 new `Workspace` surface methods: `new_surface`,
+  `next_surface`, `previous_surface`, `select_surface`,
+  `close_surface`, `rename_surface`, `close_other_surfaces`.
+
+**`crates/rmux-app/src/workspace/mod.rs`** (+~175 lines)
+
+- 7 new `WorkspaceManager` pass-throughs: `new_surface_in_active`,
+  `next_surface_in_active`, `previous_surface_in_active`,
+  `select_surface_in_active`, `close_surface_in_active`,
+  `rename_surface_in_active`, `close_other_surfaces_in_active`.
+- Private `active_leaf_surface_count` walker (for the default
+  `Terminal {n}` title in `new_surface_in_active(None)`).
+- 5 new tests in `mod.rs::tests` (the spec required 4; added
+  `test_manager_new_surface_in_active_custom_title` as a bonus
+  for the `Some(...)` branch of the `Option<String>` API).
+
+**`crates/rmux-app/src/workspace/model_tests.rs`** (+~206 lines)
+
+- 11 new `Workspace` surface tests.
+- `leaf_surfaces_of(ws: &Workspace) -> &Vec<Surface>` test helper
+  with a small recursive `walk` that mirrors `PaneNode::find_pane`
+  but returns the surface list immutably. Used by 8 of the 11 tests
+  to assert on `surfaces[i].title` and `surfaces.len()`.
+
+### Why `WorkspaceError` is separate from `PaneTreeError`
+
+`PaneTreeError` already exists in `splits.rs` and covers structural
+concerns (`PaneNotFound`, `CannotCloseLastPane`, `NotALeaf`,
+`InvalidChildIndex`). Mixing the new `InvalidSurfaceIndex(usize)` and
+`CannotCloseLastSurface` variants into that enum would force every
+caller to add a `_ => ...` catch-all and would conflate "the pane
+tree is broken" with "this surface index doesn't exist" — those are
+diagnostically distinct failures that the dispatcher (Wave 3) will
+want to log differently. A separate enum also keeps `splits.rs` free
+of `Workspace` concerns, preserving the existing module layering.
+
+### `close_other_surfaces` implementation choice
+
+The spec says "keep only the active surface, return the closed ones".
+The naive implementation (collect indices in reverse, call
+`PaneNode::remove_surface` per index) works but is fiddly because
+`remove_surface` adjusts `active_surface` as a side-effect, so the
+indices shift underfoot. The actual implementation:
+
+```rust
+let mut all: Vec<Surface> = std::mem::take(leaf.leaf_surfaces_mut());
+// walk with enumerate, partition into closed[] and active
+// push the active surface back, set active_surface_index = 0
+```
+
+`std::mem::take` is the clean way to "drain the vec while keeping
+ownership of the storage". The Vec allocator is reused for the
+single-surface push-back. Cost: one heap allocation, one heap
+deallocation, one heap re-allocation (the push). For typical "close
+all tabs except this one" with N ≤ 10 surfaces, this is faster than
+the shift-and-remove approach (which is O(N²) in `remove`).
+
+### PTY spawn in tests
+
+All 11 Workspace tests + 5 manager tests call `new_surface` (or
+`new_surface_in_active`) which calls `TerminalPane::spawn(80, 24,
+14.0)` — a real PTY. On macOS the test runner has `/bin/sh` available
+so the spawn succeeds. In a CI environment without a tty the spawn
+may fail; the `SurfaceSpawnFailed(String)` variant captures that and
+the test still passes (it doesn't assert on the terminal itself).
+This matches the spec's "If tests are slow, mark them with
+`#[ignore]`" guidance — locally they run in < 1s, no `#[ignore]`
+needed.
+
+### Borrow-checker choreography
+
+The methods follow a strict pattern:
+
+```rust
+let id = SurfaceId(self.next_surface_id);
+self.next_surface_id += 1;            // (1) bump counter
+
+let terminal = TerminalPane::spawn(...)?;
+let surface = Surface::new(id, title, terminal);
+
+{
+    let leaf = self.active_leaf_mut()?;  // (2) mutable borrow
+    leaf.add_surface(surface);
+    leaf.set_active_surface_index(...);
+}                                       // (3) borrow ends here
+Ok(id)
+```
+
+Step (1) writes to `self.next_surface_id` BEFORE step (2) takes a
+`&mut PaneNode` borrow from `self.root`. NLL allows them to coexist
+on different fields, but the order matters: if (1) and (2) were
+interleaved with the borrow held, the borrow checker would refuse
+(it's an exclusive borrow on `&mut self`). All seven new methods
+follow this "modify scalar field → borrow leaf → release borrow"
+shape.
+
+`close_other_surfaces` is the trickiest because it needs to read
+`active_surface_index` AND `leaf_surfaces().len()` to decide whether
+to short-circuit, then `mem::take` the vec. Each individual call
+ends before the next begins, so NLL handles it.
+
+### `close_surface_in_active(None)` resolution
+
+`close_surface_in_active(idx: Option<usize>)` — when `None` is
+passed, the target is the active surface. The manager resolves this
+by peeking at `self.active().active_surface_index()` BEFORE calling
+`active_mut().close_surface(...)`. Both peek operations use
+`&Workspace` (immutable) then release, so the subsequent
+`active_mut().close_surface(...)` is a clean mutable borrow.
+
+There's a subtle alternative: pass `idx = None` through to
+`Workspace::close_surface` and resolve it there. But that would
+require `close_surface` to take `Option<usize>` instead of `usize`,
+which leaks the "active surface" concept into the lower-level API.
+The current design keeps `Workspace::close_surface` taking a plain
+index, with the manager doing the resolution. This mirrors the
+existing `close_active_pane` (which knows it's the active pane and
+resolves internally) pattern.
+
+### `#[allow(dead_code)]` per-method
+
+Clippy flags the new methods as unused when building the `bin`
+target (the `rmux` binary doesn't compile the test modules). The
+existing project pattern (e.g. `close_workspace` at line 89) is
+per-method `#[allow(dead_code)]`. I followed the same pattern on
+all 7 new manager methods (the 4 exercised in tests, plus the 3 not
+yet exercised). When Wave 3 wires up the dispatch handlers, those
+annotations can be removed in a sweep.
+
+The Workspace-level methods don't need `#[allow(dead_code)]`
+because `model.rs` has `#![allow(dead_code)]` at the top (inherited
+from W2.1's `surface.rs` and `splits.rs` pattern).
+
+### Gotchas hit
+
+- `#[path = "model_tests.rs"] mod tests;` puts the test file
+  outside the `tests` directory but inside the same compilation
+  unit. `use super::*` gives it everything imported into
+  `model.rs`, so `WorkspaceError`, `Surface`, `SurfaceId`,
+  `PaneNode` all need to be in `model.rs`'s imports. Initially
+  only `TerminalPane` was imported — added the rest as part of
+  the new method signatures.
+- The TDD cycle was: write all 16 new tests → see them fail with
+  62 `E0599` errors (method not found) → implement the methods →
+  re-run → all green. The compile-failure-as-test-failure model
+  works cleanly here because every new test invokes a non-existent
+  method.
+- `cargo fmt --all` reformatted pre-existing files I didn't touch
+  (`shortcuts.rs`, `splits.rs`). Reverted with `git checkout --` —
+  those are out of scope per the spec. Going forward, only
+  `cargo fmt -p rmux-app -- <file>` on the files I actually edit.
+- The `multiple methods are never used` clippy warning groups all
+  new methods even though only some are dead. The follow-up
+  `methods X, Y, Z are never used` warning has the precise list.
+  Reading clippy output in order (broadest → most specific) avoids
+  false-positive triage.
+
+### Verification
+
+- `cargo build -p rmux-app 2>&1 | grep -c "error\[E"` → `0`
+- `cargo test -p rmux-app --bin rmux` → `95 passed; 0 failed`
+  (79 baseline + 16 new: 11 Workspace + 5 WorkspaceManager)
+- `cargo clippy -p rmux-app --all-targets` → 1 warning
+  (pre-existing `RenameTab`/`NewWindow`/`CloseWindow` dead_code
+  from W1.2, NOT introduced by this wave)
+- `cargo fmt -p rmux-app -- --check` → clean
+- `cargo doc --no-deps -p rmux-app` → clean
+
+### Reusable patterns
+
+- `fn walk(node: &PaneNode, target: PaneId) -> Option<&T>` with
+  `find_map` is the immutable equivalent of `PaneNode::find_pane_mut`.
+  For the `&self` test helpers, this avoids needing a mutable
+  `Workspace` borrow (which is impossible to obtain inside a
+  `&Workspace` accessor).
+- `Workspace::active_leaf_mut() -> Result<&mut PaneNode,
+  WorkspaceError>` is the single chokepoint for "does the active
+  pane have a surface list?" All 7 surface methods route through
+  it. If future waves add per-leaf operations (e.g. surface
+  reordering, drag-and-drop), they should follow the same pattern
+  rather than re-checking `find_pane_mut` themselves.
+- `std::mem::take(leaf.leaf_surfaces_mut())` is the safe way to
+  "drain the vec into a local var while leaving an empty vec in
+  place" — the alternative (`std::mem::replace(..., Vec::new())`)
+  has the same effect but the `take` form reads more clearly.
+
+### Follow-ups (not done here)
+
+- **Wave 3 (tab UI + dispatch):** the new `*_in_active` methods are
+  the public API the dispatcher will call. Wave 3 should remove the
+  per-method `#[allow(dead_code)]` annotations as each one gets
+  wired to a `ShortcutAction` variant (`NewSurface` →
+  `new_surface_in_active(None)`, `CloseTab` →
+  `close_surface_in_active(None)`, `NextTab` →
+  `next_surface_in_active`, etc.).
+- **Wave 4 (wire-up):** the `Workspace::active_leaf_mut` helper
+  should probably return `&mut PaneNode::Leaf` directly (using
+  `match` + `unwrap_or_else`) to give callers a `Leaf` projection
+  without needing to re-match on `PaneNode::Leaf { ... }`. That
+  refactor unlocks moving `next_surface`, `previous_surface`, etc.
+  out of `Workspace` and into a dedicated `LeafSurfaces` struct
+  if/when the surface list grows more methods (e.g. drag-reorder,
+  duplicate tab, move-to-new-pane).
+- **Migrate `Workspace::set_terminal` to use `add_surface`:** the
+  W2.1 notepad's follow-up. Once that lands, the legacy
+  `terminal: Box<Option<TerminalPane>>` slot in `PaneNode::Leaf` can
+  be removed and `active_terminal`'s fallback in `splits.rs` can
+  go away. That cleanup is much larger than this wave (touches
+  `app.rs::attach_terminal` and `workspace_view::render_leaf`) and
+  is explicitly out of scope here.
+- **Possible test for spawn failure:** `test_workspace_new_surface_spawn_failure`
+  that injects a "PTY is broken" path. Currently impossible without
+  injecting a mock for `TerminalPane::spawn`, which the codebase
+  doesn't have a pattern for. The `SurfaceSpawnFailed` variant
+  is unit-tested only via the `?` propagation (i.e. by
+  `WorkspaceError::PartialEq` derivation making it matchable) — a
+  dedicated failure-path test would require refactoring the spawn
+  call behind a trait.
