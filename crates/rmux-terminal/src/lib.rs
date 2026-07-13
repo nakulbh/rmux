@@ -17,12 +17,14 @@ mod input;
 mod osc;
 mod renderer;
 mod state;
+mod theme;
 
 pub use backend::{PtyBackend, PtyError, PtyResult};
 pub use input::InputMapper;
 pub use osc::{OscKind, OscNotification, OscScanner};
 pub use renderer::TerminalRenderer;
 pub use state::{GridCell, GridSnapshot, TermState};
+pub use theme::{NamedTheme, TerminalTheme};
 
 // Re-export cursor shape from alacritty_terminal for convenience
 pub use alacritty_terminal::vte::ansi::CursorShape;

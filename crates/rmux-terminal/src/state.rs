@@ -3,6 +3,7 @@
 //! Wraps `alacritty_terminal::Term` and provides a clean query API
 //! for the renderer. Manages grid state, scrollback, and cursor position.
 
+use crate::theme::TerminalTheme;
 use alacritty_terminal::event::VoidListener;
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::term::Config;
@@ -59,6 +60,8 @@ pub struct TermState {
     /// Maximum scrollback lines (stored for future config use).
     #[allow(dead_code)]
     scrollback_limit: usize,
+    /// Terminal color theme (ANSI palette, cursor, selection, fg/bg).
+    pub theme: TerminalTheme,
 }
 
 /// A snapshot of the terminal grid at a point in time.
@@ -82,6 +85,12 @@ pub struct GridSnapshot {
     pub cursor_shape: CursorShape,
     /// Scrollback display offset.
     pub display_offset: usize,
+    /// Terminal background color (resolved from theme palette).
+    pub terminal_bg: Color32,
+    /// Terminal foreground color (resolved from theme palette).
+    pub terminal_fg: Color32,
+    /// Terminal cursor color (resolved from theme palette).
+    pub cursor_color: Color32,
 }
 
 /// A single cell in the terminal grid.
@@ -122,7 +131,14 @@ impl TermState {
 
         let term = alacritty_terminal::term::Term::new(config, &dimensions, VoidListener);
 
-        Self { term, processor: Processor::new(), cols, rows, scrollback_limit }
+        Self {
+            term,
+            processor: Processor::new(),
+            cols,
+            rows,
+            scrollback_limit,
+            theme: TerminalTheme::default(),
+        }
     }
 
     /// Feed raw bytes from PTY output through the VTE parser.
@@ -154,6 +170,11 @@ impl TermState {
         let cursor_point = renderable.cursor.point;
         let cursor_shape = renderable.cursor.shape;
 
+        // Resolve terminal background and foreground from palette
+        let terminal_bg = resolve_color(Color::Named(NamedColor::Background), colors, &self.theme);
+        let terminal_fg = resolve_color(Color::Named(NamedColor::Foreground), colors, &self.theme);
+        let cursor_color = resolve_color(Color::Named(NamedColor::Cursor), colors, &self.theme);
+
         // Iterate over renderable cells and populate the grid
         for indexed_cell in renderable.display_iter {
             let point = indexed_cell.point;
@@ -167,7 +188,7 @@ impl TermState {
                 let col = view_point.column;
 
                 if row < rows as usize && col.0 < cols as usize {
-                    let (fg, bg) = cell_colors(cell, colors);
+                    let (fg, bg) = cell_colors(cell, colors, &self.theme);
                     cells[row][col.0] = GridCell {
                         c: cell.c,
                         fg,
@@ -197,7 +218,18 @@ impl TermState {
 
         let cursor_col = cursor_point.column.0 as u16;
 
-        GridSnapshot { cols, rows, cells, cursor_row, cursor_col, cursor_shape, display_offset }
+        GridSnapshot {
+            cols,
+            rows,
+            cells,
+            cursor_row,
+            cursor_col,
+            cursor_shape,
+            display_offset,
+            terminal_bg,
+            terminal_fg,
+            cursor_color,
+        }
     }
 
     /// Resize the terminal to new dimensions.
@@ -258,9 +290,9 @@ impl TermState {
 ///
 /// Uses the terminal's color palette to resolve named and indexed colors
 /// to their actual RGB values.
-fn cell_colors(cell: &Cell, colors: &Colors) -> (Color32, Color32) {
-    let fg = resolve_color(cell.fg, colors);
-    let bg = resolve_color(cell.bg, colors);
+fn cell_colors(cell: &Cell, colors: &Colors, theme: &TerminalTheme) -> (Color32, Color32) {
+    let fg = resolve_color(cell.fg, colors, theme);
+    let bg = resolve_color(cell.bg, colors, theme);
     (fg, bg)
 }
 
@@ -268,20 +300,18 @@ fn cell_colors(cell: &Cell, colors: &Colors) -> (Color32, Color32) {
 ///
 /// Handles named colors (using the palette), RGB spec colors, and
 /// indexed colors. Falls back to sensible defaults for unresolved colors.
-fn resolve_color(color: Color, colors: &Colors) -> Color32 {
+fn resolve_color(color: Color, colors: &Colors, theme: &TerminalTheme) -> Color32 {
     match color {
         Color::Named(named) => {
-            let rgb = colors[named].unwrap_or_else(|| default_named_color(named));
+            let rgb = colors[named].unwrap_or_else(|| default_named_color(named, theme));
             Color32::from_rgb(rgb.r, rgb.g, rgb.b)
         }
         Color::Spec(rgb) => Color32::from_rgb(rgb.r, rgb.g, rgb.b),
         Color::Indexed(idx) => {
-            // For indexed colors in 16-255 range, look up in the colors array
             if let Some(rgb) = colors[idx as usize] {
                 Color32::from_rgb(rgb.r, rgb.g, rgb.b)
             } else {
-                // Fallback: generate from 6x6x6 color cube or grayscale
-                indexed_to_color32(idx, colors)
+                indexed_to_color32(idx, colors, theme)
             }
         }
     }
@@ -291,7 +321,7 @@ fn resolve_color(color: Color, colors: &Colors) -> Color32 {
 ///
 /// ANSI colors 0-15 are named, 16-231 form a 6x6x6 cube,
 /// and 232-255 are grayscale.
-fn indexed_to_color32(idx: u8, colors: &Colors) -> Color32 {
+fn indexed_to_color32(idx: u8, colors: &Colors, theme: &TerminalTheme) -> Color32 {
     match idx {
         0..=15 => {
             let named = match idx {
@@ -313,11 +343,10 @@ fn indexed_to_color32(idx: u8, colors: &Colors) -> Color32 {
                 15 => NamedColor::BrightWhite,
                 _ => NamedColor::White,
             };
-            let rgb = colors[named].unwrap_or_else(|| default_named_color(named));
+            let rgb = colors[named].unwrap_or_else(|| default_named_color(named, theme));
             Color32::from_rgb(rgb.r, rgb.g, rgb.b)
         }
         16..=231 => {
-            // 6x6x6 color cube
             let idx = idx - 16;
             let r = (idx / 36) * 51;
             let g = ((idx / 6) % 6) * 51;
@@ -325,7 +354,6 @@ fn indexed_to_color32(idx: u8, colors: &Colors) -> Color32 {
             Color32::from_rgb(r, g, b)
         }
         232..=255 => {
-            // Grayscale ramp (8-238 in steps of 10)
             let gray = (idx as u32 - 232) * 10 + 8;
             Color32::from_rgb(gray as u8, gray as u8, gray as u8)
         }
@@ -333,37 +361,38 @@ fn indexed_to_color32(idx: u8, colors: &Colors) -> Color32 {
 }
 
 /// Default color values for named ANSI colors.
-fn default_named_color(named: NamedColor) -> Rgb {
+fn default_named_color(named: NamedColor, theme: &TerminalTheme) -> Rgb {
+    let to_rgb = |c: Color32| Rgb { r: c.r(), g: c.g(), b: c.b() };
+
     match named {
-        NamedColor::Black => Rgb::default(),
-        NamedColor::Red => Rgb { r: 205, g: 0, b: 0 },
-        NamedColor::Green => Rgb { r: 0, g: 205, b: 0 },
-        NamedColor::Yellow => Rgb { r: 205, g: 205, b: 0 },
-        NamedColor::Blue => Rgb { r: 0, g: 0, b: 238 },
-        NamedColor::Magenta => Rgb { r: 205, g: 0, b: 205 },
-        NamedColor::Cyan => Rgb { r: 0, g: 205, b: 205 },
-        NamedColor::White => Rgb { r: 229, g: 229, b: 229 },
-        NamedColor::BrightBlack => Rgb { r: 127, g: 127, b: 127 },
-        NamedColor::BrightRed => Rgb { r: 255, g: 0, b: 0 },
-        NamedColor::BrightGreen => Rgb { r: 0, g: 255, b: 0 },
-        NamedColor::BrightYellow => Rgb { r: 255, g: 255, b: 0 },
-        NamedColor::BrightBlue => Rgb { r: 92, g: 92, b: 255 },
-        NamedColor::BrightMagenta => Rgb { r: 255, g: 0, b: 255 },
-        NamedColor::BrightCyan => Rgb { r: 0, g: 255, b: 255 },
-        NamedColor::BrightWhite => Rgb { r: 255, g: 255, b: 255 },
-        NamedColor::Foreground | NamedColor::BrightForeground => Rgb { r: 229, g: 229, b: 229 },
-        NamedColor::Background => Rgb { r: 0, g: 0, b: 0 },
-        NamedColor::Cursor => Rgb { r: 255, g: 255, b: 255 },
-        // Dim colors: approximate half brightness of normal
-        NamedColor::DimBlack => Rgb::default(),
-        NamedColor::DimRed => Rgb { r: 102, g: 0, b: 0 },
-        NamedColor::DimGreen => Rgb { r: 0, g: 102, b: 0 },
-        NamedColor::DimYellow => Rgb { r: 102, g: 102, b: 0 },
-        NamedColor::DimBlue => Rgb { r: 0, g: 0, b: 119 },
-        NamedColor::DimMagenta => Rgb { r: 102, g: 0, b: 102 },
-        NamedColor::DimCyan => Rgb { r: 0, g: 102, b: 102 },
-        NamedColor::DimWhite => Rgb { r: 114, g: 114, b: 114 },
-        NamedColor::DimForeground => Rgb { r: 114, g: 114, b: 114 },
+        NamedColor::Black => to_rgb(theme.black),
+        NamedColor::Red => to_rgb(theme.red),
+        NamedColor::Green => to_rgb(theme.green),
+        NamedColor::Yellow => to_rgb(theme.yellow),
+        NamedColor::Blue => to_rgb(theme.blue),
+        NamedColor::Magenta => to_rgb(theme.magenta),
+        NamedColor::Cyan => to_rgb(theme.cyan),
+        NamedColor::White => to_rgb(theme.white),
+        NamedColor::BrightBlack => to_rgb(theme.bright_black),
+        NamedColor::BrightRed => to_rgb(theme.bright_red),
+        NamedColor::BrightGreen => to_rgb(theme.bright_green),
+        NamedColor::BrightYellow => to_rgb(theme.bright_yellow),
+        NamedColor::BrightBlue => to_rgb(theme.bright_blue),
+        NamedColor::BrightMagenta => to_rgb(theme.bright_magenta),
+        NamedColor::BrightCyan => to_rgb(theme.bright_cyan),
+        NamedColor::BrightWhite => to_rgb(theme.bright_white),
+        NamedColor::Foreground | NamedColor::BrightForeground => to_rgb(theme.foreground),
+        NamedColor::Background => to_rgb(theme.background),
+        NamedColor::Cursor => to_rgb(theme.cursor),
+        NamedColor::DimBlack => to_rgb(theme.black.gamma_multiply(0.5)),
+        NamedColor::DimRed => to_rgb(theme.red.gamma_multiply(0.5)),
+        NamedColor::DimGreen => to_rgb(theme.green.gamma_multiply(0.5)),
+        NamedColor::DimYellow => to_rgb(theme.yellow.gamma_multiply(0.5)),
+        NamedColor::DimBlue => to_rgb(theme.blue.gamma_multiply(0.5)),
+        NamedColor::DimMagenta => to_rgb(theme.magenta.gamma_multiply(0.5)),
+        NamedColor::DimCyan => to_rgb(theme.cyan.gamma_multiply(0.5)),
+        NamedColor::DimWhite => to_rgb(theme.white.gamma_multiply(0.5)),
+        NamedColor::DimForeground => to_rgb(theme.foreground.gamma_multiply(0.5)),
     }
 }
 
@@ -430,12 +459,12 @@ mod tests {
 
     #[test]
     fn test_indexed_color_mapping() {
-        // We just test the function doesn't panic
         let colors = Colors::default();
-        let c0 = super::indexed_to_color32(0, &colors);
-        let c255 = super::indexed_to_color32(255, &colors);
-        let c16 = super::indexed_to_color32(16, &colors);
-        let c231 = super::indexed_to_color32(231, &colors);
+        let theme = TerminalTheme::default();
+        let c0 = super::indexed_to_color32(0, &colors, &theme);
+        let c255 = super::indexed_to_color32(255, &colors, &theme);
+        let c16 = super::indexed_to_color32(16, &colors, &theme);
+        let c231 = super::indexed_to_color32(231, &colors, &theme);
         // All should produce valid colors
         assert!(c0 != c255 || c0 == c255);
         let _ = (c16, c231);
