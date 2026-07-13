@@ -11,11 +11,27 @@
 //! crate::ui::theme::Theme::dark().apply(ctx);
 //! ```
 
+use std::sync::{OnceLock, RwLock};
+
 use egui::{Color32, CornerRadius, FontFamily, FontId, Stroke, TextStyle};
+use rmux_terminal::{NamedTheme, TerminalTheme};
 
 /// Shorthand for an opaque sRGB color from 8-bit channels.
 const fn rgb(r: u8, g: u8, b: u8) -> Color32 {
     Color32::from_rgb(r, g, b)
+}
+
+/// Linear-blend two colors: `t=0.0` returns `a`, `t=1.0` returns `b`.
+fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
+    let lerp =
+        |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round().clamp(0.0, 255.0) as u8;
+    Color32::from_rgb(lerp(a.r(), b.r()), lerp(a.g(), b.g()), lerp(a.b(), b.b()))
+}
+
+/// Perceptual luminance (0..=255), used to pick readable text on a
+/// colored fill (e.g. text atop the accent color).
+fn luminance(c: Color32) -> f32 {
+    0.299_f32 * c.r() as f32 + 0.587_f32 * c.g() as f32 + 0.114_f32 * c.b() as f32
 }
 
 /// Semantic color tokens (Arbor One Dark).
@@ -114,6 +130,64 @@ impl Palette {
             terminal_selection_bg: rgb(0x3e, 0x44, 0x51),
         }
     }
+
+    /// Derive a full UI palette from a terminal color theme, so the whole
+    /// app chrome (sidebar, top bar, status bar, cards) recolors along with
+    /// the terminal when the user picks a theme in Settings — not just the
+    /// terminal grid. Surfaces are stepped from `background` towards
+    /// `foreground` by small amounts to keep the Arbor three-surface depth
+    /// model (content / chrome / interaction) regardless of which theme's
+    /// exact colors are plugged in.
+    pub fn from_terminal(theme: &TerminalTheme) -> Self {
+        let bg = theme.background;
+        let fg = theme.foreground;
+        let accent = theme.blue;
+        let accent_fg = if luminance(accent) > 140.0_f32 { Color32::BLACK } else { Color32::WHITE };
+
+        Self {
+            app_bg: bg,
+            terminal_bg: bg,
+            sidebar_bg: mix(bg, fg, 0.06_f32),
+            panel_bg: mix(bg, fg, 0.05_f32),
+            panel_active_bg: mix(bg, fg, 0.10_f32),
+            chrome_bg: mix(bg, fg, 0.14_f32),
+            tab_active_bg: bg,
+            border: mix(bg, fg, 0.10_f32),
+            chrome_border: mix(bg, fg, 0.16_f32),
+            text_primary: fg,
+            text_muted: mix(fg, bg, 0.35_f32),
+            text_disabled: mix(fg, bg, 0.55_f32),
+            accent,
+            accent_fg,
+            success: theme.green,
+            danger: theme.red,
+            warning: theme.yellow,
+            info: theme.cyan,
+            terminal_cursor: theme.cursor,
+            terminal_selection_bg: theme.selection_bg,
+        }
+    }
+}
+
+/// Process-wide selected theme, read by [`palette()`] every frame across
+/// every UI module. Set via [`set_named_theme`] whenever the user picks a
+/// theme in Settings (`RmuxApp::set_terminal_theme`).
+static CURRENT_NAMED_THEME: OnceLock<RwLock<NamedTheme>> = OnceLock::new();
+
+fn current_named_theme_lock() -> &'static RwLock<NamedTheme> {
+    CURRENT_NAMED_THEME.get_or_init(|| RwLock::new(NamedTheme::default()))
+}
+
+/// Set the app-wide theme. Every subsequent [`palette()`] call — across
+/// the sidebar, top bar, status bar, notification/settings panels, and
+/// terminal chrome — reflects it starting next frame.
+pub fn set_named_theme(named: NamedTheme) {
+    *current_named_theme_lock().write().unwrap() = named;
+}
+
+/// The currently active named theme (default: One Dark).
+pub fn current_named_theme() -> NamedTheme {
+    *current_named_theme_lock().read().unwrap()
 }
 
 /// UI metrics shared across modules (see `docs/UI_REDESIGN.md`).
@@ -144,9 +218,10 @@ pub struct Theme {
 }
 
 impl Theme {
-    /// Arbor One Dark theme.
+    /// The current app theme: dark chrome, radius 6, palette derived from
+    /// whichever [`NamedTheme`] the user has selected (default: One Dark).
     pub fn dark() -> Self {
-        Self { palette: Palette::dark(), radius: 6.0_f32, dark: true }
+        Self { palette: palette(), radius: 6.0_f32, dark: true }
     }
 
     /// Small radius — rows, buttons, inputs, cards, tabs.
@@ -239,9 +314,16 @@ impl Theme {
     }
 }
 
-/// Convenience: get the dark palette.
+/// Convenience: get the palette for the currently selected theme. One Dark
+/// keeps the hand-tuned Arbor palette exactly; every other theme derives
+/// its UI palette from that theme's terminal colors (see
+/// [`Palette::from_terminal`]) so the whole app — not just the terminal
+/// grid — recolors when the user picks a theme in Settings.
 pub fn palette() -> Palette {
-    Palette::dark()
+    match current_named_theme() {
+        NamedTheme::OneDark => Palette::dark(),
+        other => Palette::from_terminal(&TerminalTheme::default().named(other)),
+    }
 }
 
 /// Corner radius for cards, buttons, badges, and inputs — the single
@@ -249,4 +331,55 @@ pub fn palette() -> Palette {
 /// (matching cmux) instead of a scatter of mismatched hardcoded radii.
 pub fn radius_sm() -> u8 {
     Theme::dark().radius_sm() as u8
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_mix_endpoints() {
+        let a = rgb(0, 0, 0);
+        let b = rgb(255, 255, 255);
+        assert_eq!(mix(a, b, 0.0_f32), a);
+        assert_eq!(mix(a, b, 1.0_f32), b);
+    }
+
+    #[test]
+    fn test_luminance_orders_black_below_white() {
+        assert!(luminance(rgb(0, 0, 0)) < luminance(rgb(255, 255, 255)));
+    }
+
+    #[test]
+    fn test_from_terminal_distinguishes_surfaces_from_background() {
+        for named in NamedTheme::all() {
+            let terminal_theme = TerminalTheme::default().named(*named);
+            let palette = Palette::from_terminal(&terminal_theme);
+            assert_ne!(palette.app_bg, palette.text_primary);
+            assert_ne!(palette.panel_bg, palette.chrome_bg, "{named:?} surfaces must differ");
+            assert_ne!(palette.accent, palette.accent_fg, "{named:?} accent text must contrast");
+        }
+    }
+
+    /// `set_named_theme`/`palette` share one process-wide static, and
+    /// `cargo test` runs `#[test]` fns concurrently on separate threads —
+    /// so anything exercising that global must live in a single test to
+    /// avoid racing with another test's mutation between a set and its
+    /// assertion. Always ends by resetting to the default (`OneDark`) so
+    /// this doesn't leak state into whichever test runs next.
+    #[test]
+    fn test_set_named_theme_round_trips_and_drives_palette() {
+        set_named_theme(NamedTheme::Dracula);
+        assert_eq!(current_named_theme(), NamedTheme::Dracula);
+
+        set_named_theme(NamedTheme::TokyoNight);
+        let tokyo = palette();
+
+        set_named_theme(NamedTheme::OneDark);
+        let one_dark = palette();
+
+        assert_eq!(current_named_theme(), NamedTheme::OneDark);
+        assert_ne!(tokyo.app_bg, one_dark.app_bg);
+        assert_eq!(one_dark.app_bg, Palette::dark().app_bg);
+    }
 }

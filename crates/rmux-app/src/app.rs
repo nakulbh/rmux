@@ -358,8 +358,11 @@ impl RmuxApp {
 
     /// Change the terminal color theme, propagating it to every pane
     /// across all workspaces. New panes pick it up via `attach_terminal`.
+    /// Also updates the app-wide UI palette (sidebar, top bar, status bar,
+    /// panels) so the whole desktop recolors, not just the terminal grid.
     pub(crate) fn set_terminal_theme(&mut self, named: rmux_terminal::NamedTheme) {
         self.terminal_theme = named;
+        crate::ui::theme::set_named_theme(named);
         tracing::debug!(?named, "Terminal theme changed");
 
         let theme = rmux_terminal::TerminalTheme::default().named(named);
