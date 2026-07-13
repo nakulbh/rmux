@@ -53,6 +53,14 @@ impl RmuxApp {
     pub(crate) fn handle_keyboard_shortcuts(&mut self, ctx: &egui::Context) {
         let input = ctx.input(|i| i.clone());
 
+        // Check if the active terminal pane has keyboard focus.  The
+        // terminal does not use egui text-input widgets, so
+        // `ctx.wants_keyboard_input()` alone is insufficient — without
+        // this guard, non-always-active shortcuts (e.g. Ctrl+B →
+        // ToggleSidebar) fire silently while the user is typing, opening
+        // the sidebar / notification panel / etc.
+        let terminal_focused = self.active_terminal_mut().map(|t| t.has_focus()).unwrap_or(false);
+
         for event in &input.events {
             let egui::Event::Key { key, pressed: true, modifiers, .. } = event else {
                 continue;
@@ -75,7 +83,8 @@ impl RmuxApp {
             // Skip focus-dependent actions when a text widget is focused so we
             // don't steal keystrokes (especially bare Escape/Enter) from the
             // terminal. Always-active actions fall through.
-            if ctx.wants_keyboard_input() && !should_dispatch_when_text_focused(action) {
+            let text_focused = ctx.wants_keyboard_input() || terminal_focused;
+            if text_focused && !should_dispatch_when_text_focused(action) {
                 continue;
             }
 
