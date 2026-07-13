@@ -284,6 +284,17 @@ impl Workspace {
         self.root.pane_count()
     }
 
+    /// Number of terminal surfaces hosted in this workspace.
+    ///
+    /// Pass-through to [`PaneNode::terminal_count`]. A workspace with no
+    /// leaves (theoretically possible if the root is replaced) returns
+    /// `0`; an uninitialized leaf still counts as `1` so the
+    /// `CloseTab` vs `ClosePane` disambiguation in the dispatcher stays
+    /// consistent with the user's mental model of "one tab open".
+    pub fn terminal_count(&self) -> usize {
+        self.root.terminal_count()
+    }
+
     /// Get the ID of the currently active pane.
     pub fn active_pane_id(&self) -> PaneId {
         self.active_pane

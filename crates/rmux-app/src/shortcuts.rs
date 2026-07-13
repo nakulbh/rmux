@@ -432,4 +432,370 @@ mod tests {
         let mods = cmd_ctrl();
         assert_eq!(reg.lookup(mods, Key::ArrowUp), None);
     }
+
+    // =====================================================================
+    // W4.2 — Comprehensive cmux shortcut lookup coverage.
+    //
+    // The pre-W4.2 tests above cover only Quit, SwitchWorkspace, and the
+    // focus-modifier regression. This block adds one test per cmux
+    // shortcut chord so that any future change to `ShortcutRegistry::default`
+    // breaks a named, grep-able test. The naming convention is
+    // `test_<chord>_<action>` (e.g. `test_cmd_t_new_surface`).
+    // =====================================================================
+
+    /// Helper: collapse `Command` → `Ctrl` on Linux/Windows for tests that
+    /// use raw `Modifiers::CTRL | Modifiers::COMMAND | ...` literals.
+    ///
+    /// **Limitation:** This helper is only useful for registry entries that
+    /// themselves store canonicalized modifiers (e.g. via `cmd_ctrl()`).
+    /// The cmux `Ctrl+Cmd+...` aliases on lines 334, 337, 340 of the
+    /// registry store the *raw* bit set without platform normalization,
+    /// so they remain macOS-only chords. The corresponding tests below
+    /// are gated with `#[cfg(target_os = "macos")]`.
+    fn canonical_mod(m: Modifiers) -> Modifiers {
+        if cfg!(target_os = "macos") {
+            m
+        } else {
+            let mut out = m;
+            if out.command {
+                out.command = false;
+                out.ctrl = true;
+            }
+            out
+        }
+    }
+
+    /// Smoke test for `canonical_mod`: on macOS the helper is the
+    /// identity function; on Linux/Windows it collapses `Modifiers::COMMAND`
+    /// to `Modifiers::CTRL`. Locks the helper's platform-conditional
+    /// collapse behavior so a future "simplification" doesn't break it.
+    #[test]
+    fn test_canonical_mod_collapse() {
+        let raw = Modifiers::CTRL | Modifiers::COMMAND | Modifiers::SHIFT;
+        let out = canonical_mod(raw);
+        if cfg!(target_os = "macos") {
+            assert_eq!(out, raw, "on macOS, canonical_mod should be identity");
+        } else {
+            assert!(!out.command, "on non-macOS, Command bit must be cleared");
+            assert!(out.ctrl, "on non-macOS, Ctrl bit must be set");
+            assert!(out.shift, "Shift bit must be preserved");
+        }
+    }
+
+    // --- Surface / tab ---
+
+    #[test]
+    fn test_cmd_t_new_surface() {
+        let reg = ShortcutRegistry::default();
+        assert_eq!(reg.lookup(cmd_ctrl(), Key::T), Some(ShortcutAction::NewSurface));
+    }
+
+    #[test]
+    fn test_cmd_shift_bracket_right_next_surface() {
+        let reg = ShortcutRegistry::default();
+        assert_eq!(
+            reg.lookup(cmd_ctrl_shift(), Key::CloseBracket),
+            Some(ShortcutAction::NextSurface)
+        );
+    }
+
+    #[test]
+    fn test_cmd_shift_bracket_left_previous_surface() {
+        let reg = ShortcutRegistry::default();
+        assert_eq!(
+            reg.lookup(cmd_ctrl_shift(), Key::OpenBracket),
+            Some(ShortcutAction::PreviousSurface)
+        );
+    }
+
+    /// `ctrl_only()` is intentional (not `cmd_ctrl()`): cmux uses ⌃1..9
+    /// (plain physical Ctrl) for surface selection. `cmd_ctrl()` returns
+    /// Command on macOS, which would silently break this on macOS.
+    #[test]
+    fn test_ctrl_n_select_surface() {
+        let reg = ShortcutRegistry::default();
+        let keys = [
+            Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5,
+            Key::Num6, Key::Num7, Key::Num8, Key::Num9,
+        ];
+        for (i, key) in keys.iter().enumerate() {
+            assert_eq!(
+                reg.lookup(ctrl_only(), *key),
+                Some(ShortcutAction::SelectSurface(i)),
+                "ctrl_only()+{:?} should resolve to SelectSurface({})",
+                key,
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn test_cmd_alt_t_close_other_tabs() {
+        let reg = ShortcutRegistry::default();
+        assert_eq!(
+            reg.lookup(cmd_alt(), Key::T),
+            Some(ShortcutAction::CloseOtherTabs)
+        );
+    }
+
+    #[test]
+    fn test_cmd_shift_t_reopen_last_closed() {
+        let reg = ShortcutRegistry::default();
+        assert_eq!(
+            reg.lookup(cmd_ctrl_shift(), Key::T),
+            Some(ShortcutAction::ReopenLastClosed)
+        );
+    }
+
+    #[test]
+    fn test_cmd_shift_m_toggle_copy_mode() {
+        let reg = ShortcutRegistry::default();
+        assert_eq!(
+            reg.lookup(cmd_ctrl_shift(), Key::M),
+            Some(ShortcutAction::ToggleCopyMode)
+        );
+    }
+
+    /// Locks the documented `Cmd/Ctrl+R` conflict: `RenameTab` is
+    /// intentionally NOT registered (would collide with `ReloadBrowser`).
+    /// The dispatcher (Wave 4) must disambiguate based on whether the
+    /// active surface is a browser.
+    #[test]
+    fn test_cmd_r_resolves_to_reload_browser_not_rename_tab() {
+        let reg = ShortcutRegistry::default();
+        assert_eq!(reg.lookup(cmd_ctrl(), Key::R), Some(ShortcutAction::ReloadBrowser));
+    }
+
+    /// Locks the documented `Cmd/Ctrl+W` conflict: line 313 re-registers
+    /// the chord as `CloseTab` after the earlier `ClosePane` on line 209;
+    /// the HashMap's last-write-wins makes `CloseTab` the effective
+    /// binding. The dispatcher (Wave 4) chooses between `ClosePane` and
+    /// `CloseTab` based on tab count.
+    #[test]
+    fn test_cmd_w_resolves_to_close_tab_with_dispatcher_disambiguation() {
+        let reg = ShortcutRegistry::default();
+        assert_eq!(reg.lookup(cmd_ctrl(), Key::W), Some(ShortcutAction::CloseTab));
+    }
+
+    #[test]
+    fn test_cmd_d_split_right() {
+        let reg = ShortcutRegistry::default();
+        assert_eq!(reg.lookup(cmd_ctrl(), Key::D), Some(ShortcutAction::SplitRight));
+    }
+
+    #[test]
+    fn test_cmd_shift_d_split_down() {
+        let reg = ShortcutRegistry::default();
+        assert_eq!(
+            reg.lookup(cmd_ctrl_shift(), Key::D),
+            Some(ShortcutAction::SplitDown)
+        );
+    }
+
+    #[test]
+    fn test_cmd_alt_d_split_browser_right() {
+        let reg = ShortcutRegistry::default();
+        assert_eq!(
+            reg.lookup(cmd_alt(), Key::D),
+            Some(ShortcutAction::SplitBrowserRight)
+        );
+    }
+
+    #[test]
+    fn test_cmd_alt_arrow_left_focus_left() {
+        let reg = ShortcutRegistry::default();
+        assert_eq!(
+            reg.lookup(cmd_ctrl_alt(), Key::ArrowLeft),
+            Some(ShortcutAction::FocusLeft)
+        );
+    }
+
+    #[test]
+    fn test_cmd_alt_arrow_right_focus_right() {
+        let reg = ShortcutRegistry::default();
+        assert_eq!(
+            reg.lookup(cmd_ctrl_alt(), Key::ArrowRight),
+            Some(ShortcutAction::FocusRight)
+        );
+    }
+
+    #[test]
+    fn test_cmd_alt_arrow_up_focus_up() {
+        let reg = ShortcutRegistry::default();
+        assert_eq!(
+            reg.lookup(cmd_ctrl_alt(), Key::ArrowUp),
+            Some(ShortcutAction::FocusUp)
+        );
+    }
+
+    #[test]
+    fn test_cmd_alt_arrow_down_focus_down() {
+        let reg = ShortcutRegistry::default();
+        assert_eq!(
+            reg.lookup(cmd_ctrl_alt(), Key::ArrowDown),
+            Some(ShortcutAction::FocusDown)
+        );
+    }
+
+    #[test]
+    fn test_cmd_n_new_workspace() {
+        let reg = ShortcutRegistry::default();
+        assert_eq!(reg.lookup(cmd_ctrl(), Key::N), Some(ShortcutAction::NewWorkspace));
+    }
+
+    #[test]
+    fn test_cmd_shift_w_close_workspace() {
+        let reg = ShortcutRegistry::default();
+        assert_eq!(
+            reg.lookup(cmd_ctrl_shift(), Key::W),
+            Some(ShortcutAction::CloseWorkspace)
+        );
+    }
+
+    #[test]
+    fn test_cmd_shift_r_rename_workspace() {
+        let reg = ShortcutRegistry::default();
+        assert_eq!(
+            reg.lookup(cmd_ctrl_shift(), Key::R),
+            Some(ShortcutAction::RenameWorkspace)
+        );
+    }
+
+    /// Locks the documented `Cmd/Ctrl+Shift+[` overwrite: the cmux
+    /// `PreviousSurface` (registered at line 282) is intentionally
+    /// registered AFTER the original `PrevWorkspace` (line 256), so the
+    /// HashMap's last-write-wins makes `PreviousSurface` the effective
+    /// binding. Workspace navigation on this chord is now via the
+    /// `Ctrl+Cmd+Shift+[` alias (see
+    /// `test_ctrl_cmd_shift_bracket_left_prev_workspace_alt` below).
+    #[test]
+    fn test_cmd_shift_bracket_left_overwrites_prev_workspace_to_previous_surface() {
+        let reg = ShortcutRegistry::default();
+        assert_eq!(
+            reg.lookup(cmd_ctrl_shift(), Key::OpenBracket),
+            Some(ShortcutAction::PreviousSurface)
+        );
+    }
+
+    /// Locks the documented `Cmd/Ctrl+Shift+]` overwrite: see the
+    /// `OpenBracket` test above for the rationale (last-write-wins
+    /// between `NextWorkspace` and `NextSurface`).
+    #[test]
+    fn test_cmd_shift_bracket_right_overwrites_next_workspace_to_next_surface() {
+        let reg = ShortcutRegistry::default();
+        assert_eq!(
+            reg.lookup(cmd_ctrl_shift(), Key::CloseBracket),
+            Some(ShortcutAction::NextSurface)
+        );
+    }
+
+    /// `Ctrl+Cmd+Shift+[` → `PrevWorkspaceAlt` (macOS-only alias for
+    /// workspace nav, since the original `Cmd+Shift+[` chord was
+    /// overwritten by `PreviousSurface`). Same macOS-only rationale as
+    /// `test_ctrl_cmd_equals_equalize_splits_alt`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_ctrl_cmd_shift_bracket_left_prev_workspace_alt() {
+        let reg = ShortcutRegistry::default();
+        assert_eq!(
+            reg.lookup(Modifiers::CTRL | Modifiers::COMMAND | Modifiers::SHIFT, Key::OpenBracket),
+            Some(ShortcutAction::PrevWorkspaceAlt)
+        );
+    }
+
+    /// `Ctrl+Cmd+Shift+]` → `NextWorkspaceAlt` (macOS-only alias).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_ctrl_cmd_shift_bracket_right_next_workspace_alt() {
+        let reg = ShortcutRegistry::default();
+        assert_eq!(
+            reg.lookup(Modifiers::CTRL | Modifiers::COMMAND | Modifiers::SHIFT, Key::CloseBracket),
+            Some(ShortcutAction::NextWorkspaceAlt)
+        );
+    }
+
+    /// Index-off-by-one boundary check: `Num1` must map to index 0
+    /// (not 1). `test_registry_switch_workspace` covers `Num3`.
+    #[test]
+    fn test_cmd_1_switch_workspace_0() {
+        let reg = ShortcutRegistry::default();
+        assert_eq!(
+            reg.lookup(cmd_ctrl(), Key::Num1),
+            Some(ShortcutAction::SwitchWorkspace(0))
+        );
+    }
+
+    #[test]
+    fn test_cmd_shift_equals_equalize_splits() {
+        let reg = ShortcutRegistry::default();
+        assert_eq!(
+            reg.lookup(cmd_ctrl_shift(), Key::Equals),
+            Some(ShortcutAction::EqualizeSplits)
+        );
+    }
+
+    /// `Ctrl+Cmd+=` is a **macOS-only** chord: the registry stores the
+    /// raw `Modifiers::CTRL | Modifiers::COMMAND` literal without
+    /// platform normalization, so on Linux/Windows the chord is
+    /// structurally impossible (Ctrl is the canonical app-shortcut
+    /// modifier). Gated to macOS for that reason.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_ctrl_cmd_equals_equalize_splits_alt() {
+        let reg = ShortcutRegistry::default();
+        assert_eq!(
+            reg.lookup(Modifiers::CTRL | Modifiers::COMMAND, Key::Equals),
+            Some(ShortcutAction::EqualizeSplitsAlt)
+        );
+    }
+
+    #[test]
+    fn test_cmd_alt_b_toggle_right_sidebar() {
+        let reg = ShortcutRegistry::default();
+        assert_eq!(
+            reg.lookup(cmd_alt(), Key::B),
+            Some(ShortcutAction::ToggleRightSidebar)
+        );
+    }
+
+    #[test]
+    fn test_cmd_alt_shift_d_split_browser_down() {
+        let reg = ShortcutRegistry::default();
+        assert_eq!(
+            reg.lookup(cmd_alt_shift(), Key::D),
+            Some(ShortcutAction::SplitBrowserDown)
+        );
+    }
+
+    /// Known **gap**: `ShortcutAction::NewWindow` exists (added in W1.2
+    /// for the Wave 4 dispatcher) but is NOT registered. This locks the
+    /// gap so a future maintainer who adds the binding can flip the
+    /// test to a positive assertion and coordinate with the dispatcher.
+    #[test]
+    fn test_new_window_chord_not_yet_bound() {
+        let reg = ShortcutRegistry::default();
+        assert_eq!(reg.lookup(cmd_ctrl_shift(), Key::N), None);
+    }
+
+    /// Known **gap**: `ShortcutAction::CloseWindow` exists as a variant
+    /// (for the Wave 4 dispatcher) but is NOT registered on any chord.
+    /// The `Cmd/Ctrl+W` chord is bound to `CloseTab` (see
+    /// `test_cmd_w_resolves_to_close_tab_with_dispatcher_disambiguation`).
+    /// On macOS, `Modifiers::CTRL | Modifiers::COMMAND + Key::W` is also
+    /// unbound; on Linux/Windows the Ctrl+Cmd chord is impossible.
+    #[test]
+    fn test_close_window_chord_not_yet_bound() {
+        let reg = ShortcutRegistry::default();
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(
+                reg.lookup(Modifiers::CTRL | Modifiers::COMMAND, Key::W),
+                None
+            );
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert_eq!(reg.lookup(cmd_ctrl(), Key::W), Some(ShortcutAction::CloseTab));
+        }
+    }
 }

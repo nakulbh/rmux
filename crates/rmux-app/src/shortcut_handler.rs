@@ -276,8 +276,110 @@ impl RmuxApp {
                 self.workspace_manager.active_mut().focus_down();
             }
 
-            // Stub catch-all for cmux variants added in feat/fix-keybindings; real handlers land in Todo 14.
-            _ => {}
+            // --- cmux shortcuts (W4.1) ---
+            ShortcutAction::NewSurface => {
+                match self.workspace_manager.new_surface_in_active(None) {
+                    Ok(id) => tracing::info!(surface_id = id.0, "Created new surface"),
+                    Err(e) => tracing::warn!("New surface failed: {e}"),
+                }
+            }
+
+            ShortcutAction::NextSurface => {
+                if let Err(e) = self.workspace_manager.next_surface_in_active() {
+                    tracing::warn!("Next surface failed: {e}");
+                }
+            }
+
+            ShortcutAction::PreviousSurface => {
+                if let Err(e) = self.workspace_manager.previous_surface_in_active() {
+                    tracing::warn!("Previous surface failed: {e}");
+                }
+            }
+
+            ShortcutAction::SelectSurface(idx) => {
+                if let Err(e) = self.workspace_manager.select_surface_in_active(idx) {
+                    tracing::warn!("Select surface {idx} failed: {e}");
+                }
+            }
+
+            ShortcutAction::RenameTab => {
+                // UI for inline tab-rename is not yet wired (see W3.2 follow-up
+                // in worker-notes.md). The Cmd+R chord is currently bound to
+                // ReloadBrowser, so this arm is only reachable when the
+                // dispatcher manually routes here.
+                tracing::info!("Rename tab requested (UI not yet wired)");
+            }
+
+            ShortcutAction::CloseTab => {
+                if self.workspace_manager.terminal_count() > 1 {
+                    match self.workspace_manager.close_surface_in_active_with_capture(None) {
+                        Ok(_) => tracing::debug!("Closed active surface"),
+                        Err(e) => tracing::warn!("Close tab failed: {e}"),
+                    }
+                } else {
+                    // Fall through to close pane when only one surface is open.
+                    match self.close_active_pane_with_event() {
+                        Ok(()) => tracing::info!("Closed active pane (via Cmd+W fallback)"),
+                        Err(e) => tracing::warn!("Close pane failed: {e}"),
+                    }
+                }
+            }
+
+            ShortcutAction::CloseOtherTabs => {
+                if let Err(e) = self.workspace_manager.close_other_surfaces_in_active() {
+                    tracing::warn!("Close other tabs failed: {e}");
+                }
+            }
+
+            ShortcutAction::ReopenLastClosed => {
+                match self.workspace_manager.reopen_last_closed_tab() {
+                    Ok(()) => tracing::info!("Reopened last closed tab"),
+                    Err(crate::workspace::model::WorkspaceError::NoClosedTabs) => {
+                        tracing::warn!("Reopen last closed: no closed tabs to restore");
+                    }
+                    Err(e) => tracing::warn!("Reopen last closed failed: {e}"),
+                }
+            }
+
+            ShortcutAction::ToggleCopyMode => {
+                if let Some(t) = self.active_terminal_mut() {
+                    let now = t.toggle_copy_mode();
+                    tracing::debug!(copy_mode = now, "Toggled copy mode");
+                }
+            }
+
+            ShortcutAction::SplitBrowserRight => {
+                tracing::warn!("Browser split not yet implemented");
+            }
+
+            ShortcutAction::SplitBrowserDown => {
+                tracing::warn!("Browser split not yet implemented");
+            }
+
+            ShortcutAction::ToggleRightSidebar => {
+                self.sidebar.toggle_right();
+            }
+
+            ShortcutAction::NewWindow => {
+                tracing::warn!("New window not yet implemented (multi-window support planned)");
+            }
+
+            ShortcutAction::CloseWindow => {
+                tracing::warn!("Close window not yet implemented (multi-window support planned)");
+            }
+
+            ShortcutAction::EqualizeSplitsAlt => {
+                self.workspace_manager.equalize_splits();
+                tracing::debug!("Equalized split sizes via shortcut (alt binding)");
+            }
+
+            ShortcutAction::PrevWorkspaceAlt => {
+                self.workspace_manager.switch_prev();
+            }
+
+            ShortcutAction::NextWorkspaceAlt => {
+                self.workspace_manager.switch_next();
+            }
         }
 
         false

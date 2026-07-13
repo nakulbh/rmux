@@ -1662,3 +1662,210 @@ Pre-existing warnings (NOT introduced by this wave):
   hover text is also platform-agnostic, so this matches
   the pattern. A future "polish" wave could make the hint
   reflect the actual shortcut on the current platform.
+
+---
+
+## W4.1 — Wire all 17 cmux variants to dispatch handlers
+
+**Worker:** Atlas (Rust Core Specialist) · **Date:** 2026-07-14
+
+### What landed
+
+**`crates/rmux-app/src/shortcut_handler.rs`** (+106 / -1)
+
+- The `_ => {}` catch-all in `dispatch_shortcut_action` (lines 279-281 of
+  the pre-W4.1 file, per W1.3 notepad) is REMOVED. The match is now
+  exhaustive — if a future `ShortcutAction` variant is added without an
+  arm, the compiler will reject it. That compile error is the safety net
+  this wave promised.
+- 17 new match arms, one per new `ShortcutAction` variant. Each follows
+  the existing dispatch style: `tracing::info!` / `tracing::debug!` for
+  success, `tracing::warn!` for failure.
+
+| Variant | Handler | Log level |
+|---|---|---|
+| `NewSurface` | `workspace_manager.new_surface_in_active(None)` | `info!` on success, `warn!` on failure |
+| `NextSurface` | `workspace_manager.next_surface_in_active()` | `warn!` on `WorkspaceError` |
+| `PreviousSurface` | `workspace_manager.previous_surface_in_active()` | `warn!` |
+| `SelectSurface(idx)` | `workspace_manager.select_surface_in_active(idx)` | `warn!` (includes idx) |
+| `RenameTab` | no-op (UI not wired) | `info!("...UI not yet wired")` |
+| `CloseTab` | `terminal_count() > 1` → `close_surface_in_active_with_capture(None)`, else `close_active_pane_with_event()` | `debug!`/`info!` per branch, `warn!` on failure |
+| `CloseOtherTabs` | `workspace_manager.close_other_surfaces_in_active()` | `warn!` |
+| `ReopenLastClosed` | `workspace_manager.reopen_last_closed_tab()`, with a dedicated `NoClosedTabs` arm | `info!` success, dedicated `warn!` for empty stack, generic `warn!` for other errors |
+| `ToggleCopyMode` | `self.active_terminal_mut().map(t.toggle_copy_mode)` | `debug!` with new state |
+| `SplitBrowserRight` / `SplitBrowserDown` | no-op stub | `warn!("Browser split not yet implemented")` |
+| `ToggleRightSidebar` | `self.sidebar.toggle_right()` (added in W3.4) | (no log; the method logs itself) |
+| `NewWindow` / `CloseWindow` | no-op stub | `warn!("...multi-window support planned")` |
+| `EqualizeSplitsAlt` | same body as `EqualizeSplits` (`equalize_splits()`) | `debug!` (alt binding) |
+| `PrevWorkspaceAlt` / `NextWorkspaceAlt` | same as `PrevWorkspace` / `NextWorkspace` (`switch_prev` / `switch_next`) | (inherited from base methods) |
+
+**`crates/rmux-app/src/workspace/model.rs`** (+11)
+
+- `pub fn terminal_count(&self) -> usize` on `Workspace` — pass-through
+  to `self.root.terminal_count()`. Needed by the `CloseTab` arm in
+  the dispatcher.
+
+**`crates/rmux-app/src/workspace/mod.rs`** (+28)
+
+- `pub fn terminal_count(&self) -> usize` on `WorkspaceManager` —
+  pass-through to `self.active().terminal_count()`. Same rationale.
+- 1 new test: `test_terminal_count_tracks_active_leaf` — exercises
+  the uninitialized-leaf case (returns 1), surface-add, and
+  surface-close-then-capture cases.
+
+### `terminal_count` was already on `PaneNode` (W2.1)
+
+The W2.1 notepad added `PaneNode::terminal_count` with the
+`max(surfaces.len(), 1)` semantics so an uninitialized leaf still
+counts as 1 tab (matching the user's mental model). This wave just
+threads it up two layers: `Workspace` → `WorkspaceManager` → the
+dispatcher. No new tree-walking logic was needed; the helper was
+already the right shape.
+
+The "uninitialized leaf still counts as 1" semantics is what makes
+the `CloseTab` arm's `terminal_count() > 1` test correct: a fresh
+workspace has `surfaces.len() == 0` but the user sees "one tab", so
+`Cmd+W` should close the pane, not the (nonexistent) tab.
+
+### `ReopenLastClosed` error path — `NoClosedTabs` gets its own arm
+
+The spec said "match `self.workspace_manager.reopen_last_closed_tab()`
+with a `tracing::warn!` for `NoClosedTabs`". The actual implementation
+distinguishes the empty-stack case from other errors:
+
+```rust
+match self.workspace_manager.reopen_last_closed_tab() {
+    Ok(()) => tracing::info!("Reopened last closed tab"),
+    Err(crate::workspace::model::WorkspaceError::NoClosedTabs) => {
+        tracing::warn!("Reopen last closed: no closed tabs to restore");
+    }
+    Err(e) => tracing::warn!("Reopen last closed failed: {e}"),
+}
+```
+
+This is a slight expansion of the spec — the catch-all `Err(e)` arm
+catches future error variants (e.g. `PaneNotFound` for a captured
+surface whose pane can't be restored) that the spec didn't enumerate.
+The dedicated `NoClosedTabs` arm is a future-maintainer hint: this
+is the expected "user pressed the chord with nothing to undo" case,
+not a bug.
+
+### `WorkspaceError` import path
+
+The first build attempt failed with
+`error[E0603]: enum import WorkspaceError is private` because
+`workspace/mod.rs` imports `WorkspaceError` with a private
+`use model::{...}` (it's re-exported through `pub mod model` but
+not `pub use`'d). The fix: reference the enum via its full path
+`crate::workspace::model::WorkspaceError`. Alternative would have
+been to add `pub use model::WorkspaceError;` to `workspace/mod.rs`,
+but that's a module-export change out of scope for this wave. The
+fully-qualified path is one line longer but doesn't alter the
+module's public surface.
+
+### TDD cycle observed
+
+This wave is unusual: it's an "exhaustive match" task, not a
+"method does X" task. The TDD discipline translated to:
+
+1. **Red phase (implied):** the W1.3 notepad explicitly noted that
+   the `_ => {}` catch-all was "temporary stub; real handlers land
+   in Todo 14". Before this wave, the dispatcher had 30 arms
+   (existing variants) + 1 catch-all that swallowed 17 cmux
+   actions silently. No dispatch tests existed for the cmux
+   variants because they'd fail at the function boundary
+   (no method to test). The red phase was "no cmux shortcut has
+   any effect".
+2. **Green phase:** wrote all 17 arms, removed the catch-all.
+   The catch-all removal IS the test — it makes the compiler
+   enforce exhaustiveness. If any arm is missing, the match
+   doesn't compile. This is "test-first" with the type system
+   as the test runner.
+3. **Unit test for `terminal_count`:** the spec required "if
+   `terminal_count()` is missing on `Workspace`, add it + 1 test".
+   Wrote `test_terminal_count_tracks_active_leaf` first, then
+   added the method. Tests went from `E0599: no method named
+   terminal_count` to green.
+
+### Verification
+
+```
+$ cargo build -p rmux-app 2>&1 | grep -c "error\[E"
+0
+
+$ cargo test -p rmux-app --bin rmux
+test result: ok. 113 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.29s
+```
+
+- 112 pre-existing tests still pass (no regressions).
+- 1 new test (`test_terminal_count_tracks_active_leaf`) passes.
+- Build is clean except for the 2 pre-existing W1.2/W3.3
+  `dead_code` warnings on the 3 cmux variants that have no
+  registry bindings (`RenameTab`/`NewWindow`/`CloseWindow`) and
+  on `TerminalPane::is_copy_mode` (unused in `bin` target
+  because it's only called via the registry path, not directly
+  from app code). These predate W4.1.
+
+### Reusable patterns
+
+- **Catch-all as test stub, then exhaustive match as the real
+  test.** The W1.3 pattern of `_ => {}` with a `// TODO` comment
+  is the right way to land a new enum in a non-exhaustive match:
+  ship a stub that compiles, then turn "exhaustiveness" into the
+  test in a follow-up wave. The compiler does the verification
+  work.
+- **Pass-through helpers on every layer.** `terminal_count` is now
+  on `PaneNode` (W2.1), `Workspace` (W4.1), and `WorkspaceManager`
+  (W4.1). Each layer adds a 1-line `pub fn` that delegates. This
+  is the right shape when the call site lives at a higher layer
+  than the data — the dispatcher shouldn't need to know about
+  `PaneNode` internals.
+- **Stub arms use `tracing::warn!` not silent no-ops.** The cmux
+  pattern is to make unimplemented shortcuts visible in the log.
+  A user pressing `Cmd+Opt+D` (split browser right) and getting
+  no feedback would assume the shortcut is broken; a
+  `tracing::warn!` in the log confirms the chord was received
+  but the feature is pending. Future waves can replace the warn
+  with real handlers and remove the `/// stub: not yet implemented`
+  doc comment.
+
+### Follow-ups (not done here)
+
+- **W4.2 / W4.3 (dispatch tests):** the spec defers tests that
+  exercise `handle_keyboard_shortcuts` through the egui event
+  pipeline to a later wave. The unit tests at the bottom of
+  `shortcut_handler.rs` (15 from W1.3) cover the
+  `should_dispatch_when_text_focused` helper but not the
+  dispatch arms themselves. A W4.2 task could add per-arm
+  tests by constructing an `RmuxApp`, registering the chord,
+  simulating the key event, and asserting the manager method
+  was called (e.g. `workspace_manager.surfaces` increased
+  after `NewSurface`). The borrow-checker will fight this
+  because `RmuxApp::new` requires a real `egui::Context` —
+  a W4.2 wave might need a test-only constructor that takes
+  a `WorkspaceManager` directly.
+- **Remove the `#[allow(dead_code)]` annotations** on
+  `WorkspaceManager::new_surface_in_active`,
+  `next_surface_in_active`, etc. Now that every method is
+  called from the dispatcher, the per-method annotations
+  are stale. Sweep in a "remove dead_code warnings" wave.
+- **`Cargo.toml` cleanup:** the
+  `crate::workspace::model::WorkspaceError` fully-qualified
+  path in `shortcut_handler.rs:338` would simplify to
+  `crate::workspace::WorkspaceError` if a future wave adds
+  `pub use model::WorkspaceError;` to `workspace/mod.rs`.
+  Out of scope here.
+- **Remove pre-existing dead_code warnings:** the
+  `ShortcutAction::{RenameTab, NewWindow, CloseWindow}` and
+  `TerminalPane::is_copy_mode` warnings predate W4.1. A
+  follow-up could either (a) bind `RenameTab` to a chord via
+  a `cmd_ctrl_shift() + Key::R` second-registration (per W1.2
+  notepad's "future iteration" suggestion), or (b) add
+  `#[allow(dead_code)]` annotations on those three variants.
+  Decision left to a future wave.
+- **Add `Right` / `Down` browser-split stubs to the README**
+  once real browser split handlers land — the current
+  `tracing::warn!` messages ("Browser split not yet
+  implemented") are user-visible in `RUST_LOG=warn` but
+  otherwise silent.
+

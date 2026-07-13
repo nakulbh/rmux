@@ -236,6 +236,15 @@ impl WorkspaceManager {
         self.workspaces.iter().map(|w| w.pane_count()).sum()
     }
 
+    /// Number of terminal surfaces in the active workspace's pane tree.
+    ///
+    /// Pass-through to [`Workspace::terminal_count`]. Used by the
+    /// `CloseTab` dispatcher to disambiguate "close this tab" from
+    /// "close this pane" when only one surface is open.
+    pub fn terminal_count(&self) -> usize {
+        self.active().terminal_count()
+    }
+
     /// Check the pane count guardrail and warn if exceeded.
     ///
     /// This is called after any operation that creates a pane.
@@ -838,6 +847,25 @@ mod tests {
         assert_eq!(surfaces.len(), 2);
         assert_eq!(surfaces[0].title, "Terminal 2");
         assert_eq!(surfaces[1].title, "Terminal 3");
+    }
+
+    #[test]
+    fn test_terminal_count_tracks_active_leaf() {
+        let mut manager = WorkspaceManager::new();
+        // Brand-new workspace: uninitialized leaf → counts as 1.
+        assert_eq!(manager.terminal_count(), 1);
+
+        manager.new_surface_in_active(None).unwrap();
+        assert_eq!(manager.terminal_count(), 1);
+
+        manager.new_surface_in_active(None).unwrap();
+        manager.new_surface_in_active(None).unwrap();
+        assert_eq!(manager.terminal_count(), 3);
+
+        manager
+            .close_surface_in_active_with_capture(None)
+            .expect("close should succeed");
+        assert_eq!(manager.terminal_count(), 2);
     }
 
     // ----- W3.1: Bounded closed-tabs stack for ReopenLastClosed -----

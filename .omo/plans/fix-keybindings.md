@@ -241,7 +241,7 @@ Comprehensive registry + dispatch tests run; final verification wave F1-F4.
   Evidence: test log
   Commit: Y | `feat(ui): add right sidebar toggle`
 
-- [ ] 13. Add `Ctrl+Cmd+[` / `Ctrl+Cmd+]` aliases for `PrevWorkspace` / `NextWorkspace`
+- [x] 13. Add `Ctrl+Cmd+[` / `Ctrl+Cmd+]` aliases for `PrevWorkspace` / `NextWorkspace` (rolled into W1.2)
   What to do: In `crates/rmux-app/src/shortcuts.rs`, the existing `Cmd+Shift+[` / `Cmd+Shift+]` already work. Add NEW registrations using `Modifiers::CTRL | Modifiers::COMMAND | Modifiers::SHIFT` (or `Modifiers::COMMAND | Modifiers::CTRL` + SHIFT — verify by checking the `lookup_mods` normalization in `shortcut_handler.rs:28-44`). Since the handler normalizes `Ctrl+Cmd` on macOS to pass through unchanged, the registration must use `Modifiers::CTRL | Modifiers::COMMAND | Modifiers::SHIFT`. Tests: `test_ctrl_cmd_bracket_prev_workspace`, `test_ctrl_cmd_bracket_next_workspace`.
   Parallelization: Wave 3 | Blocked by: — | Blocks: 14, 15, 16
   References: `crates/rmux-app/src/shortcuts.rs:214-218` (existing bracket shortcuts), `crates/rmux-app/src/shortcut_handler.rs:28-44` (modifier normalization)
@@ -253,7 +253,7 @@ Comprehensive registry + dispatch tests run; final verification wave F1-F4.
   Commit: N
 
 ### Wave 4 — Wire up + integration
-- [ ] 14. Add all new dispatch handlers in `shortcut_handler.rs::dispatch_shortcut_action`
+- [x] 14. Add all new dispatch handlers in `shortcut_handler.rs::dispatch_shortcut_action`
   What to do: Add match arms for all 16 new actions: `NewSurface` → `self.workspace_manager.new_surface_in_active(...)`, `NextSurface` → `next_surface`, `PreviousSurface` → `prev_surface`, `SelectSurface(idx)` → `select_surface(idx)`, `RenameTab` → start tab rename (use a new field on `Workspace` or pass through to top bar), `CloseTab` → close active surface (fall back to close pane if last), `CloseOtherTabs` → `close_other_surfaces`, `ReopenLastClosed` → `reopen_last_closed_tab`, `ToggleCopyMode` → `active_terminal_mut().toggle_copy_mode()`, `SplitBrowserRight/Down` → `tracing::warn!("browser split not yet implemented")`, `ToggleRightSidebar` → `self.sidebar.toggle_right()`, `NewWindow`/`CloseWindow` → `tracing::warn!("multi-window not yet implemented")`, `EqualizeSplitsAlt` → call same handler as `EqualizeSplits`, `PrevWorkspaceAlt`/`NextWorkspaceAlt` → call same as existing. For `CloseTab` vs `ClosePane`: check if the active leaf has >1 surface; if yes, close the surface; if no, fall through to close pane. This keeps `Cmd+W` as "close the closest thing."
   Parallelization: Wave 4 | Blocked by: 9, 10, 11, 12, 13 | Blocks: 15, 16
   References: `crates/rmux-app/src/shortcut_handler.rs:108-294` (current dispatch), `crates/rmux-app/src/app.rs:200-255` (event publication patterns)
@@ -264,7 +264,7 @@ Comprehensive registry + dispatch tests run; final verification wave F1-F4.
   Evidence: build log
   Commit: Y | `feat(shortcuts): wire up all cmux dispatch handlers`
 
-- [ ] 15. Write registry lookup tests for all 28 cmux actions
+- [x] 15. Write registry lookup tests for all 28 cmux actions
   What to do: In `crates/rmux-app/src/shortcuts.rs` tests module, add one test per registered shortcut (28 tests): `test_cmd_t_new_surface`, `test_cmd_shift_bracket_next_surface`, ..., `test_ctrl_cmd_bracket_prev_workspace`, `test_cmd_opt_b_toggle_right_sidebar`, etc. Each test uses the platform-conditional canonical modifier. Tests follow the pattern `assert_eq!(reg.lookup(mods, Key::X), Some(ShortcutAction::Variant))`. Use a helper `fn canonical_mod(without: Modifiers) -> Modifiers` to reduce duplication.
   Parallelization: Wave 4 | Blocked by: 2, 4 | Blocks: 17
   References: `crates/rmux-app/src/shortcuts.rs:258-281` (existing test module)
