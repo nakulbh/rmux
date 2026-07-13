@@ -1,0 +1,24 @@
+{
+  "schema_version": 2,
+  "active_work_id": "fix-keybindings",
+  "works": {
+    "fix-keybindings": {
+      "work_id": "fix-keybindings",
+      "active_plan": ".omo/plans/fix-keybindings.md",
+      "plan_name": "fix-keybindings",
+      "status": "completed",
+      "worktree_path": "/Users/nakulbhardwaj/Developer/PersonalProjects/RustPersonalProjects/rmux-feat-fix-keybindings",
+      "session_ids": ["opencode:ses_0a3686026ffeDbwlE78X9awHKY"],
+      "started_at": "2026-07-13T18:11:11.077Z",
+      "ended_at": "2026-07-13T20:15:00.000Z",
+      "elapsed_ms": 7422889
+    }
+  },
+  "active_plan": ".omo/plans/fix-keybindings.md",
+  "plan_name": "fix-keybindings",
+  "status": "completed",
+  "started_at": "2026-07-13T18:11:11.077Z",
+  "ended_at": "2026-07-13T20:15:00.000Z",
+  "elapsed_ms": 7422889,
+  "session_ids": ["opencode:ses_0a3686026ffeDbwlE78X9awHKY"]
+}

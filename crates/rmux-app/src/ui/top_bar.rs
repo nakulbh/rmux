@@ -21,6 +21,7 @@ pub fn show(
     notifications: &NotificationManager,
     sidebar_visible: &mut bool,
     notification_panel_visible: &mut bool,
+    right_sidebar_visible: &mut bool,
 ) {
     let p = theme::palette();
     egui::TopBottomPanel::top("rmux_top_bar")
@@ -108,6 +109,35 @@ pub fn show(
             let content_width =
                 icon_galley.size().x + count_galley.as_ref().map_or(0.0_f32, |g| g.size().x);
             let bell_width = content_width + 2.0_f32 * 6.0_f32;
+
+            // Right sidebar toggle (20×20, mirrors the left ☰ style). Drives
+            // the cmux `Cmd+Opt+B` shortcut path; sits left of the bell.
+            let right_toggle_rect = Rect::from_center_size(
+                pos2(rect.right() - 12.0_f32 - bell_width - 18.0_f32, rect.center().y),
+                vec2(20.0_f32, 20.0_f32),
+            );
+            let right_toggle = ui
+                .interact(right_toggle_rect, ui.id().with("right_sidebar_toggle"), Sense::click())
+                .on_hover_cursor(CursorIcon::PointingHand)
+                .on_hover_text("Toggle right sidebar (\u{2318}\u{2325}B)");
+            let right_icon_color = if !*right_sidebar_visible {
+                p.accent
+            } else if right_toggle.hovered() {
+                p.text_primary
+            } else {
+                p.text_muted
+            };
+            ui.painter().text(
+                right_toggle_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "\u{25a5}",
+                FontId::proportional(12.0_f32),
+                right_icon_color,
+            );
+            if right_toggle.clicked() {
+                *right_sidebar_visible = !*right_sidebar_visible;
+            }
+
             let bell_rect = Rect::from_min_size(
                 pos2(rect.right() - 12.0_f32 - bell_width, rect.center().y - 11.0_f32),
                 vec2(bell_width, 22.0_f32),
@@ -115,7 +145,7 @@ pub fn show(
             let bell = ui
                 .interact(bell_rect, ui.id().with("notification_bell"), Sense::click())
                 .on_hover_cursor(CursorIcon::PointingHand)
-                .on_hover_text("Notifications (⌘I)");
+                .on_hover_text("Notifications (\u{2318}I)");
             let fill = if bell.hovered() { p.panel_bg } else { p.chrome_bg };
             ui.painter().rect_filled(bell_rect, CornerRadius::same(2), fill);
             ui.painter().rect_stroke(

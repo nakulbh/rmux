@@ -11,13 +11,48 @@
 
 pub mod model;
 pub mod splits;
+pub mod surface;
 
-use model::{Workspace, WorkspaceId};
+use std::collections::VecDeque;
+
+use model::{Workspace, WorkspaceError, WorkspaceId};
 use rmux_terminal::OscNotification;
 use splits::PaneId;
+use surface::{Surface, SurfaceId};
 
 /// The maximum number of panes before a warning is emitted.
 const MAX_PANES_BEFORE_WARN: usize = 50;
+
+/// Upper bound on the closed-tabs stack. When the stack exceeds this,
+/// the oldest entry is dropped to make room for the new one. Matches
+/// the `Cmd+Shift+T` (Reopen Last Closed) UX in browsers/IDEs.
+pub const MAX_CLOSED_TABS: usize = 16;
+
+/// A surface captured at close-time so it can be restored by
+/// `reopen_last_closed_tab`. Holds the owning workspace and pane ids
+/// so the manager can find a home for the surface even if the
+/// original location has been removed since.
+///
+/// `Surface` does not implement `Debug`/`Clone`/`PartialEq` (PTY
+/// handles are not cloneable), so `ClosedTab` cannot derive those
+/// either. A manual `Debug` impl exposes the surface's `id` and
+/// `title` plus the workspace/pane ids for log readability.
+pub struct ClosedTab {
+    pub surface: Surface,
+    pub workspace_id: WorkspaceId,
+    pub pane_id: PaneId,
+}
+
+impl std::fmt::Debug for ClosedTab {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClosedTab")
+            .field("surface_title", &self.surface.title)
+            .field("surface_id", &self.surface.id)
+            .field("workspace_id", &self.workspace_id)
+            .field("pane_id", &self.pane_id)
+            .finish_non_exhaustive()
+    }
+}
 
 /// Panes and workspaces removed by [`WorkspaceManager::close_exited_panes`].
 ///
@@ -48,6 +83,10 @@ pub struct WorkspaceManager {
     next_pane_id: u64,
     /// Monotonically increasing ID counter for splits.
     next_split_id: u64,
+    /// Bounded stack of recently-closed surfaces for `Reopen Last Closed`.
+    /// Newest is at the back; oldest is at the front (drained first when
+    /// the stack exceeds `MAX_CLOSED_TABS`).
+    closed_tabs: VecDeque<ClosedTab>,
 }
 
 impl WorkspaceManager {
@@ -59,6 +98,7 @@ impl WorkspaceManager {
             next_workspace_id: 1,
             next_pane_id: 1,
             next_split_id: 1,
+            closed_tabs: VecDeque::new(),
         };
         manager.create_workspace("Workspace 1".to_string());
         manager
@@ -194,6 +234,15 @@ impl WorkspaceManager {
     /// Get the total number of panes across all workspaces.
     pub fn total_pane_count(&self) -> usize {
         self.workspaces.iter().map(|w| w.pane_count()).sum()
+    }
+
+    /// Number of terminal surfaces in the active workspace's pane tree.
+    ///
+    /// Pass-through to [`Workspace::terminal_count`]. Used by the
+    /// `CloseTab` dispatcher to disambiguate "close this tab" from
+    /// "close this pane" when only one surface is open.
+    pub fn terminal_count(&self) -> usize {
+        self.active().terminal_count()
     }
 
     /// Check the pane count guardrail and warn if exceeded.
@@ -347,6 +396,145 @@ impl WorkspaceManager {
         self.active_mut().root.equalize_splits();
         tracing::debug!("Split sizes equalized");
     }
+
+    /// Count the surfaces in the active leaf, walking the pane tree.
+    #[allow(dead_code)]
+    fn active_leaf_surface_count(&self) -> usize {
+        fn walk(node: &splits::PaneNode, target: PaneId) -> usize {
+            match node {
+                splits::PaneNode::Leaf { id, surfaces, .. } if *id == target => surfaces.len(),
+                splits::PaneNode::Leaf { .. } | splits::PaneNode::Browser { .. } => 0,
+                splits::PaneNode::Split { children, .. } => {
+                    children.iter().map(|c| walk(c, target)).sum()
+                }
+            }
+        }
+        walk(
+            &self.workspaces[self.active_index].root,
+            self.workspaces[self.active_index].active_pane,
+        )
+    }
+
+    /// Append a new surface (tab) to the active leaf in the active
+    /// workspace. When `title` is `None`, a default of
+    /// `"Terminal {n}"` is used where `n` is the *new* surface count.
+    #[allow(dead_code)]
+    pub fn new_surface_in_active(
+        &mut self,
+        title: Option<String>,
+    ) -> Result<SurfaceId, WorkspaceError> {
+        let count = self.active_leaf_surface_count();
+        let title = title.unwrap_or_else(|| format!("Terminal {}", count + 1));
+        self.active_mut().new_surface(title)
+    }
+
+    /// Cycle to the next surface within the active workspace's active leaf.
+    #[allow(dead_code)]
+    pub fn next_surface_in_active(&mut self) -> Result<(), WorkspaceError> {
+        self.active_mut().next_surface()
+    }
+
+    /// Cycle to the previous surface within the active workspace's active leaf.
+    #[allow(dead_code)]
+    pub fn previous_surface_in_active(&mut self) -> Result<(), WorkspaceError> {
+        self.active_mut().previous_surface()
+    }
+
+    /// Focus the surface at `idx` in the active workspace's active leaf.
+    #[allow(dead_code)]
+    pub fn select_surface_in_active(&mut self, idx: usize) -> Result<(), WorkspaceError> {
+        self.active_mut().select_surface(idx)
+    }
+
+    /// Close the surface at `idx` in the active workspace's active leaf.
+    /// `None` targets the currently focused surface.
+    #[allow(dead_code)]
+    pub fn close_surface_in_active(
+        &mut self,
+        idx: Option<usize>,
+    ) -> Result<Surface, WorkspaceError> {
+        let target = match idx {
+            Some(i) => i,
+            None => self.workspaces[self.active_index].active_surface_index(),
+        };
+        self.active_mut().close_surface(target)
+    }
+
+    /// Rename the surface at `idx` in the active workspace's active leaf.
+    #[allow(dead_code)]
+    pub fn rename_surface_in_active(
+        &mut self,
+        idx: usize,
+        title: String,
+    ) -> Result<(), WorkspaceError> {
+        self.active_mut().rename_surface(idx, title)
+    }
+
+    /// Close every surface in the active workspace's active leaf except
+    /// the currently focused one. Returns the closed surfaces in their
+    /// original order.
+    #[allow(dead_code)]
+    pub fn close_other_surfaces_in_active(&mut self) -> Result<Vec<Surface>, WorkspaceError> {
+        self.active_mut().close_other_surfaces()
+    }
+
+    /// Close the surface at `idx` in the active workspace's active leaf
+    /// and capture it on the closed-tabs stack. `None` targets the
+    /// currently focused surface.
+    ///
+    /// `Surface` is not `Clone` (PTY handles aren't cloneable), so the
+    /// closed surface moves into the stack and is not returned. Use
+    /// `reopen_last_closed_tab` to observe the captured state.
+    #[allow(dead_code)]
+    pub fn close_surface_in_active_with_capture(
+        &mut self,
+        idx: Option<usize>,
+    ) -> Result<(), WorkspaceError> {
+        let workspace_id = self.active().id;
+        let pane_id = self.active().active_pane;
+        let surface = self.close_surface_in_active(idx)?;
+        self.closed_tabs.push_back(ClosedTab { surface, workspace_id, pane_id });
+        while self.closed_tabs.len() > MAX_CLOSED_TABS {
+            self.closed_tabs.pop_front();
+        }
+        Ok(())
+    }
+
+    /// Reopen the most-recently closed surface, restoring it to the
+    /// pane that owned it at close-time. If that workspace or pane
+    /// no longer exists, falls back to the active workspace and
+    /// active pane respectively. Errors with
+    /// [`WorkspaceError::NoClosedTabs`] when the stack is empty.
+    #[allow(dead_code)]
+    pub fn reopen_last_closed_tab(&mut self) -> Result<(), WorkspaceError> {
+        let entry = self.closed_tabs.pop_back().ok_or(WorkspaceError::NoClosedTabs)?;
+        let ClosedTab { surface, workspace_id, pane_id } = entry;
+
+        let ws_idx =
+            self.workspaces.iter().position(|w| w.id == workspace_id).unwrap_or(self.active_index);
+
+        if ws_idx != self.active_index {
+            self.active_index = ws_idx;
+        }
+
+        let ws = &mut self.workspaces[ws_idx];
+        let target_pane =
+            if ws.root.find_pane_mut(pane_id).is_some() { pane_id } else { ws.active_pane };
+        ws.add_surface_to_pane(target_pane, surface)
+            .map_err(|_| WorkspaceError::PaneNotFound(pane_id))?;
+
+        tracing::info!(
+            surface_id = self.workspaces[ws_idx]
+                .active_surface()
+                .map(|s| s.id.0)
+                .unwrap_or(0),
+            workspace_id = ?self.workspaces[ws_idx].id,
+            pane_id = ?target_pane,
+            "Reopened closed tab"
+        );
+
+        Ok(())
+    }
 }
 
 impl Default for WorkspaceManager {
@@ -358,6 +546,8 @@ impl Default for WorkspaceManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use splits::PaneNode;
+    use surface::{Surface, SurfaceId};
 
     #[test]
     fn test_workspace_manager_creation() {
@@ -555,5 +745,256 @@ mod tests {
             assert!((sizes[0] - 0.5).abs() < f32::EPSILON);
             assert!((sizes[1] - 0.5).abs() < f32::EPSILON);
         }
+    }
+
+    // ----- W2.2: WorkspaceManager surface pass-throughs -----
+
+    fn leaf_surfaces_of(ws: &Workspace) -> &Vec<Surface> {
+        fn walk(node: &PaneNode, target: PaneId) -> Option<&Vec<Surface>> {
+            match node {
+                PaneNode::Leaf { id, surfaces, .. } if *id == target => Some(surfaces),
+                PaneNode::Leaf { .. } | PaneNode::Browser { .. } => None,
+                PaneNode::Split { children, .. } => children.iter().find_map(|c| walk(c, target)),
+            }
+        }
+        walk(&ws.root, ws.active_pane).expect("active pane is a Leaf")
+    }
+
+    #[test]
+    fn test_manager_new_surface_in_active_default_title() {
+        let mut manager = WorkspaceManager::new();
+        let id = manager.new_surface_in_active(None).unwrap();
+        assert_eq!(id, SurfaceId(1));
+        let surfaces = leaf_surfaces_of(manager.active());
+        assert_eq!(surfaces.len(), 1);
+        assert_eq!(surfaces[0].title, "Terminal 1");
+
+        manager.new_surface_in_active(None).unwrap();
+        manager.new_surface_in_active(None).unwrap();
+        let surfaces = leaf_surfaces_of(manager.active());
+        assert_eq!(surfaces[0].title, "Terminal 1");
+        assert_eq!(surfaces[1].title, "Terminal 2");
+        assert_eq!(surfaces[2].title, "Terminal 3");
+    }
+
+    #[test]
+    fn test_manager_new_surface_in_active_custom_title() {
+        let mut manager = WorkspaceManager::new();
+        let id = manager.new_surface_in_active(Some("My Tab".to_string())).unwrap();
+        assert_eq!(id, SurfaceId(1));
+        let surfaces = leaf_surfaces_of(manager.active());
+        assert_eq!(surfaces[0].title, "My Tab");
+    }
+
+    #[test]
+    fn test_manager_next_surface_in_active() {
+        let mut manager = WorkspaceManager::new();
+        manager.new_surface_in_active(None).unwrap();
+        manager.new_surface_in_active(None).unwrap();
+        manager.new_surface_in_active(None).unwrap();
+        assert_eq!(manager.active().active_surface_index(), 2);
+
+        manager.next_surface_in_active().unwrap();
+        assert_eq!(manager.active().active_surface_index(), 0);
+        manager.next_surface_in_active().unwrap();
+        assert_eq!(manager.active().active_surface_index(), 1);
+    }
+
+    #[test]
+    fn test_manager_close_surface_in_active_none_means_active() {
+        let mut manager = WorkspaceManager::new();
+        manager.new_surface_in_active(None).unwrap();
+        manager.new_surface_in_active(None).unwrap();
+        manager.new_surface_in_active(None).unwrap();
+        // `new_surface_in_active` makes the new surface the active one,
+        // so after 3 inserts the focus is on idx 2 (Terminal 3).
+        assert_eq!(manager.active().active_surface_index(), 2);
+
+        let closed = manager.close_surface_in_active(None).unwrap();
+        assert_eq!(closed.title, "Terminal 3");
+        assert_eq!(closed.id, SurfaceId(3));
+
+        let surfaces = leaf_surfaces_of(manager.active());
+        assert_eq!(surfaces.len(), 2);
+        assert_eq!(surfaces[0].title, "Terminal 1");
+        assert_eq!(surfaces[1].title, "Terminal 2");
+    }
+
+    #[test]
+    fn test_manager_close_surface_in_active_specific_index() {
+        let mut manager = WorkspaceManager::new();
+        manager.new_surface_in_active(None).unwrap();
+        manager.new_surface_in_active(None).unwrap();
+        manager.new_surface_in_active(None).unwrap();
+
+        let closed = manager.close_surface_in_active(Some(0)).unwrap();
+        assert_eq!(closed.title, "Terminal 1");
+
+        let surfaces = leaf_surfaces_of(manager.active());
+        assert_eq!(surfaces.len(), 2);
+        assert_eq!(surfaces[0].title, "Terminal 2");
+        assert_eq!(surfaces[1].title, "Terminal 3");
+    }
+
+    #[test]
+    fn test_terminal_count_tracks_active_leaf() {
+        let mut manager = WorkspaceManager::new();
+        // Brand-new workspace: uninitialized leaf → counts as 1.
+        assert_eq!(manager.terminal_count(), 1);
+
+        manager.new_surface_in_active(None).unwrap();
+        assert_eq!(manager.terminal_count(), 1);
+
+        manager.new_surface_in_active(None).unwrap();
+        manager.new_surface_in_active(None).unwrap();
+        assert_eq!(manager.terminal_count(), 3);
+
+        manager.close_surface_in_active_with_capture(None).expect("close should succeed");
+        assert_eq!(manager.terminal_count(), 2);
+    }
+
+    // ----- W3.1: Bounded closed-tabs stack for ReopenLastClosed -----
+
+    /// Drain the closed-tabs stack by repeatedly reopening, returning the
+    /// number of tabs that were on the stack. Uses `NoClosedTabs` as the
+    /// terminator to avoid exposing `closed_tabs` directly.
+    fn closed_tabs_len_via_drain(manager: &mut WorkspaceManager) -> usize {
+        let mut count = 0;
+        while manager.reopen_last_closed_tab().is_ok() {
+            count += 1;
+        }
+        count
+    }
+
+    #[test]
+    fn test_close_surface_pushes_to_stack() {
+        let mut manager = WorkspaceManager::new();
+        manager.new_surface_in_active(None).unwrap();
+        manager.new_surface_in_active(None).unwrap();
+
+        manager.close_surface_in_active_with_capture(None).expect("close should succeed");
+
+        let count = closed_tabs_len_via_drain(&mut manager);
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_reopen_last_closed_restores_to_original_pane() {
+        let mut manager = WorkspaceManager::new();
+        let pane_id = manager.active().active_pane;
+        manager.new_surface_in_active(None).unwrap();
+        manager.new_surface_in_active(None).unwrap();
+
+        manager.close_surface_in_active_with_capture(None).expect("close should succeed");
+
+        manager.reopen_last_closed_tab().expect("reopen should succeed");
+
+        let surfaces = leaf_surfaces_of(manager.active());
+        assert_eq!(surfaces.len(), 2);
+        let active = manager.active().active_surface().expect("active surface");
+        assert_eq!(active.title, "Terminal 2");
+        assert_eq!(manager.active().active_pane, pane_id);
+    }
+
+    #[test]
+    fn test_reopen_last_closed_no_closed_tabs_errors() {
+        let mut manager = WorkspaceManager::new();
+        manager.new_surface_in_active(None).unwrap();
+        let result = manager.reopen_last_closed_tab();
+        assert!(matches!(result, Err(WorkspaceError::NoClosedTabs)));
+    }
+
+    #[test]
+    fn test_stack_trims_to_max_16() {
+        let mut manager = WorkspaceManager::new();
+        for _ in 0..17 {
+            manager.new_surface_in_active(None).unwrap();
+        }
+        for _ in 0..16 {
+            manager.close_surface_in_active_with_capture(Some(0)).expect("close should succeed");
+        }
+        let count = closed_tabs_len_via_drain(&mut manager);
+        assert_eq!(count, 16, "stack should be trimmed to MAX_CLOSED_TABS");
+    }
+
+    #[test]
+    fn test_reopen_after_workspace_removed_goes_to_active_workspace() {
+        let mut manager = WorkspaceManager::new();
+        let ws1_id = WorkspaceId(1);
+        manager.create_workspace("WS 2".to_string());
+        manager.new_surface_in_active(None).unwrap();
+        manager.new_surface_in_active(None).unwrap();
+        manager.close_surface_in_active_with_capture(None).expect("close should succeed");
+
+        manager.close_workspace(WorkspaceId(2)).expect("close ws2");
+        assert_eq!(manager.active().id, ws1_id);
+
+        manager.reopen_last_closed_tab().expect("reopen should succeed");
+
+        let surfaces = leaf_surfaces_of(manager.active());
+        assert!(surfaces.iter().any(|s| s.title == "Terminal 2"));
+    }
+
+    #[test]
+    fn test_reopen_after_pane_removed_goes_to_active_pane() {
+        let mut manager = WorkspaceManager::new();
+        let original_pane = manager.active().active_pane;
+        manager.split_active_right().expect("split ok");
+        manager.new_surface_in_active(None).unwrap();
+        manager.new_surface_in_active(None).unwrap();
+        manager.close_surface_in_active_with_capture(None).expect("close should succeed");
+
+        let new_pane = manager
+            .active()
+            .pane_ids()
+            .into_iter()
+            .find(|id| *id != original_pane)
+            .expect("split pane");
+        manager.focus_pane_global(new_pane);
+        manager.new_surface_in_active(None).unwrap();
+
+        manager.active_mut().close_pane(original_pane).expect("close original pane");
+
+        manager.reopen_last_closed_tab().expect("reopen should succeed");
+
+        let surfaces = leaf_surfaces_of(manager.active());
+        assert_eq!(surfaces.len(), 2);
+    }
+
+    #[test]
+    fn test_close_then_reopen_preserves_surface_data() {
+        let mut manager = WorkspaceManager::new();
+        manager.new_surface_in_active(None).unwrap();
+        manager.new_surface_in_active(Some("Renamed".to_string())).unwrap();
+
+        manager.close_surface_in_active_with_capture(None).expect("close should succeed");
+
+        manager.reopen_last_closed_tab().expect("reopen should succeed");
+
+        let surfaces = leaf_surfaces_of(manager.active());
+        let restored = surfaces
+            .iter()
+            .find(|s| s.title == "Renamed")
+            .expect("restored surface should be in the active leaf");
+        assert_eq!(restored.title, "Renamed");
+    }
+
+    #[test]
+    fn test_multiple_closes_reopen_in_reverse_order() {
+        let mut manager = WorkspaceManager::new();
+        manager.new_surface_in_active(None).unwrap();
+        manager.new_surface_in_active(None).unwrap();
+        manager.new_surface_in_active(None).unwrap();
+
+        manager.close_surface_in_active_with_capture(Some(2)).expect("close T3");
+        manager.close_surface_in_active_with_capture(Some(0)).expect("close T1");
+
+        manager.reopen_last_closed_tab().expect("reopen #1");
+        assert_eq!(manager.active().active_surface().unwrap().title, "Terminal 1");
+
+        manager.reopen_last_closed_tab().expect("reopen #2");
+        assert_eq!(manager.active().active_surface().unwrap().title, "Terminal 3");
+
+        assert!(matches!(manager.reopen_last_closed_tab(), Err(WorkspaceError::NoClosedTabs)));
     }
 }

@@ -6,13 +6,56 @@
 #![allow(dead_code)]
 
 use rmux_terminal::OscNotification;
+use thiserror::Error;
 
 use super::splits::{
     PaneId, PaneNode, PaneTreeError, SpatialDirection, SplitDirection, SplitId,
     find_pane_in_direction,
 };
+use super::surface::{Surface, SurfaceId};
 use crate::browser::BrowserPane;
-use crate::ui::TerminalPane;
+use crate::ui::{DEFAULT_FONT_SIZE, TerminalPane};
+
+/// Initial size for freshly spawned terminal surfaces (columns).
+const INITIAL_COLS: u16 = 80;
+/// Initial size for freshly spawned terminal surfaces (rows).
+const INITIAL_ROWS: u16 = 24;
+
+/// Error type for workspace-level operations (tab/surface management).
+///
+/// Distinct from [`PaneTreeError`] which covers pane-tree structural
+/// concerns. Surface operations surface here so the manager-level
+/// dispatcher can match on the failure mode without inspecting
+/// sub-trees.
+#[derive(Error, Debug, PartialEq)]
+pub enum WorkspaceError {
+    /// The active pane is missing or not a `Leaf` (e.g. it's a
+    /// `Browser` node, which doesn't host surfaces).
+    #[error("No active leaf pane selected")]
+    NoActivePane,
+    /// The given surface index is out of range for the active leaf.
+    #[error("Invalid surface index: {0}")]
+    InvalidSurfaceIndex(usize),
+    /// The requested operation would leave the active leaf with zero
+    /// surfaces. A leaf must always have at least one tab.
+    #[error("Cannot close the last surface")]
+    CannotCloseLastSurface,
+    /// The PTY backend refused to spawn a terminal for a new surface.
+    /// The wrapped string is the formatted `PtyError`.
+    #[error("Surface spawn failed: {0}")]
+    SurfaceSpawnFailed(String),
+    /// `reopen_last_closed_tab` was called with an empty closed-tabs stack.
+    #[error("No closed tabs to reopen")]
+    NoClosedTabs,
+    /// `reopen_last_closed_tab` was called for a captured tab whose
+    /// original pane no longer exists in the tree AND there is no
+    /// fallback leaf to restore to. Distinct from
+    /// [`PaneTreeError::PaneNotFound`] which signals a missing pane
+    /// during a tree operation — this one signals a missing pane at
+    /// the manager level with no available recovery path.
+    #[error("Pane not found: {0:?} and no fallback available")]
+    PaneNotFound(PaneId),
+}
 
 /// A unique identifier for a workspace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -57,6 +100,9 @@ pub struct Workspace {
     /// When `Some`, only this pane is rendered (zoomed/maximized mode).
     /// Toggled by `Cmd/Ctrl+Shift+Enter`.
     pub zoomed_pane: Option<PaneId>,
+    /// Monotonic counter for `SurfaceId`s minted by this workspace.
+    /// Starts at 1 and is bumped after each successful `new_surface` call.
+    pub next_surface_id: u64,
 }
 
 impl Workspace {
@@ -76,6 +122,7 @@ impl Workspace {
             git_status: None,
             ports: Vec::new(),
             zoomed_pane: None,
+            next_surface_id: 1,
         }
     }
 
@@ -237,6 +284,17 @@ impl Workspace {
         self.root.pane_count()
     }
 
+    /// Number of terminal surfaces hosted in this workspace.
+    ///
+    /// Pass-through to [`PaneNode::terminal_count`]. A workspace with no
+    /// leaves (theoretically possible if the root is replaced) returns
+    /// `0`; an uninitialized leaf still counts as `1` so the
+    /// `CloseTab` vs `ClosePane` disambiguation in the dispatcher stays
+    /// consistent with the user's mental model of "one tab open".
+    pub fn terminal_count(&self) -> usize {
+        self.root.terminal_count()
+    }
+
     /// Get the ID of the currently active pane.
     pub fn active_pane_id(&self) -> PaneId {
         self.active_pane
@@ -272,6 +330,175 @@ impl Workspace {
     /// Listening ports associated with this workspace.
     pub fn ports(&self) -> &[u16] {
         &self.ports
+    }
+
+    /// Index of the focused surface within the active leaf, or 0 if the
+    /// active pane isn't a `Leaf` (e.g. it's a `Browser`).
+    pub fn active_surface_index(&self) -> usize {
+        surface_index_in(&self.root, self.active_pane).unwrap_or(0)
+    }
+
+    /// The currently focused surface in the active leaf, or `None` if
+    /// the active pane isn't a `Leaf` or has no surfaces.
+    pub fn active_surface(&self) -> Option<&Surface> {
+        let leaf = self.root.find_pane(self.active_pane)?;
+        leaf.active_surface()
+    }
+
+    /// Borrow the active leaf node, returning [`WorkspaceError::NoActivePane`]
+    /// when the active pane is missing or not a `Leaf` (e.g. a `Browser`).
+    fn active_leaf_mut(&mut self) -> Result<&mut PaneNode, WorkspaceError> {
+        match self.root.find_pane_mut(self.active_pane) {
+            Some(pane) if pane.is_leaf() => Ok(pane),
+            _ => Err(WorkspaceError::NoActivePane),
+        }
+    }
+
+    /// Mint a fresh `SurfaceId`, spawn a backing `TerminalPane`, and append
+    /// it to the active leaf's surface list. The new surface becomes focused.
+    /// Returns the new id.
+    pub fn new_surface(&mut self, title: String) -> Result<SurfaceId, WorkspaceError> {
+        let id = SurfaceId(self.next_surface_id);
+        self.next_surface_id += 1;
+
+        let terminal = TerminalPane::spawn(INITIAL_COLS, INITIAL_ROWS, DEFAULT_FONT_SIZE)
+            .map_err(|e| WorkspaceError::SurfaceSpawnFailed(e.to_string()))?;
+        let surface = Surface::new(id, title, terminal);
+
+        let leaf = self.active_leaf_mut()?;
+        leaf.add_surface(surface);
+        let new_idx = leaf.leaf_surfaces().len() - 1;
+        leaf.set_active_surface_index(new_idx);
+
+        Ok(id)
+    }
+
+    /// Cycle to the next surface within the active leaf (wraps). No-op when
+    /// the leaf holds 0 or 1 surfaces.
+    pub fn next_surface(&mut self) -> Result<(), WorkspaceError> {
+        let leaf = self.active_leaf_mut()?;
+        let len = leaf.leaf_surfaces().len();
+        if len > 1 {
+            let current = leaf.active_surface_index();
+            let next = (current + 1) % len;
+            leaf.set_active_surface_index(next);
+        }
+        Ok(())
+    }
+
+    /// Cycle to the previous surface within the active leaf (wraps). No-op
+    /// when the leaf holds 0 or 1 surfaces.
+    pub fn previous_surface(&mut self) -> Result<(), WorkspaceError> {
+        let leaf = self.active_leaf_mut()?;
+        let len = leaf.leaf_surfaces().len();
+        if len > 1 {
+            let current = leaf.active_surface_index();
+            let prev = if current == 0 { len - 1 } else { current - 1 };
+            leaf.set_active_surface_index(prev);
+        }
+        Ok(())
+    }
+
+    /// Focus the surface at `idx` within the active leaf. Returns
+    /// [`WorkspaceError::InvalidSurfaceIndex`] when out of range.
+    pub fn select_surface(&mut self, idx: usize) -> Result<(), WorkspaceError> {
+        let leaf = self.active_leaf_mut()?;
+        let len = leaf.leaf_surfaces().len();
+        if idx >= len {
+            return Err(WorkspaceError::InvalidSurfaceIndex(idx));
+        }
+        leaf.set_active_surface_index(idx);
+        Ok(())
+    }
+
+    /// Remove the surface at `idx` and return it. Refuses to remove the
+    /// last remaining surface (returns
+    /// [`WorkspaceError::CannotCloseLastSurface`]). The leaf's
+    /// `active_surface` is adjusted by [`PaneNode::remove_surface`].
+    pub fn close_surface(&mut self, idx: usize) -> Result<Surface, WorkspaceError> {
+        let leaf = self.active_leaf_mut()?;
+        let len = leaf.leaf_surfaces().len();
+        if len == 0 {
+            return Err(WorkspaceError::InvalidSurfaceIndex(idx));
+        }
+        if len == 1 {
+            return Err(WorkspaceError::CannotCloseLastSurface);
+        }
+        if idx >= len {
+            return Err(WorkspaceError::InvalidSurfaceIndex(idx));
+        }
+        leaf.remove_surface(idx).ok_or(WorkspaceError::InvalidSurfaceIndex(idx))
+    }
+
+    /// Rename the surface at `idx`. Out-of-range indices surface
+    /// [`WorkspaceError::InvalidSurfaceIndex`].
+    pub fn rename_surface(&mut self, idx: usize, title: String) -> Result<(), WorkspaceError> {
+        let leaf = self.active_leaf_mut()?;
+        let len = leaf.leaf_surfaces().len();
+        if idx >= len {
+            return Err(WorkspaceError::InvalidSurfaceIndex(idx));
+        }
+        leaf.leaf_surfaces_mut()[idx].title = title;
+        Ok(())
+    }
+
+    /// Remove every surface in the active leaf except the currently focused
+    /// one, returning the closed surfaces in their original order. With 0 or
+    /// 1 surfaces this is a no-op (returns an empty `Vec`).
+    pub fn close_other_surfaces(&mut self) -> Result<Vec<Surface>, WorkspaceError> {
+        let leaf = self.active_leaf_mut()?;
+        let active_idx = leaf.active_surface_index();
+        let len = leaf.leaf_surfaces().len();
+        if len <= 1 {
+            return Ok(Vec::new());
+        }
+
+        let mut all: Vec<Surface> = std::mem::take(leaf.leaf_surfaces_mut());
+        let mut closed = Vec::with_capacity(len - 1);
+        let mut active_surface = None;
+        for (i, surface) in all.drain(..).enumerate() {
+            if i == active_idx {
+                active_surface = Some(surface);
+            } else {
+                closed.push(surface);
+            }
+        }
+        let active_surface = active_surface.expect("active_idx < len");
+        leaf.leaf_surfaces_mut().push(active_surface);
+        leaf.set_active_surface_index(0);
+        Ok(closed)
+    }
+
+    /// Append `surface` to the leaf with id `pane_id` and make it the
+    /// focused surface. Returns [`PaneTreeError::PaneNotFound`] when no
+    /// leaf with that id exists (or when the id matches a `Browser`
+    /// node, since browsers don't host surfaces). Used by the
+    /// closed-tabs stack to restore a captured tab.
+    pub fn add_surface_to_pane(
+        &mut self,
+        pane_id: PaneId,
+        surface: Surface,
+    ) -> Result<(), PaneTreeError> {
+        let node = self.root.find_pane_mut(pane_id).ok_or(PaneTreeError::PaneNotFound(pane_id))?;
+        if !node.is_leaf() {
+            return Err(PaneTreeError::PaneNotFound(pane_id));
+        }
+        node.add_surface(surface);
+        let new_idx = node.leaf_surfaces().len() - 1;
+        node.set_active_surface_index(new_idx);
+        Ok(())
+    }
+}
+
+/// Walk the pane tree looking for the leaf matching `target`; return its
+/// `active_surface` index. Returns `None` if no such leaf exists.
+fn surface_index_in(node: &PaneNode, target: PaneId) -> Option<usize> {
+    match node {
+        PaneNode::Leaf { id, active_surface, .. } if *id == target => Some(*active_surface),
+        PaneNode::Leaf { .. } | PaneNode::Browser { .. } => None,
+        PaneNode::Split { children, .. } => {
+            children.iter().find_map(|c| surface_index_in(c, target))
+        }
     }
 }
 
