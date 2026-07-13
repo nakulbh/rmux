@@ -573,6 +573,13 @@ impl TerminalPane {
     pub fn has_focus(&self) -> bool {
         self.has_focus
     }
+
+    /// Force this pane's focus state, e.g. to sync with `Workspace::active_pane`
+    /// after a keyboard-driven focus change (`FocusLeft`/`Right`/`Up`/`Down`).
+    /// Click-to-focus still applies afterward within the same `show()` call.
+    pub fn set_focus(&mut self, focus: bool) {
+        self.has_focus = focus;
+    }
 }
 
 impl TerminalPane {

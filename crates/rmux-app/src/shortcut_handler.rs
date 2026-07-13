@@ -25,6 +25,29 @@ fn should_dispatch_when_text_focused(action: ShortcutAction) -> bool {
     )
 }
 
+/// Normalize raw egui modifiers into the canonical form used for
+/// [`crate::shortcuts::ShortcutRegistry`] lookups.
+///
+/// - Always clears `mac_cmd`: egui-winit sets `mac_cmd` alongside `command`
+///   for every physical Cmd press on macOS, but registry entries built from
+///   `Modifiers::COMMAND` never set it — left alone, the `HashMap`'s derived
+///   `Eq`/`Hash` would miss on every Cmd chord even though `command` matches.
+/// - Leaves `ctrl` untouched on macOS. Bare `Ctrl` chords (`⌃1..9 →
+///   SelectSurface`, registered via `ctrl_only()`) and combined `Ctrl+Cmd`
+///   bracket chords (registered via `Modifiers::CTRL | Modifiers::COMMAND`)
+///   both need the physical Ctrl bit to reach the registry unchanged.
+/// - On Linux/Windows, collapses `command` into `ctrl` since the registry's
+///   `cmd_ctrl()`-family helpers store `Modifiers::CTRL` as the canonical
+///   app-shortcut modifier there.
+fn normalize_lookup_mods(mut modifiers: egui::Modifiers) -> egui::Modifiers {
+    modifiers.mac_cmd = false;
+    if !cfg!(target_os = "macos") && modifiers.command {
+        modifiers.command = false;
+        modifiers.ctrl = true;
+    }
+    modifiers
+}
+
 impl RmuxApp {
     /// Handle global keyboard shortcuts for workspace/pane operations.
     pub(crate) fn handle_keyboard_shortcuts(&mut self, ctx: &egui::Context) {
@@ -43,24 +66,7 @@ impl RmuxApp {
                 modifiers.command || modifiers.ctrl
             };
 
-            // Normalize modifiers for lookup: strip Ctrl on macOS when Cmd is present
-            let lookup_mods = if cfg!(target_os = "macos") && modifiers.command && modifiers.ctrl {
-                // Special case: macOS Ctrl+Cmd bracket chords
-                *modifiers
-            } else if cfg!(target_os = "macos") {
-                // On macOS, only Command matters for app shortcuts
-                let mut m = *modifiers;
-                m.ctrl = false;
-                m
-            } else {
-                // On Linux/Windows, collapse Command into Ctrl for lookup
-                let mut m = *modifiers;
-                if m.command {
-                    m.command = false;
-                    m.ctrl = true;
-                }
-                m
-            };
+            let lookup_mods = normalize_lookup_mods(*modifiers);
 
             let Some(action) = self.shortcut_registry.lookup(lookup_mods, *key) else {
                 continue;
@@ -467,5 +473,45 @@ mod tests {
     #[test]
     fn rename_workspace_skipped_when_text_focused() {
         assert!(!should_dispatch_when_text_focused(ShortcutAction::RenameWorkspace));
+    }
+
+    // --- normalize_lookup_mods (macOS) ---
+    //
+    // These assert against `cfg!(target_os = "macos")` behavior, matching
+    // the dev/CI environment this crate targets.
+
+    #[test]
+    fn bare_ctrl_survives_normalization_for_select_surface() {
+        // ⌃1 (SelectSurface) must reach the registry as plain Ctrl, matching
+        // `ctrl_only()`. Regression test: a prior version unconditionally
+        // zeroed `ctrl` on macOS, which made `⌃1..9` unreachable.
+        let raw = egui::Modifiers { ctrl: true, ..Default::default() };
+        let normalized = normalize_lookup_mods(raw);
+        assert_eq!(normalized, egui::Modifiers::CTRL);
+    }
+
+    #[test]
+    fn bare_cmd_normalizes_to_command_only() {
+        // Physical Cmd sets both `command` and `mac_cmd` on macOS; only
+        // `command` should survive, matching `cmd_ctrl()`'s registry entries.
+        let raw = egui::Modifiers { command: true, mac_cmd: true, ..Default::default() };
+        let normalized = normalize_lookup_mods(raw);
+        assert_eq!(normalized, egui::Modifiers::COMMAND);
+    }
+
+    #[test]
+    fn ctrl_cmd_bracket_chord_keeps_both_bits() {
+        // ⌃⌘[ / ⌃⌘] (PrevWorkspace/NextWorkspace) are registered as
+        // `Modifiers::CTRL | Modifiers::COMMAND`; both bits must survive.
+        let raw = egui::Modifiers { ctrl: true, command: true, mac_cmd: true, ..Default::default() };
+        let normalized = normalize_lookup_mods(raw);
+        assert_eq!(normalized, egui::Modifiers::CTRL | egui::Modifiers::COMMAND);
+    }
+
+    #[test]
+    fn cmd_alt_arrow_keeps_alt_and_command_without_ctrl() {
+        let raw = egui::Modifiers { command: true, mac_cmd: true, alt: true, ..Default::default() };
+        let normalized = normalize_lookup_mods(raw);
+        assert_eq!(normalized, egui::Modifiers::COMMAND | egui::Modifiers::ALT);
     }
 }

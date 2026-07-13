@@ -167,6 +167,13 @@ fn render_leaf(
         .new_child(egui::UiBuilder::new().max_rect(terminal_rect).layout(egui::Layout::default()));
 
     if let Some(pane) = leaf.active_terminal_mut() {
+        // Sync keyboard-driven focus (FocusLeft/Right/Up/Down) into the pane
+        // before rendering so keystrokes and the focus glow follow `active_pane`
+        // immediately. Click detection inside `show()` runs after this and can
+        // still flip focus to a different pane, which is promoted below.
+        if pane.has_focus() != is_active {
+            pane.set_focus(is_active);
+        }
         pane.show(&mut child_ui);
         if pane.has_focus() && !is_active {
             *active_pane = pane_id;
