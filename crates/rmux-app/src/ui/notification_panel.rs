@@ -159,10 +159,14 @@ fn render_row(ui: &mut egui::Ui, notification: &Notification) -> egui::Response 
     let title_color = if notification.read { palette.text_muted } else { palette.text_primary };
 
     let painter = ui.painter();
-    painter.rect_filled(rect, egui::CornerRadius::same(2), fill.gamma_multiply(alpha));
+    painter.rect_filled(
+        rect,
+        egui::CornerRadius::same(theme::radius_sm()),
+        fill.gamma_multiply(alpha),
+    );
     painter.rect_stroke(
         rect,
-        egui::CornerRadius::same(2),
+        egui::CornerRadius::same(theme::radius_sm()),
         egui::Stroke::new(1.0_f32, palette.border.gamma_multiply(alpha)),
         egui::StrokeKind::Inside,
     );
@@ -234,10 +238,10 @@ fn action_button(ui: &mut egui::Ui, palette: &theme::Palette, label: &str) -> eg
     if ui.is_rect_visible(rect) {
         let fill = if response.hovered() { palette.panel_active_bg } else { palette.panel_bg };
         let painter = ui.painter();
-        painter.rect_filled(rect, egui::CornerRadius::same(2), fill);
+        painter.rect_filled(rect, egui::CornerRadius::same(theme::radius_sm()), fill);
         painter.rect_stroke(
             rect,
-            egui::CornerRadius::same(2),
+            egui::CornerRadius::same(theme::radius_sm()),
             egui::Stroke::new(1.0_f32, palette.border),
             egui::StrokeKind::Inside,
         );

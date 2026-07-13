@@ -18,8 +18,10 @@ fn p() -> crate::ui::theme::Palette {
     crate::ui::theme::palette()
 }
 
-/// Card corner radius (`radius_sm` from the design spec).
-const CARD_RADIUS: u8 = 2;
+/// Card corner radius (`theme::radius_sm()` from the design spec).
+fn card_radius() -> u8 {
+    crate::ui::theme::radius_sm()
+}
 /// Card horizontal padding.
 const CARD_PAD_X: f32 = 8.0;
 /// Card vertical padding.
@@ -270,7 +272,7 @@ impl SidebarView {
             return response;
         }
 
-        let radius = egui::CornerRadius::same(CARD_RADIUS);
+        let radius = egui::CornerRadius::same(card_radius());
         // Inactive rows are de-emphasized at 0.8 opacity (text/border colors).
         let dim = if is_active { 1.0_f32 } else { INACTIVE_OPACITY };
         // Owned painter clipped to the card so content never bleeds out.
@@ -555,7 +557,7 @@ fn render_new_workspace_button(ui: &mut egui::Ui) -> bool {
     let hovered = response.hovered();
     let fill = if hovered { p().panel_active_bg } else { p().panel_bg };
     let border_color = if hovered { p().accent } else { p().border };
-    let radius = egui::CornerRadius::same(CARD_RADIUS);
+    let radius = egui::CornerRadius::same(card_radius());
     let painter = ui.painter();
     painter.rect_filled(rect, radius, fill);
     painter.rect_stroke(

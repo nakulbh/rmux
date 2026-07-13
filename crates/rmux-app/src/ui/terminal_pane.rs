@@ -825,7 +825,11 @@ impl TerminalPane {
             egui::Pos2::new(bar_ui.cursor().min.x, bar_rect.center().y - 10.0_f32),
             egui::Vec2::new(200.0_f32, 20.0_f32),
         );
-        bar_ui.painter().rect_filled(input_rect, egui::CornerRadius::same(2), palette.panel_bg);
+        bar_ui.painter().rect_filled(
+            input_rect,
+            egui::CornerRadius::same(theme::radius_sm()),
+            palette.panel_bg,
+        );
         let text_response = bar_ui.put(
             input_rect.shrink2(egui::Vec2::new(6.0_f32, 1.0_f32)),
             egui::TextEdit::singleline(&mut self.find_query)
@@ -837,7 +841,7 @@ impl TerminalPane {
         let input_border = if text_response.has_focus() { palette.accent } else { palette.border };
         bar_ui.painter().rect_stroke(
             input_rect,
-            egui::CornerRadius::same(2),
+            egui::CornerRadius::same(theme::radius_sm()),
             egui::Stroke::new(1.0_f32, input_border),
             egui::StrokeKind::Inside,
         );
@@ -876,7 +880,7 @@ impl TerminalPane {
                     egui::RichText::new(label).color(palette.text_primary).size(12.0_f32),
                 )
                 .stroke(egui::Stroke::new(1.0_f32, palette.border))
-                .corner_radius(egui::CornerRadius::same(2)),
+                .corner_radius(egui::CornerRadius::same(theme::radius_sm())),
             )
         };
 

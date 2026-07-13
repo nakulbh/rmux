@@ -87,11 +87,84 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Load custom fonts for terminal rendering.
+/// Monospace font candidates, in preference order. Used for terminal text
+/// (`egui::FontFamily::Monospace`).
+const MONOSPACE_FONT_CANDIDATES: &[&str] = &[
+    // macOS: SF Mono (used by Terminal.app/iTerm2 by default on modern macOS)
+    "/System/Library/Fonts/SFNSMono.ttf",
+    "/System/Library/Fonts/Monaco.ttf",
+    // Windows
+    "C:\\Windows\\Fonts\\consola.ttf",
+    "C:\\Windows\\Fonts\\cascadiamono.ttf",
+    // Linux (common distro font paths)
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+    "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
+];
+
+/// UI sans-serif font candidates, in preference order. Used for regular UI
+/// text (`egui::FontFamily::Proportional`) — sidebar labels, buttons, etc.
+const UI_SANS_FONT_CANDIDATES: &[&str] = &[
+    // macOS: San Francisco (system UI font)
+    "/System/Library/Fonts/SFNS.ttf",
+    "/System/Library/Fonts/Helvetica.ttc",
+    // Windows
+    "C:\\Windows\\Fonts\\segoeui.ttf",
+    // Linux
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+];
+
+/// Load custom fonts for the UI and terminal.
 ///
-/// egui's default `FontDefinitions` already includes platform-appropriate
-/// monospace fonts (Menlo on macOS, Consolas on Windows, etc.). We use
-/// the defaults rather than pushing specific font names that may not be installed.
-fn setup_fonts(_ctx: &egui::Context) {
-    // No-op: use egui's default font definitions.
+/// egui's bundled default fonts ("Hack" for monospace, "Ubuntu-Light" for
+/// proportional text) render noticeably heavier/blockier than the native
+/// fonts they're meant to stand in for — egui does *not* pull platform
+/// fonts automatically. We look for real system fonts (SF Mono/SF on
+/// macOS, Consolas/Segoe UI on Windows, DejaVu/Liberation on Linux) and,
+/// if found, install them as the first choice in the `Monospace` and
+/// `Proportional` families so terminal text and the rest of the UI render
+/// crisply like a native app. Falls back to egui's bundled fonts for
+/// whichever family has no candidate present on disk.
+fn setup_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    let mut changed = false;
+
+    if let Some(bytes) = load_first_readable(MONOSPACE_FONT_CANDIDATES) {
+        fonts.font_data.insert(
+            "SystemMono".to_owned(),
+            std::sync::Arc::new(egui::FontData::from_owned(bytes)),
+        );
+        fonts
+            .families
+            .entry(egui::FontFamily::Monospace)
+            .or_default()
+            .insert(0, "SystemMono".to_owned());
+        changed = true;
+    }
+
+    if let Some(bytes) = load_first_readable(UI_SANS_FONT_CANDIDATES) {
+        fonts.font_data.insert(
+            "SystemSans".to_owned(),
+            std::sync::Arc::new(egui::FontData::from_owned(bytes)),
+        );
+        fonts
+            .families
+            .entry(egui::FontFamily::Proportional)
+            .or_default()
+            .insert(0, "SystemSans".to_owned());
+        changed = true;
+    }
+
+    if changed {
+        ctx.set_fonts(fonts);
+    }
+}
+
+/// Return the bytes of the first path in `candidates` that exists and
+/// reads successfully. `.ttc` font collections (e.g. `Helvetica.ttc`) work
+/// here because `ab_glyph`/egui transparently reads the first face of a
+/// TrueType collection.
+fn load_first_readable(candidates: &[&str]) -> Option<Vec<u8>> {
+    candidates.iter().find_map(|path| std::fs::read(path).ok())
 }
