@@ -4,8 +4,9 @@ const fn rgb(r: u8, g: u8, b: u8) -> Color32 {
     Color32::from_rgb(r, g, b)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum NamedTheme {
+    #[default]
     OneDark,
     Dracula,
     SolarizedDark,
@@ -26,6 +27,19 @@ impl NamedTheme {
             NamedTheme::CatppuccinMocha,
             NamedTheme::TokyoNight,
         ]
+    }
+
+    /// Human-readable name for UI display (e.g. the settings theme picker).
+    pub fn label(&self) -> &'static str {
+        match self {
+            NamedTheme::OneDark => "One Dark",
+            NamedTheme::Dracula => "Dracula",
+            NamedTheme::SolarizedDark => "Solarized Dark",
+            NamedTheme::SolarizedLight => "Solarized Light",
+            NamedTheme::GruvboxDark => "Gruvbox Dark",
+            NamedTheme::CatppuccinMocha => "Catppuccin Mocha",
+            NamedTheme::TokyoNight => "Tokyo Night",
+        }
     }
 }
 
@@ -261,6 +275,19 @@ mod tests {
             assert!(theme.foreground != Color32::TRANSPARENT);
             assert!(theme.background != Color32::TRANSPARENT);
         }
+    }
+
+    #[test]
+    fn test_all_named_themes_have_unique_nonempty_labels() {
+        let labels: Vec<&str> = NamedTheme::all().iter().map(|n| n.label()).collect();
+        assert!(labels.iter().all(|l| !l.is_empty()));
+        let unique: std::collections::HashSet<_> = labels.iter().collect();
+        assert_eq!(unique.len(), labels.len(), "theme labels must be unique for the UI picker");
+    }
+
+    #[test]
+    fn test_named_theme_default_is_one_dark() {
+        assert_eq!(NamedTheme::default(), NamedTheme::OneDark);
     }
 
     #[test]

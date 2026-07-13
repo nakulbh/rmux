@@ -22,6 +22,7 @@ pub fn show(
     sidebar_visible: &mut bool,
     notification_panel_visible: &mut bool,
     right_sidebar_visible: &mut bool,
+    settings_open: &mut bool,
 ) {
     let p = theme::palette();
     egui::TopBottomPanel::top("rmux_top_bar")
@@ -109,6 +110,29 @@ pub fn show(
             let content_width =
                 icon_galley.size().x + count_galley.as_ref().map_or(0.0_f32, |g| g.size().x);
             let bell_width = content_width + 2.0_f32 * 6.0_f32;
+
+            // Settings gear (20×20, mirrors the left ☰ style). Sits left of
+            // the right-sidebar toggle; opens the settings panel (theme, etc).
+            let settings_rect = Rect::from_center_size(
+                pos2(rect.right() - 12.0_f32 - bell_width - 18.0_f32 - 26.0_f32, rect.center().y),
+                vec2(20.0_f32, 20.0_f32),
+            );
+            let settings = ui
+                .interact(settings_rect, ui.id().with("settings_gear"), Sense::click())
+                .on_hover_cursor(CursorIcon::PointingHand)
+                .on_hover_text("Settings");
+            let settings_icon_color =
+                if *settings_open || settings.hovered() { p.text_primary } else { p.text_muted };
+            ui.painter().text(
+                settings_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "\u{2699}",
+                FontId::proportional(13.0_f32),
+                settings_icon_color,
+            );
+            if settings.clicked() {
+                *settings_open = !*settings_open;
+            }
 
             // Right sidebar toggle (20×20, mirrors the left ☰ style). Drives
             // the cmux `Cmd+Opt+B` shortcut path; sits left of the bell.

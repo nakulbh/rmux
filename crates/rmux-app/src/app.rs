@@ -14,7 +14,7 @@ use crate::browser::BrowserPane;
 use crate::notifications::NotificationManager;
 use crate::ui::DEFAULT_FONT_SIZE;
 use crate::ui::sidebar::SidebarView;
-use crate::ui::{NotificationPanel, TerminalPane, workspace_view};
+use crate::ui::{NotificationPanel, SettingsPanel, TerminalPane, workspace_view};
 use crate::workspace::WorkspaceManager;
 use crate::workspace::splits::{PaneId, PaneTreeError, SplitDirection};
 
@@ -37,8 +37,12 @@ pub struct RmuxApp {
     pub(crate) notifications: NotificationManager,
     /// The right-side notification list panel.
     pub(crate) notification_panel: NotificationPanel,
+    /// The floating settings panel (terminal theme picker, etc).
+    pub(crate) settings_panel: SettingsPanel,
     /// The current terminal font size (shared by all panes).
     pub(crate) font_size: f32,
+    /// The current terminal color theme (shared by all panes).
+    pub(crate) terminal_theme: rmux_terminal::NamedTheme,
     /// Most recent text copied from a terminal selection.
     pub(crate) last_copied_text: Option<String>,
     /// Receives socket API requests, drained each frame.
@@ -63,7 +67,9 @@ impl RmuxApp {
             sidebar: SidebarView::new(),
             notifications: NotificationManager::with_system_notifier(),
             notification_panel: NotificationPanel::new(),
+            settings_panel: SettingsPanel::new(),
             font_size,
+            terminal_theme: rmux_terminal::NamedTheme::default(),
             last_copied_text: None,
             api_request_rx: channels.request_rx,
             api_event_tx: channels.event_tx,
@@ -72,7 +78,7 @@ impl RmuxApp {
         };
 
         let pane_id = app.workspace_manager.active().active_pane;
-        attach_terminal(&mut app.workspace_manager, pane_id, font_size);
+        attach_terminal(&mut app.workspace_manager, pane_id, font_size, app.terminal_theme);
         app.last_active_workspace = app.workspace_manager.active().id.0;
 
         tracing::info!(
@@ -123,8 +129,15 @@ impl eframe::App for RmuxApp {
             &mut self.sidebar.visible,
             &mut self.notification_panel.visible,
             &mut self.sidebar.right_sidebar_visible,
+            &mut self.settings_panel.open,
         );
         crate::ui::status_bar::show(ctx, &self.workspace_manager, &self.notifications);
+
+        // Render the settings panel (floating window); apply any theme
+        // change picked this frame to every terminal pane.
+        if let Some(new_theme) = self.settings_panel.show(ctx, self.terminal_theme) {
+            self.set_terminal_theme(new_theme);
+        }
 
         // Render the sidebar (left panel); route its "+ New Workspace"
         // button through the same path as Cmd/Ctrl+N.
@@ -218,7 +231,7 @@ impl RmuxApp {
     pub(crate) fn create_workspace_with_terminal(&mut self, name: String) -> u64 {
         let ws = self.workspace_manager.create_workspace(name);
         let pane_id = self.workspace_manager.active().active_pane;
-        attach_terminal(&mut self.workspace_manager, pane_id, self.font_size);
+        attach_terminal(&mut self.workspace_manager, pane_id, self.font_size, self.terminal_theme);
         self.publish_event("workspace.created", json!({ "id": ws.0 }));
         self.publish_event("pane.created", json!({ "pane_id": pane_id.0, "workspace_id": ws.0 }));
         ws.0
@@ -241,7 +254,7 @@ impl RmuxApp {
             SplitDirection::Horizontal => self.workspace_manager.split_active_right()?,
             SplitDirection::Vertical => self.workspace_manager.split_active_down()?,
         };
-        attach_terminal(&mut self.workspace_manager, new_id, self.font_size);
+        attach_terminal(&mut self.workspace_manager, new_id, self.font_size, self.terminal_theme);
         let workspace_id = self.workspace_manager.active().id.0;
         self.publish_event(
             "pane.created",
@@ -343,6 +356,22 @@ impl RmuxApp {
         }
     }
 
+    /// Change the terminal color theme, propagating it to every pane
+    /// across all workspaces. New panes pick it up via `attach_terminal`.
+    pub(crate) fn set_terminal_theme(&mut self, named: rmux_terminal::NamedTheme) {
+        self.terminal_theme = named;
+        tracing::debug!(?named, "Terminal theme changed");
+
+        let theme = rmux_terminal::TerminalTheme::default().named(named);
+        for workspace in self.workspace_manager.workspaces_mut() {
+            for (_, terminal) in workspace.root.leaf_panes_mut() {
+                if let Some(t) = terminal.as_mut() {
+                    t.set_theme(theme);
+                }
+            }
+        }
+    }
+
     /// Get a mutable reference to the active terminal pane, if any.
     pub(crate) fn active_terminal_mut(&mut self) -> Option<&mut TerminalPane> {
         self.workspace_manager.active_mut().active_terminal()
@@ -376,9 +405,17 @@ impl RmuxApp {
 ///
 /// Spawn failures are logged; the pane then shows the "Spawning
 /// terminal..." placeholder indefinitely.
-fn attach_terminal(manager: &mut WorkspaceManager, pane_id: PaneId, font_size: f32) {
+fn attach_terminal(
+    manager: &mut WorkspaceManager,
+    pane_id: PaneId,
+    font_size: f32,
+    named_theme: rmux_terminal::NamedTheme,
+) {
     match TerminalPane::spawn(INITIAL_COLS, INITIAL_ROWS, font_size) {
-        Ok(terminal) => manager.active_mut().set_terminal(pane_id, terminal),
+        Ok(mut terminal) => {
+            terminal.set_theme(rmux_terminal::TerminalTheme::default().named(named_theme));
+            manager.active_mut().set_terminal(pane_id, terminal);
+        }
         Err(e) => tracing::error!(pane_id = pane_id.0, "Failed to spawn terminal pane: {e}"),
     }
 }

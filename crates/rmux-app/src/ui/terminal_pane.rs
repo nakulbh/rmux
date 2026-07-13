@@ -548,6 +548,11 @@ impl TerminalPane {
         self.renderer.set_font_size(font_size);
     }
 
+    /// Change the ANSI/fg/bg/cursor color theme used by this pane.
+    pub fn set_theme(&mut self, theme: rmux_terminal::TerminalTheme) {
+        self.state.theme = theme;
+    }
+
     /// Resize the terminal pane.
     #[allow(dead_code)]
     pub fn resize(&mut self, cols: u16, rows: u16) {
