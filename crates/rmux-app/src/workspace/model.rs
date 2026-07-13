@@ -44,6 +44,17 @@ pub enum WorkspaceError {
     /// The wrapped string is the formatted `PtyError`.
     #[error("Surface spawn failed: {0}")]
     SurfaceSpawnFailed(String),
+    /// `reopen_last_closed_tab` was called with an empty closed-tabs stack.
+    #[error("No closed tabs to reopen")]
+    NoClosedTabs,
+    /// `reopen_last_closed_tab` was called for a captured tab whose
+    /// original pane no longer exists in the tree AND there is no
+    /// fallback leaf to restore to. Distinct from
+    /// [`PaneTreeError::PaneNotFound`] which signals a missing pane
+    /// during a tree operation — this one signals a missing pane at
+    /// the manager level with no available recovery path.
+    #[error("Pane not found: {0:?} and no fallback available")]
+    PaneNotFound(PaneId),
 }
 
 /// A unique identifier for a workspace.
@@ -316,6 +327,13 @@ impl Workspace {
         surface_index_in(&self.root, self.active_pane).unwrap_or(0)
     }
 
+    /// The currently focused surface in the active leaf, or `None` if
+    /// the active pane isn't a `Leaf` or has no surfaces.
+    pub fn active_surface(&self) -> Option<&Surface> {
+        let leaf = self.root.find_pane(self.active_pane)?;
+        leaf.active_surface()
+    }
+
     /// Borrow the active leaf node, returning [`WorkspaceError::NoActivePane`]
     /// when the active pane is missing or not a `Leaf` (e.g. a `Browser`).
     fn active_leaf_mut(&mut self) -> Result<&mut PaneNode, WorkspaceError> {
@@ -438,6 +456,29 @@ impl Workspace {
         leaf.leaf_surfaces_mut().push(active_surface);
         leaf.set_active_surface_index(0);
         Ok(closed)
+    }
+
+    /// Append `surface` to the leaf with id `pane_id` and make it the
+    /// focused surface. Returns [`PaneTreeError::PaneNotFound`] when no
+    /// leaf with that id exists (or when the id matches a `Browser`
+    /// node, since browsers don't host surfaces). Used by the
+    /// closed-tabs stack to restore a captured tab.
+    pub fn add_surface_to_pane(
+        &mut self,
+        pane_id: PaneId,
+        surface: Surface,
+    ) -> Result<(), PaneTreeError> {
+        let node = self
+            .root
+            .find_pane_mut(pane_id)
+            .ok_or(PaneTreeError::PaneNotFound(pane_id))?;
+        if !node.is_leaf() {
+            return Err(PaneTreeError::PaneNotFound(pane_id));
+        }
+        node.add_surface(surface);
+        let new_idx = node.leaf_surfaces().len() - 1;
+        node.set_active_surface_index(new_idx);
+        Ok(())
     }
 }
 

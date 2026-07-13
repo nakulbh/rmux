@@ -228,6 +228,23 @@ impl PaneNode {
         None
     }
 
+    /// Find an immutable reference to a pane node by ID anywhere in the
+    /// tree. Mirror of [`Self::find_pane_mut`] for `&self` access.
+    pub fn find_pane(&self, target: PaneId) -> Option<&PaneNode> {
+        if self.pane_id() == Some(target) {
+            return Some(self);
+        }
+        if let Self::Split { children, .. } = self {
+            for child in children.iter() {
+                let found = child.find_pane(target);
+                if found.is_some() {
+                    return found;
+                }
+            }
+        }
+        None
+    }
+
     /// Replace the pane at `target` with `new_node` in the tree.
     ///
     /// Uses `find_pane_mut` to locate the target without creating

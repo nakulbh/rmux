@@ -197,7 +197,7 @@ Comprehensive registry + dispatch tests run; final verification wave F1-F4.
   Commit: Y | `feat(workspace): WorkspaceManager tab orchestration + reopen stack`
 
 ### Wave 3 — Tab UI + dispatch
-- [ ] 9. Add bounded `closed_tabs_stack` with MAX_CLOSED=16, expose on `WorkspaceManager`
+- [x] 9. Add bounded `closed_tabs_stack` with MAX_CLOSED=16, expose on `WorkspaceManager`
   What to do: In `workspace/mod.rs`, add `const MAX_CLOSED_TABS: usize = 16;` and ensure `reopen_last_closed_tab` pops from front, trims to MAX_CLOSED_TABS. Tests: `test_reopen_stack_trims_to_max`, `test_reopen_stack_pops_front`.
   Parallelization: Wave 3 | Blocked by: 8 | Blocks: 15, 16
   References: `crates/rmux-app/src/workspace/mod.rs` (new struct fields), `std::collections::VecDeque`
@@ -208,7 +208,7 @@ Comprehensive registry + dispatch tests run; final verification wave F1-F4.
   Evidence: test log
   Commit: N (rolled into 8 commit)
 
-- [ ] 10. Add tab bar UI in `ui/workspace_view.rs` rendered above each leaf pane
+- [x] 10. Add tab bar UI in `ui/workspace_view.rs` rendered above each leaf pane
   What to do: In `crates/rmux-app/src/ui/workspace_view.rs`, modify `render_pane_tree` to render a tab strip above each `PaneNode::Leaf` when `leaf.surfaces.len() > 1` (hide for single-tab panes to save space). Tab strip shows: each tab title as a button (clicking selects), an `x` button on the active tab to close it, and a `+` button to create a new surface. Use `egui::TopBottomPanel::top` inside a child UI for the tab bar. Update `crates/rmux-app/src/ui/workspace_view.rs` to track the active pane+surface for input routing. Add the `egui::Response::clicked()` handling for tab buttons. Tests: `test_tab_bar_renders_only_when_multiple_surfaces` (use a `egui_kittest` if available, otherwise document as visual QA).
   Parallelization: Wave 3 | Blocked by: 6, 7, 8 | Blocks: 14
   References: `crates/rmux-app/src/ui/workspace_view.rs` (full file), `crates/rmux-app/src/ui/terminal_pane.rs` (rendering pattern)
@@ -219,7 +219,7 @@ Comprehensive registry + dispatch tests run; final verification wave F1-F4.
   Evidence: screenshot or test result
   Commit: Y | `feat(ui): tab bar for multi-surface panes`
 
-- [ ] 11. Add `ToggleCopyMode` flag on `TerminalPane` with getter/setter and copy-mode visual indicator
+- [x] 11. Add `ToggleCopyMode` flag on `TerminalPane` with getter/setter and copy-mode visual indicator
   What to do: In `crates/rmux-app/src/ui/terminal_pane.rs`, add `copy_mode: bool` field on `TerminalPane`. In copy mode, the terminal pane swallows mouse events for selection instead of forwarding to PTY, and renders a `[COPY]` indicator in the title bar. Add `toggle_copy_mode()`, `is_copy_mode()` methods. Tests: `test_copy_mode_toggle`, `test_copy_mode_default_false`.
   Parallelization: Wave 3 | Blocked by: — | Blocks: 14, 15, 16
   References: `crates/rmux-app/src/ui/terminal_pane.rs` (struct definition)
@@ -230,7 +230,7 @@ Comprehensive registry + dispatch tests run; final verification wave F1-F4.
   Evidence: test log
   Commit: Y | `feat(terminal): add copy mode flag`
 
-- [ ] 12. Add `right_sidebar_visible: bool` to `SidebarView` and `ToggleRightSidebar` action
+- [x] 12. Add `right_sidebar_visible: bool` to `SidebarView` and `ToggleRightSidebar` action
   What to do: In `crates/rmux-app/src/ui/sidebar.rs`, add `right_sidebar_visible: bool` field with `toggle_right()` method. In `crates/rmux-app/src/shortcuts.rs`, register `Cmd+Opt+B → ToggleRightSidebar` (using `cmd_alt()` helper). In `app.rs`, render the right sidebar panel conditionally on `right_sidebar_visible`. Reuse the existing notification panel as the "right sidebar" content for now. Tests: `test_toggle_right_sidebar_initial_false`, `test_toggle_right_sidebar_flips_state`.
   Parallelization: Wave 3 | Blocked by: — | Blocks: 14, 15, 16
   References: `crates/rmux-app/src/ui/sidebar.rs` (struct), `crates/rmux-app/src/app.rs:119-139` (panel rendering), `crates/rmux-app/src/ui/notification_panel.rs`

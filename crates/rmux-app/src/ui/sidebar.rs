@@ -57,6 +57,14 @@ struct TabData {
 pub struct SidebarView {
     /// Whether the sidebar is currently visible.
     pub visible: bool,
+    /// Whether the right-side notification panel is currently visible.
+    ///
+    /// Mirrors `NotificationPanel::visible` and is flipped by the
+    /// `Cmd+Opt+B` shortcut (cmux) and the top-bar right toggle. The
+    /// notification panel is rendered when *either* this flag OR
+    /// `notification_panel.visible` is true, so both code paths
+    /// (`Cmd+I` and `Cmd+Opt+B`) can drive the same right side.
+    pub right_sidebar_visible: bool,
     /// Index of the card currently being renamed (None if not renaming).
     editing_index: Option<usize>,
     /// Temporary buffer for the rename text edit.
@@ -65,7 +73,12 @@ pub struct SidebarView {
 
 impl Default for SidebarView {
     fn default() -> Self {
-        Self { visible: true, editing_index: None, edit_buffer: String::new() }
+        Self {
+            visible: true,
+            right_sidebar_visible: false,
+            editing_index: None,
+            edit_buffer: String::new(),
+        }
     }
 }
 
@@ -93,6 +106,26 @@ impl SidebarView {
     pub fn toggle(&mut self) {
         self.visible = !self.visible;
         tracing::debug!(visible = self.visible, "Sidebar toggled");
+    }
+
+    /// Toggle the right-side notification panel (cmux `Cmd+Opt+B`).
+    ///
+    /// Flips the `right_sidebar_visible` flag; the app's render loop
+    /// reads it via [`Self::is_right_visible`] to decide whether to
+    /// draw the notification panel on the right edge.
+    #[allow(dead_code)] // wired by Wave 4 `ToggleRightSidebar` dispatcher
+    pub fn toggle_right(&mut self) {
+        self.right_sidebar_visible = !self.right_sidebar_visible;
+        tracing::debug!(right_visible = self.right_sidebar_visible, "Right sidebar toggled");
+    }
+
+    /// Whether the right-side notification panel should be shown by
+    /// the `Cmd+Opt+B` path. The existing `Cmd+I` path uses
+    /// `NotificationPanel::visible` independently; the app merges
+    /// both in the render loop so the panel appears whichever
+    /// toggle fired.
+    pub fn is_right_visible(&self) -> bool {
+        self.right_sidebar_visible
     }
 
     /// Render the sidebar inside an `egui::SidePanel`.
@@ -550,4 +583,31 @@ fn render_new_workspace_button(ui: &mut egui::Ui) -> bool {
         .on_hover_cursor(egui::CursorIcon::PointingHand)
         .on_hover_text(format!("New workspace ({shortcut_hint})"));
     response.clicked()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_right_sidebar_default_false() {
+        let sidebar = SidebarView::new();
+        assert!(!sidebar.is_right_visible());
+    }
+
+    #[test]
+    fn test_right_sidebar_toggle_flips_state() {
+        let mut sidebar = SidebarView::new();
+        assert!(!sidebar.is_right_visible());
+        sidebar.toggle_right();
+        assert!(sidebar.is_right_visible());
+    }
+
+    #[test]
+    fn test_right_sidebar_toggle_twice_returns_to_false() {
+        let mut sidebar = SidebarView::new();
+        sidebar.toggle_right();
+        sidebar.toggle_right();
+        assert!(!sidebar.is_right_visible());
+    }
 }

@@ -122,6 +122,7 @@ impl eframe::App for RmuxApp {
             &self.notifications,
             &mut self.sidebar.visible,
             &mut self.notification_panel.visible,
+            &mut self.sidebar.right_sidebar_visible,
         );
         crate::ui::status_bar::show(ctx, &self.workspace_manager, &self.notifications);
 
@@ -135,8 +136,16 @@ impl eframe::App for RmuxApp {
             tracing::info!(workspace_id = ws, "Created workspace via sidebar button");
         }
 
-        // Render the notification panel (right panel, before the central panel)
-        self.notification_panel.show(ctx, &mut self.notifications, &mut self.workspace_manager);
+        // Render the notification panel (right panel, before the central
+        // panel). The panel is shown when EITHER `Cmd+Opt+B` (right
+        // sidebar toggle) OR `Cmd+I` (legacy notification bell) is on.
+        // `visible = true` is forced for this frame so the panel's
+        // self-gate lets the call through when the right sidebar is
+        // the driver; both toggles remain independently owned.
+        if self.sidebar.is_right_visible() || self.notification_panel.visible {
+            self.notification_panel.visible = true;
+            self.notification_panel.show(ctx, &mut self.notifications, &mut self.workspace_manager);
+        }
 
         // Render the workspace view (central panel)
         self.render_workspace(ctx);
@@ -349,9 +358,12 @@ impl RmuxApp {
     /// Render the workspace area in the central panel of the window.
     fn render_workspace(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
-            let ws = self.workspace_manager.active_mut();
-            let zoomed = ws.zoomed_pane;
-            workspace_view::render_pane_tree(ui, &mut ws.root, &mut ws.active_pane, zoomed);
+            // Snapshot the zoomed pane id with an immutable borrow, then
+            // hand the manager (and the snapshot) to the renderer. The
+            // renderer buffers tab-bar actions internally and replays
+            // them after the tree-walk's `&mut Workspace` borrow ends.
+            let zoomed = self.workspace_manager.active().zoomed_pane;
+            workspace_view::render_pane_tree(ui, &mut self.workspace_manager, zoomed);
         });
     }
 }

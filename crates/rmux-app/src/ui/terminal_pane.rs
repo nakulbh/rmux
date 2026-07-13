@@ -17,6 +17,9 @@ pub const DEFAULT_FONT_SIZE: f32 = 14.0;
 /// Height of the find bar in pixels.
 const FIND_BAR_HEIGHT: f32 = 28.0;
 
+/// Appended to the pane title when [`TerminalPane::is_copy_mode`] is true.
+pub const COPY_MODE_INDICATOR: &str = " [COPY]";
+
 /// A terminal pane that manages a PTY process and its rendering.
 ///
 /// Each pane spawns a shell process, manages the PTY I/O via a
@@ -67,6 +70,13 @@ pub struct TerminalPane {
     find_results: Vec<(usize, usize)>,
     /// Index into `find_results` for the currently highlighted match.
     find_index: usize,
+
+    /// Whether the pane is currently in copy mode (cmux `Cmd+Shift+M`).
+    /// The flag is the only state for now — actual copy-mode behaviour
+    /// (vim-style scrollback nav, selection) is out of scope and will
+    /// be wired up in a later wave. The flag alone is enough to drive
+    /// the title-bar indicator and to give the dispatcher a hook.
+    copy_mode: bool,
 
     // Dimension overlay state
     /// Whether the "cols×rows" dimension overlay is currently visible.
@@ -151,6 +161,7 @@ impl TerminalPane {
             find_query: String::new(),
             find_results: Vec::new(),
             find_index: 0,
+            copy_mode: false,
             dimension_overlay_visible: false,
             dimension_overlay_timer: 0.0_f64,
         })
@@ -253,6 +264,8 @@ impl TerminalPane {
         // Toggle cursor blink
         self.show_cursor = (ui.input(|i| i.time) as u64 % 1000) < 500;
 
+        self.show_title_bar(ui, rect);
+
         // Take a snapshot of the terminal grid and render it
         let snapshot = self.state.snapshot();
         self.renderer.draw(ui, rect, &snapshot, self.show_cursor);
@@ -328,6 +341,39 @@ impl TerminalPane {
                 self.dimension_overlay_visible = false;
             }
         }
+    }
+
+    /// Render the pane title in the top-left corner of the terminal area.
+    ///
+    /// Drawn before the terminal snapshot so it sits as chrome on top
+    /// of the grid (no row is consumed). The text is `self.name` plus
+    /// [`COPY_MODE_INDICATOR`] when `self.copy_mode` is true. The
+    /// string concatenation is the single point that flips on
+    /// `copy_mode` — keep it that way so a future change to the
+    /// indicator or the trigger condition is a one-line edit.
+    fn show_title_bar(&self, ui: &egui::Ui, rect: egui::Rect) {
+        let title = if self.copy_mode {
+            format!("{}{}", self.name, COPY_MODE_INDICATOR)
+        } else {
+            self.name.clone()
+        };
+        let palette = theme::palette();
+        let font = egui::FontId::monospace(10.0_f32);
+        let galley = ui.painter().layout_no_wrap(title.clone(), font.clone(), palette.text_muted);
+        let pad = 2.0_f32;
+        let badge_size =
+            egui::vec2(galley.size().x + pad * 2.0_f32, galley.size().y + pad * 2.0_f32);
+        let badge_min = egui::Pos2::new(rect.left() + 4.0_f32, rect.top() + 4.0_f32);
+        let badge_rect = egui::Rect::from_min_size(badge_min, badge_size);
+        let painter = ui.painter();
+        painter.rect_filled(badge_rect, egui::CornerRadius::same(2), palette.panel_bg);
+        painter.text(
+            badge_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            title,
+            font,
+            palette.text_muted,
+        );
     }
 
     /// Handle keyboard input events when this pane is focused.
@@ -553,6 +599,22 @@ impl TerminalPane {
     /// Whether the find/search bar is currently visible.
     pub fn is_find_visible(&self) -> bool {
         self.find_visible
+    }
+
+    /// Flip the copy-mode flag and return its new value.
+    ///
+    /// Bound to the cmux `Cmd+Shift+M` shortcut (registered in
+    /// Wave 1). The flag itself is the only state for now; actual
+    /// copy-mode behaviour (vim-style scrollback nav, selection) is
+    /// out of scope and will be wired up in a later wave.
+    pub fn toggle_copy_mode(&mut self) -> bool {
+        self.copy_mode = !self.copy_mode;
+        self.copy_mode
+    }
+
+    /// Whether the pane is currently in copy mode.
+    pub fn is_copy_mode(&self) -> bool {
+        self.copy_mode
     }
 
     /// Close the find bar and clear search state.
@@ -833,5 +895,39 @@ impl TerminalPane {
             self.find_results.clear();
             self.find_index = 0;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_copy_mode_default_false() {
+        let pane = TerminalPane::spawn(1, 1, 14.0_f32).expect("PTY spawn should succeed");
+        assert!(!pane.is_copy_mode(), "new pane should not be in copy mode");
+    }
+
+    #[test]
+    fn test_copy_mode_toggle_flips_state() {
+        let mut pane = TerminalPane::spawn(1, 1, 14.0_f32).expect("PTY spawn should succeed");
+        let new_state = pane.toggle_copy_mode();
+        assert!(new_state, "toggle_copy_mode should return the new value (true)");
+        assert!(pane.is_copy_mode(), "is_copy_mode should reflect the toggled state");
+    }
+
+    #[test]
+    fn test_copy_mode_toggle_twice_returns_to_false() {
+        let mut pane = TerminalPane::spawn(1, 1, 14.0_f32).expect("PTY spawn should succeed");
+        let _ = pane.toggle_copy_mode();
+        let final_state = pane.toggle_copy_mode();
+        assert!(!final_state, "two toggles should return the original state");
+        assert!(!pane.is_copy_mode(), "is_copy_mode should report the original state");
+    }
+
+    #[test]
+    fn test_copy_mode_indicator_constant_present() {
+        assert_eq!(COPY_MODE_INDICATOR, " [COPY]");
+        assert!(!COPY_MODE_INDICATOR.is_empty());
     }
 }
