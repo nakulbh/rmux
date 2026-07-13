@@ -72,6 +72,42 @@ pub enum ShortcutAction {
     FocusUp,
     /// Focus pane below.
     FocusDown,
+
+    // --- cmux shortcuts (added in feat/fix-keybindings) ---
+    /// Create a new surface (tab) in the active workspace.
+    NewSurface,
+    /// Move focus to the next surface.
+    NextSurface,
+    /// Move focus to the previous surface.
+    PreviousSurface,
+    /// Select a surface by 1-based index (1-9).
+    SelectSurface(usize),
+    /// Rename the active tab.
+    RenameTab,
+    /// Close the active tab.
+    CloseTab,
+    /// Close all tabs except the active one.
+    CloseOtherTabs,
+    /// Reopen the most recently closed tab.
+    ReopenLastClosed,
+    /// Toggle copy mode (vim-style scrollback navigation).
+    ToggleCopyMode,
+    /// Split the browser pane to the right (stub: not yet implemented).
+    SplitBrowserRight,
+    /// Split the browser pane downward (stub: not yet implemented).
+    SplitBrowserDown,
+    /// Toggle visibility of the right sidebar.
+    ToggleRightSidebar,
+    /// Open a new window (stub: not yet implemented).
+    NewWindow,
+    /// Close the current window (stub: not yet implemented).
+    CloseWindow,
+    /// Alternate binding for [`ShortcutAction::EqualizeSplits`].
+    EqualizeSplitsAlt,
+    /// Alternate binding for [`ShortcutAction::PrevWorkspace`].
+    PrevWorkspaceAlt,
+    /// Alternate binding for [`ShortcutAction::NextWorkspace`].
+    NextWorkspaceAlt,
 }
 
 /// Registry that maps keyboard chords to [`ShortcutAction`]s.
@@ -182,6 +218,11 @@ impl Default for ShortcutRegistry {
         reg.register(cmd_ctrl(), Key::L, ShortcutAction::FocusBrowserUrlBar);
 
         // Cmd/Ctrl+R → ReloadBrowser (when browser active)
+        // TODO: integrate with RenameTab when browser is not active. cmux uses Cmd+R
+        // for rename-tab in non-browser context and reload in browser context — the
+        // dispatch handler should pick the right action based on context. Cannot bind
+        // both to the same chord in this HashMap registry; browser reload takes
+        // priority for now (this matches existing behavior).
         reg.register(cmd_ctrl(), Key::R, ShortcutAction::ReloadBrowser);
 
         // Cmd/Ctrl+1..9 → SwitchWorkspace(0..8)
@@ -217,17 +258,86 @@ impl Default for ShortcutRegistry {
         // Cmd/Ctrl+Shift+] → NextWorkspace
         reg.register(cmd_ctrl_shift(), Key::CloseBracket, ShortcutAction::NextWorkspace);
 
-        // Cmd/Ctrl+ArrowLeft → FocusLeft
-        reg.register(cmd_ctrl(), Key::ArrowLeft, ShortcutAction::FocusLeft);
+        // Cmd/Ctrl+Opt/Alt+ArrowLeft → FocusLeft
+        reg.register(cmd_ctrl_alt(), Key::ArrowLeft, ShortcutAction::FocusLeft);
 
-        // Cmd/Ctrl+ArrowUp → FocusUp
-        reg.register(cmd_ctrl(), Key::ArrowUp, ShortcutAction::FocusUp);
+        // Cmd/Ctrl+Opt/Alt+ArrowUp → FocusUp
+        reg.register(cmd_ctrl_alt(), Key::ArrowUp, ShortcutAction::FocusUp);
 
         // Cmd/Ctrl+Opt/Alt+ArrowRight → FocusRight
         reg.register(cmd_ctrl_alt(), Key::ArrowRight, ShortcutAction::FocusRight);
 
         // Cmd/Ctrl+Opt/Alt+ArrowDown → FocusDown
         reg.register(cmd_ctrl_alt(), Key::ArrowDown, ShortcutAction::FocusDown);
+
+        // --- cmux shortcuts (W1.2) ---
+
+        // ⌘T → New surface
+        reg.register(cmd_ctrl(), Key::T, ShortcutAction::NewSurface);
+
+        // ⌘⇧] → Next surface
+        reg.register(cmd_ctrl_shift(), Key::CloseBracket, ShortcutAction::NextSurface);
+
+        // ⌘⇧[ → Previous surface
+        reg.register(cmd_ctrl_shift(), Key::OpenBracket, ShortcutAction::PreviousSurface);
+
+        // ⌃1..9 → Select surface N (macOS-only Ctrl, no Cmd — see `ctrl_only` doc)
+        for (i, key) in [
+            Key::Num1,
+            Key::Num2,
+            Key::Num3,
+            Key::Num4,
+            Key::Num5,
+            Key::Num6,
+            Key::Num7,
+            Key::Num8,
+            Key::Num9,
+        ]
+        .iter()
+        .enumerate()
+        {
+            reg.register(ctrl_only(), *key, ShortcutAction::SelectSurface(i));
+        }
+
+        // NOTE: Cmd/Ctrl+R → RenameTab is NOT registered here because the chord
+        // conflicts with `cmd_ctrl() + Key::R → ReloadBrowser` above. cmux
+        // resolves this in the dispatcher (rename when no browser, reload when
+        // browser is focused). The dispatcher (Todo 14) should handle that
+        // disambiguation, and a future iteration can add a `cmd_ctrl_shift()
+        // + Key::R → RenameTab` fallback if needed.
+
+        // ⌘W → Close tab (dispatcher picks ClosePane vs CloseTab based on
+        // whether the active container is a single pane or a tab with multiple
+        // surfaces; the existing ⌘W → ClosePane is kept above for the
+        // single-pane case)
+        reg.register(cmd_ctrl(), Key::W, ShortcutAction::CloseTab);
+
+        // ⌥⌘T → Close other tabs
+        reg.register(cmd_alt(), Key::T, ShortcutAction::CloseOtherTabs);
+
+        // ⌘⇧T → Reopen last closed tab
+        reg.register(cmd_ctrl_shift(), Key::T, ShortcutAction::ReopenLastClosed);
+
+        // ⌘⇧M → Toggle copy mode (vim-style scrollback navigation)
+        reg.register(cmd_ctrl_shift(), Key::M, ShortcutAction::ToggleCopyMode);
+
+        // ⌥⌘D → Split browser right
+        reg.register(cmd_alt(), Key::D, ShortcutAction::SplitBrowserRight);
+
+        // ⌥⌘⇧D → Split browser down
+        reg.register(cmd_alt_shift(), Key::D, ShortcutAction::SplitBrowserDown);
+
+        // ⌥⌘B → Toggle right sidebar
+        reg.register(cmd_alt(), Key::B, ShortcutAction::ToggleRightSidebar);
+
+        // ⌃⌘= → Equalize splits (alt binding, alias for EqualizeSplits)
+        reg.register(Modifiers::CTRL | Modifiers::COMMAND, Key::Equals, ShortcutAction::EqualizeSplitsAlt);
+
+        // ⌃⌘⇧[ → Previous workspace (alt binding, alias for PrevWorkspace)
+        reg.register(Modifiers::CTRL | Modifiers::COMMAND | Modifiers::SHIFT, Key::OpenBracket, ShortcutAction::PrevWorkspaceAlt);
+
+        // ⌃⌘⇧] → Next workspace (alt binding, alias for NextWorkspace)
+        reg.register(Modifiers::CTRL | Modifiers::COMMAND | Modifiers::SHIFT, Key::CloseBracket, ShortcutAction::NextWorkspaceAlt);
 
         reg
     }
@@ -255,6 +365,21 @@ pub(crate) fn cmd_alt() -> Modifiers {
     cmd_ctrl() | Modifiers::ALT
 }
 
+/// `cmd_alt()` plus Shift.
+pub(crate) fn cmd_alt_shift() -> Modifiers {
+    cmd_alt() | Modifiers::SHIFT
+}
+
+/// Plain Ctrl modifier, platform-independent.
+///
+/// On macOS this is the physical Control key (NOT Command). cmux uses
+/// `⌃1..9` for surface selection, which is plain Ctrl — hence this helper
+/// instead of `cmd_ctrl()`. On Linux/Windows, Ctrl is the canonical
+/// app-shortcut modifier, so the lookup will still match.
+pub(crate) fn ctrl_only() -> Modifiers {
+    Modifiers::CTRL
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -277,5 +402,34 @@ mod tests {
         let reg = ShortcutRegistry::default();
         let mods = if cfg!(target_os = "macos") { Modifiers::COMMAND } else { Modifiers::CTRL };
         assert_eq!(reg.lookup(mods, Key::Num3), Some(ShortcutAction::SwitchWorkspace(2)));
+    }
+
+    /// All four pane-focus direction shortcuts must be registered with
+    /// `cmd_ctrl_alt()` (i.e. `Cmd+Opt+Arrow` on macOS, `Ctrl+Alt+Arrow` elsewhere).
+    /// This matches the cmux reference (`⌥⌘Arrow` for every direction) and
+    /// prevents the inconsistency where Left/Up were bare `Cmd+Arrow` while
+    /// Right/Down carried the Alt modifier.
+    #[test]
+    fn test_focus_modifiers_all_match_cmd_ctrl_alt() {
+        let reg = ShortcutRegistry::default();
+        let mods = cmd_ctrl_alt();
+        assert_eq!(reg.lookup(mods, Key::ArrowLeft), Some(ShortcutAction::FocusLeft));
+        assert_eq!(reg.lookup(mods, Key::ArrowRight), Some(ShortcutAction::FocusRight));
+        assert_eq!(reg.lookup(mods, Key::ArrowUp), Some(ShortcutAction::FocusUp));
+        assert_eq!(reg.lookup(mods, Key::ArrowDown), Some(ShortcutAction::FocusDown));
+    }
+
+    #[test]
+    fn test_focus_left_not_registered_for_bare_cmd_ctrl() {
+        let reg = ShortcutRegistry::default();
+        let mods = cmd_ctrl();
+        assert_eq!(reg.lookup(mods, Key::ArrowLeft), None);
+    }
+
+    #[test]
+    fn test_focus_up_not_registered_for_bare_cmd_ctrl() {
+        let reg = ShortcutRegistry::default();
+        let mods = cmd_ctrl();
+        assert_eq!(reg.lookup(mods, Key::ArrowUp), None);
     }
 }

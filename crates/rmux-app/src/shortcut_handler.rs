@@ -4,12 +4,31 @@ use crate::app::RmuxApp;
 use crate::shortcuts::ShortcutAction;
 use crate::workspace::splits::SplitDirection;
 
+/// Whether a [`ShortcutAction`] should still be dispatched when a text widget
+/// has keyboard focus (e.g. the terminal or its find bar).
+///
+/// These actions are "always-active" and must fire even while the user is
+/// typing into the terminal. All other actions (split, focus, rename, etc.)
+/// are skipped when text input is focused so we don't steal keystrokes
+/// from the terminal — in particular bare `Escape` and `Enter`, which are
+/// bound to `Find` / `FindNext` with `Modifiers::NONE`.
+fn should_dispatch_when_text_focused(action: ShortcutAction) -> bool {
+    matches!(
+        action,
+        ShortcutAction::Quit
+            | ShortcutAction::Copy
+            | ShortcutAction::FontSizeUp
+            | ShortcutAction::FontSizeDown
+            | ShortcutAction::FontSizeReset
+            | ShortcutAction::ClearScreen
+            | ShortcutAction::ClearScrollback
+    )
+}
+
 impl RmuxApp {
     /// Handle global keyboard shortcuts for workspace/pane operations.
     pub(crate) fn handle_keyboard_shortcuts(&mut self, ctx: &egui::Context) {
         let input = ctx.input(|i| i.clone());
-
-        // === Always-active shortcuts (work even when a text widget has focus) ===
 
         for event in &input.events {
             let egui::Event::Key { key, pressed: true, modifiers, .. } = event else {
@@ -43,54 +62,19 @@ impl RmuxApp {
                 m
             };
 
-            if let Some(action) = self.shortcut_registry.lookup(lookup_mods, *key)
-                && self.dispatch_shortcut_action(ctx, action, mod_active)
-            {
-                return; // Quit shortcut stops processing
-            }
-        }
-
-        // === Focus-dependent shortcuts (skip if any text widget is focused) ===
-
-        // Skip shortcuts if any text input is focused (don't steal typing from terminal)
-        if ctx.wants_keyboard_input() {
-            return;
-        }
-
-        for event in &input.events {
-            let egui::Event::Key { key, pressed: true, modifiers, .. } = event else {
+            let Some(action) = self.shortcut_registry.lookup(lookup_mods, *key) else {
                 continue;
             };
 
-            // On macOS, Cmd is for app shortcuts, Ctrl is for terminal control characters.
-            // On Linux/Windows, both are used for app shortcuts.
-            let mod_active = if cfg!(target_os = "macos") {
-                modifiers.command && !modifiers.ctrl
-            } else {
-                modifiers.command || modifiers.ctrl
-            };
+            // Skip focus-dependent actions when a text widget is focused so we
+            // don't steal keystrokes (especially bare Escape/Enter) from the
+            // terminal. Always-active actions fall through.
+            if ctx.wants_keyboard_input() && !should_dispatch_when_text_focused(action) {
+                continue;
+            }
 
-            // Normalize modifiers for lookup
-            let lookup_mods = if cfg!(target_os = "macos") && modifiers.command && modifiers.ctrl {
-                // Special case: macOS Ctrl+Cmd bracket chords
-                *modifiers
-            } else if cfg!(target_os = "macos") {
-                let mut m = *modifiers;
-                m.ctrl = false;
-                m
-            } else {
-                let mut m = *modifiers;
-                if m.command {
-                    m.command = false;
-                    m.ctrl = true;
-                }
-                m
-            };
-
-            if let Some(action) = self.shortcut_registry.lookup(lookup_mods, *key)
-                && self.dispatch_shortcut_action(ctx, action, mod_active)
-            {
-                return;
+            if self.dispatch_shortcut_action(ctx, action, mod_active) {
+                return; // Quit shortcut stops processing
             }
         }
     }
@@ -291,8 +275,95 @@ impl RmuxApp {
             ShortcutAction::FocusDown => {
                 self.workspace_manager.active_mut().focus_down();
             }
+
+            // Stub catch-all for cmux variants added in feat/fix-keybindings; real handlers land in Todo 14.
+            _ => {}
         }
 
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- Always-active actions (must dispatch even when text is focused) ---
+
+    #[test]
+    fn quit_dispatches_when_text_focused() {
+        assert!(should_dispatch_when_text_focused(ShortcutAction::Quit));
+    }
+
+    #[test]
+    fn copy_dispatches_when_text_focused() {
+        assert!(should_dispatch_when_text_focused(ShortcutAction::Copy));
+    }
+
+    #[test]
+    fn font_size_up_dispatches_when_text_focused() {
+        assert!(should_dispatch_when_text_focused(ShortcutAction::FontSizeUp));
+    }
+
+    #[test]
+    fn font_size_down_dispatches_when_text_focused() {
+        assert!(should_dispatch_when_text_focused(ShortcutAction::FontSizeDown));
+    }
+
+    #[test]
+    fn font_size_reset_dispatches_when_text_focused() {
+        assert!(should_dispatch_when_text_focused(ShortcutAction::FontSizeReset));
+    }
+
+    #[test]
+    fn clear_screen_dispatches_when_text_focused() {
+        assert!(should_dispatch_when_text_focused(ShortcutAction::ClearScreen));
+    }
+
+    #[test]
+    fn clear_scrollback_dispatches_when_text_focused() {
+        assert!(should_dispatch_when_text_focused(ShortcutAction::ClearScrollback));
+    }
+
+    // --- Focus-dependent actions (must be skipped when text is focused) ---
+
+    #[test]
+    fn find_skipped_when_text_focused() {
+        assert!(!should_dispatch_when_text_focused(ShortcutAction::Find));
+    }
+
+    #[test]
+    fn find_next_skipped_when_text_focused() {
+        assert!(!should_dispatch_when_text_focused(ShortcutAction::FindNext));
+    }
+
+    #[test]
+    fn switch_workspace_skipped_when_text_focused() {
+        assert!(!should_dispatch_when_text_focused(ShortcutAction::SwitchWorkspace(0)));
+    }
+
+    #[test]
+    fn split_right_skipped_when_text_focused() {
+        assert!(!should_dispatch_when_text_focused(ShortcutAction::SplitRight));
+    }
+
+    #[test]
+    fn split_down_skipped_when_text_focused() {
+        assert!(!should_dispatch_when_text_focused(ShortcutAction::SplitDown));
+    }
+
+    #[test]
+    fn focus_left_skipped_when_text_focused() {
+        assert!(!should_dispatch_when_text_focused(ShortcutAction::FocusLeft));
+    }
+
+    #[test]
+    fn toggle_sidebar_skipped_when_text_focused() {
+        assert!(!should_dispatch_when_text_focused(ShortcutAction::ToggleSidebar));
+    }
+
+    #[test]
+    fn rename_workspace_skipped_when_text_focused() {
+        assert!(!should_dispatch_when_text_focused(ShortcutAction::RenameWorkspace));
     }
 }
