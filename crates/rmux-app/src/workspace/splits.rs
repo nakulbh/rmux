@@ -10,6 +10,7 @@ use thiserror::Error;
 
 use crate::browser::BrowserPane;
 use crate::ui::TerminalPane;
+use super::surface::Surface;
 
 /// Error type for pane tree operations.
 #[derive(Error, Debug, PartialEq)]
@@ -83,7 +84,20 @@ impl SplitDirection {
 
 /// A node in the recursive pane tree.
 pub enum PaneNode {
-    Leaf { id: PaneId, terminal: Box<Option<TerminalPane>> },
+    Leaf {
+        id: PaneId,
+        /// Legacy slot kept for backward compat with `find_terminal_mut` /
+        /// `set_terminal`. Future waves will migrate these to operate on
+        /// `surfaces` directly.
+        terminal: Box<Option<TerminalPane>>,
+        /// Index into `surfaces` of the focused surface. Stays 0 when
+        /// `surfaces` is empty (the default for an uninitialized leaf).
+        active_surface: usize,
+        /// The list of surfaces (tabs) in this leaf. May be empty for an
+        /// uninitialized leaf; in that case `terminal` is the source of
+        /// truth and `terminal_count()` reports 1.
+        surfaces: Vec<Surface>,
+    },
     Browser { id: PaneId, browser: Box<BrowserPane> },
     Split { id: SplitId, direction: SplitDirection, children: Vec<PaneNode>, sizes: Vec<f32> },
 }
@@ -91,10 +105,12 @@ pub enum PaneNode {
 impl std::fmt::Debug for PaneNode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Leaf { id, terminal } => f
+            Self::Leaf { id, terminal, surfaces, active_surface, .. } => f
                 .debug_struct("Leaf")
                 .field("id", id)
                 .field("has_terminal", &terminal.is_some())
+                .field("surfaces", &surfaces.len())
+                .field("active_surface", active_surface)
                 .finish(),
             Self::Browser { id, browser } => {
                 f.debug_struct("Browser").field("id", id).field("url", &browser.url()).finish()
@@ -112,11 +128,32 @@ impl std::fmt::Debug for PaneNode {
 
 impl PaneNode {
     pub fn new_leaf(id: PaneId) -> Self {
-        Self::Leaf { id, terminal: Box::new(None) }
+        Self::Leaf {
+            id,
+            terminal: Box::new(None),
+            active_surface: 0,
+            surfaces: Vec::new(),
+        }
     }
 
     pub fn new_leaf_with_terminal(id: PaneId, terminal: TerminalPane) -> Self {
-        Self::Leaf { id, terminal: Box::new(Some(terminal)) }
+        Self::Leaf {
+            id,
+            terminal: Box::new(Some(terminal)),
+            active_surface: 0,
+            surfaces: Vec::new(),
+        }
+    }
+
+    /// Build a Leaf with a single surface wrapping `terminal`.
+    pub fn leaf_with_surfaces(id: PaneId, terminal: TerminalPane) -> Self {
+        let surface = Surface::new(super::surface::SurfaceId(1), "Terminal 1", terminal);
+        Self::Leaf {
+            id,
+            terminal: Box::new(None),
+            active_surface: 0,
+            surfaces: vec![surface],
+        }
     }
 
     pub fn new_browser(id: PaneId, browser: BrowserPane) -> Self {
@@ -151,7 +188,7 @@ impl PaneNode {
 
     pub fn find_terminal_mut(&mut self, target: PaneId) -> Option<&mut Option<TerminalPane>> {
         match self {
-            Self::Leaf { id, terminal } if *id == target => Some(terminal.as_mut()),
+            Self::Leaf { id, terminal, .. } if *id == target => Some(terminal.as_mut()),
             Self::Leaf { .. } => None,
             Self::Browser { .. } => None,
             Self::Split { children, .. } => {
@@ -217,7 +254,7 @@ impl PaneNode {
     /// OSC notifications (tagged with their pane id) into `notifications`.
     pub fn process_pty_outputs(&mut self, notifications: &mut Vec<(PaneId, OscNotification)>) {
         match self {
-            Self::Leaf { id, terminal } => {
+            Self::Leaf { id, terminal, .. } => {
                 if let Some(t) = terminal.as_mut() {
                     t.process_pty_output();
                     notifications.extend(t.take_notifications().into_iter().map(|n| (*id, n)));
@@ -248,7 +285,7 @@ impl PaneNode {
 
     pub fn find_leaf(&self, target: PaneId) -> Option<&Option<TerminalPane>> {
         match self {
-            Self::Leaf { id, terminal } if *id == target => Some(terminal.as_ref()),
+            Self::Leaf { id, terminal, .. } if *id == target => Some(terminal.as_ref()),
             Self::Leaf { .. } => None,
             Self::Browser { .. } => None,
             Self::Split { children, .. } => children.iter().find_map(|c| c.find_leaf(target)),
@@ -413,7 +450,7 @@ impl PaneNode {
 
     pub fn leaf_panes(&self) -> Vec<(PaneId, Option<&TerminalPane>)> {
         match self {
-            Self::Leaf { id, terminal } => vec![(*id, terminal.as_ref().as_ref())],
+            Self::Leaf { id, terminal, .. } => vec![(*id, terminal.as_ref().as_ref())],
             Self::Browser { .. } => vec![],
             Self::Split { children, .. } => children.iter().flat_map(|c| c.leaf_panes()).collect(),
         }
@@ -466,7 +503,7 @@ impl PaneNode {
 impl PaneNode {
     pub fn leaf_panes_mut(&mut self) -> Vec<(PaneId, &mut Option<TerminalPane>)> {
         match self {
-            Self::Leaf { id, terminal } => vec![(*id, terminal.as_mut())],
+            Self::Leaf { id, terminal, .. } => vec![(*id, terminal.as_mut())],
             Self::Browser { .. } => vec![],
             Self::Split { children, .. } => {
                 children.iter_mut().flat_map(|c| c.leaf_panes_mut()).collect()
@@ -496,7 +533,7 @@ impl PaneNode {
     /// Collect pane IDs whose terminal process has exited.
     pub fn collect_exited_panes(&self) -> Vec<PaneId> {
         match self {
-            Self::Leaf { id, terminal } => {
+            Self::Leaf { id, terminal, .. } => {
                 if terminal.as_ref().as_ref().is_some_and(|t| t.is_exited()) {
                     vec![*id]
                 } else {
@@ -507,6 +544,125 @@ impl PaneNode {
             Self::Split { children, .. } => {
                 children.iter().flat_map(|c| c.collect_exited_panes()).collect()
             }
+        }
+    }
+
+    /// The list of surfaces (tabs) in this leaf, or an empty slice for
+    /// non-leaf nodes.
+    pub fn leaf_surfaces(&self) -> &[Surface] {
+        match self {
+            Self::Leaf { surfaces, .. } => surfaces,
+            _ => &[],
+        }
+    }
+
+    /// Mutable access to the leaf's surface list. Panics if called on a
+    /// non-leaf node — callers should gate with `is_leaf()` first.
+    pub fn leaf_surfaces_mut(&mut self) -> &mut Vec<Surface> {
+        match self {
+            Self::Leaf { surfaces, .. } => surfaces,
+            _ => panic!("leaf_surfaces_mut called on non-leaf node"),
+        }
+    }
+
+    /// Index of the currently focused surface. Returns 0 for non-leaf
+    /// nodes; use [`Self::active_surface`] to check for `Some`.
+    pub fn active_surface_index(&self) -> usize {
+        match self {
+            Self::Leaf { active_surface, .. } => *active_surface,
+            _ => 0,
+        }
+    }
+
+    /// Set the focused surface index without bounds checking. The caller
+    /// is responsible for keeping `idx < leaf_surfaces().len()`.
+    pub fn set_active_surface_index(&mut self, idx: usize) {
+        if let Self::Leaf { active_surface, .. } = self {
+            *active_surface = idx;
+        }
+    }
+
+    /// Append a new surface to the leaf. No-op for non-leaf nodes.
+    pub fn add_surface(&mut self, surface: Surface) {
+        if let Self::Leaf { surfaces, .. } = self {
+            surfaces.push(surface);
+        }
+    }
+
+    /// Remove the surface at `idx` and adjust `active_surface` so focus
+    /// stays close to the removed slot. Clamps to `len - 1` when the
+    /// active index was past the new end. Returns `None` for out-of-bounds
+    /// `idx` or non-leaf nodes.
+    pub fn remove_surface(&mut self, idx: usize) -> Option<Surface> {
+        let Self::Leaf { surfaces, active_surface, .. } = self else {
+            return None;
+        };
+        if idx >= surfaces.len() {
+            return None;
+        }
+        let removed = surfaces.remove(idx);
+        let new_len = surfaces.len();
+        if *active_surface >= new_len {
+            *active_surface = new_len.saturating_sub(1);
+        } else if *active_surface == idx {
+            *active_surface = (*active_surface).min(new_len.saturating_sub(1));
+        }
+        Some(removed)
+    }
+
+    /// The currently focused surface, or `None` for a leaf with no
+    /// surfaces (or for a non-leaf node).
+    pub fn active_surface(&self) -> Option<&Surface> {
+        match self {
+            Self::Leaf { surfaces, active_surface, .. } => surfaces.get(*active_surface),
+            _ => None,
+        }
+    }
+
+    /// Mutable reference to the currently focused surface.
+    pub fn active_surface_mut(&mut self) -> Option<&mut Surface> {
+        match self {
+            Self::Leaf { surfaces, active_surface, .. } => surfaces.get_mut(*active_surface),
+            _ => None,
+        }
+    }
+
+    /// The active surface's terminal, falling back to the legacy
+    /// `terminal` slot when the surfaces list is empty. This keeps
+    /// uninitialized leaves (legacy `set_terminal` flow) working until
+    /// callers are migrated to operate on surfaces directly.
+    pub fn active_terminal(&self) -> Option<&TerminalPane> {
+        match self {
+            Self::Leaf { surfaces, active_surface, terminal, .. } => surfaces
+                .get(*active_surface)
+                .map(|s| &s.terminal)
+                .or_else(|| terminal.as_ref().as_ref()),
+            _ => None,
+        }
+    }
+
+    /// Mutable reference to the active surface's terminal. Same fallback
+    /// rules as [`Self::active_terminal`].
+    pub fn active_terminal_mut(&mut self) -> Option<&mut TerminalPane> {
+        match self {
+            Self::Leaf { surfaces, active_surface, terminal, .. } => {
+                if surfaces.is_empty() {
+                    terminal.as_mut().as_mut()
+                } else {
+                    surfaces.get_mut(*active_surface).map(|s| &mut s.terminal)
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Number of terminals in this leaf. Returns `max(surfaces.len(), 1)`
+    /// so an uninitialized leaf (empty `surfaces`) still counts as 1,
+    /// matching the pre-existing `pane_count()` semantics.
+    pub fn terminal_count(&self) -> usize {
+        match self {
+            Self::Leaf { surfaces, .. } => surfaces.len().max(1),
+            _ => 0,
         }
     }
 }
@@ -687,5 +843,106 @@ mod tests {
             assert!((sizes[0] - 0.5).abs() < f32::EPSILON);
             assert!((sizes[1] - 0.5).abs() < f32::EPSILON);
         }
+    }
+
+    // ----- W2.1: Surface accessors on PaneNode::Leaf -----
+
+    use crate::ui::TerminalPane;
+    use super::super::surface::{Surface, SurfaceId};
+
+    fn make_surface(id: u64, title: &str) -> Surface {
+        let term = TerminalPane::spawn(1, 1, 14.0).expect("dummy terminal spawn");
+        Surface::new(SurfaceId(id), title, term)
+    }
+
+    #[test]
+    fn test_leaf_holds_multiple_surfaces() {
+        let mut leaf = PaneNode::new_leaf(PaneId(1));
+        assert_eq!(leaf.terminal_count(), 1);
+        assert_eq!(leaf.leaf_surfaces().len(), 0);
+
+        leaf.add_surface(make_surface(1, "Terminal 1"));
+        leaf.add_surface(make_surface(2, "Terminal 2"));
+        leaf.add_surface(make_surface(3, "Terminal 3"));
+
+        assert_eq!(leaf.leaf_surfaces().len(), 3);
+        assert_eq!(leaf.terminal_count(), 3);
+        assert_eq!(leaf.leaf_surfaces()[0].title, "Terminal 1");
+        assert_eq!(leaf.leaf_surfaces()[2].title, "Terminal 3");
+    }
+
+    #[test]
+    fn test_active_surface_default_is_zero() {
+        let leaf = PaneNode::new_leaf(PaneId(1));
+        assert_eq!(leaf.active_surface_index(), 0);
+        assert!(leaf.active_surface().is_none());
+        assert!(leaf.active_terminal().is_none());
+    }
+
+    #[test]
+    fn test_remove_surface_clamps_active_index() {
+        let mut leaf = PaneNode::new_leaf(PaneId(1));
+        leaf.add_surface(make_surface(1, "A"));
+        leaf.add_surface(make_surface(2, "B"));
+        leaf.add_surface(make_surface(3, "C"));
+        leaf.set_active_surface_index(1);
+        assert_eq!(leaf.active_surface_index(), 1);
+
+        // Remove the active surface. Focus stays at idx 1, which now
+        // holds "C" (was idx 2). min(removed_idx, new_len-1) = min(1, 1) = 1.
+        let removed = leaf.remove_surface(1);
+        assert!(removed.is_some());
+        assert_eq!(leaf.leaf_surfaces().len(), 2);
+        assert_eq!(leaf.active_surface_index(), 1);
+        assert_eq!(leaf.leaf_surfaces()[1].title, "C");
+
+        // Active was beyond the new len — clamp to last valid index.
+        leaf.set_active_surface_index(99);
+        let _ = leaf.remove_surface(1);
+        assert_eq!(leaf.leaf_surfaces().len(), 1);
+        assert_eq!(leaf.active_surface_index(), 0);
+
+        // Removing the only remaining surface leaves an empty leaf.
+        // saturating_sub on an empty vec is 0.
+        let _ = leaf.remove_surface(0);
+        assert_eq!(leaf.leaf_surfaces().len(), 0);
+        assert_eq!(leaf.active_surface_index(), 0);
+    }
+
+    #[test]
+    fn test_active_terminal_returns_active_surface_terminal() {
+        let mut leaf = PaneNode::new_leaf(PaneId(1));
+        leaf.add_surface(make_surface(1, "First"));
+        leaf.add_surface(make_surface(2, "Second"));
+
+        assert!(leaf.active_terminal().is_some());
+        assert_eq!(leaf.active_surface().unwrap().title, "First");
+        let first_name = leaf.leaf_surfaces()[0].terminal.name();
+        assert_eq!(leaf.active_terminal().unwrap().name(), first_name);
+
+        leaf.set_active_surface_index(1);
+        assert_eq!(leaf.active_surface().unwrap().title, "Second");
+        let second_name = leaf.leaf_surfaces()[1].terminal.name();
+        assert_eq!(leaf.active_terminal().unwrap().name(), second_name);
+
+        let term_mut = leaf.active_terminal_mut().expect("active terminal");
+        assert!(!term_mut.has_focus());
+    }
+
+    #[test]
+    fn test_add_surface_does_not_change_active() {
+        let mut leaf = PaneNode::new_leaf(PaneId(1));
+        leaf.add_surface(make_surface(1, "A"));
+        leaf.set_active_surface_index(0);
+        assert_eq!(leaf.active_surface_index(), 0);
+
+        leaf.add_surface(make_surface(2, "B"));
+        assert_eq!(leaf.active_surface_index(), 0);
+        assert_eq!(leaf.active_surface().unwrap().title, "A");
+
+        leaf.add_surface(make_surface(3, "C"));
+        leaf.add_surface(make_surface(4, "D"));
+        assert_eq!(leaf.active_surface_index(), 0);
+        assert_eq!(leaf.active_surface().unwrap().title, "A");
     }
 }

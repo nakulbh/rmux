@@ -76,7 +76,7 @@ fn render_node(ui: &mut egui::Ui, node: &mut PaneNode, rect: Rect, active_pane: 
     // The match borrows `node`. We collect a resize request (if any) so we can
     // apply it *after* the match releases the borrow.
     let resize_request: Option<(SplitId, usize, f32)> = match node {
-        PaneNode::Leaf { id, terminal } => {
+        PaneNode::Leaf { id, terminal, .. } => {
             let is_active = *id == *active_pane;
             render_leaf(ui, *id, terminal.as_mut(), rect, is_active, active_pane);
             None

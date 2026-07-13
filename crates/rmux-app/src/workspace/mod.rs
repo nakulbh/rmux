@@ -11,6 +11,7 @@
 
 pub mod model;
 pub mod splits;
+pub mod surface;
 
 use model::{Workspace, WorkspaceId};
 use rmux_terminal::OscNotification;

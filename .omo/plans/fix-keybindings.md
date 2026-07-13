@@ -152,7 +152,7 @@ Comprehensive registry + dispatch tests run; final verification wave F1-F4.
   Commit: N
 
 ### Wave 2 — Tab (Surface) model
-- [ ] 5. Add `Surface` struct and `SurfaceId` in new file `crates/rmux-app/src/workspace/surface.rs`
+- [x] 5. Add `Surface` struct and `SurfaceId` in new file `crates/rmux-app/src/workspace/surface.rs`
   What to do: New file. `Surface { id: SurfaceId(u64), title: String, terminal: TerminalPane }`. Add `SurfaceId(u64)` with `Copy, Clone, Eq, PartialEq, Debug, Hash`. Provide `Surface::new(id, title, terminal) -> Self`, `Surface::display_title() -> &str` (truncates to 20 chars). Tests: `test_surface_creation`, `test_surface_display_title_truncates`, `test_surface_id_uniqueness`.
   Parallelization: Wave 2 | Blocked by: — | Blocks: 6, 7, 8
   References: `crates/rmux-app/src/workspace/splits.rs` (for `PaneId` style), `crates/rmux-app/src/ui/terminal_pane.rs` (`TerminalPane` struct)
@@ -163,7 +163,7 @@ Comprehensive registry + dispatch tests run; final verification wave F1-F4.
   Evidence: test log
   Commit: Y | `feat(workspace): add Surface struct for tab model`
 
-- [ ] 6. Refactor `PaneNode::Leaf` to hold `Vec<Surface>` instead of single `TerminalPane`
+- [x] 6. Refactor `PaneNode::Leaf` to hold `Vec<Surface>` instead of single `TerminalPane`
   What to do: In `crates/rmux-app/src/workspace/splits.rs`, change `PaneNode::Leaf { pane: TerminalPane, active_surface: usize, surfaces: Vec<Surface> }`. Add accessors: `leaf_surfaces(&self) -> &[Surface]`, `leaf_surfaces_mut(&mut self) -> &mut Vec<Surface>`, `active_surface(&self) -> usize`, `set_active_surface(&mut self, idx: usize)`, `add_surface(&mut self, surface: Surface)`, `remove_surface(&mut self, idx: usize) -> Option<Surface>`, `active_surface_mut(&mut self) -> Option<&mut Surface>`, `active_terminal(&self) -> Option<&TerminalPane>`, `active_terminal_mut(&mut self) -> Option<&mut TerminalPane>`. Update all `find_terminal_*` methods to walk to `surfaces[active_surface].terminal`. Update `find_browser_mut` to skip non-leaf nodes. Update `find_leaf` semantics: a "leaf" is still a single `PaneNode` but now holds multiple surfaces; the `active_pane` in `Workspace` is still a `PaneId` identifying the leaf, and `Workspace` tracks `active_surface: HashMap<PaneId, usize>` so each pane leaf has its own active tab. **Migration:** `active_terminal()` calls elsewhere must continue to work; the `Workspace` model adds `active_surface: HashMap<PaneId, usize>`. Tests: `test_leaf_holds_multiple_surfaces`, `test_active_surface_default_is_zero`, `test_remove_surface_decrements_active_index`, `test_active_terminal_returns_active_surface_terminal`.
   Parallelization: Wave 2 | Blocked by: 5 | Blocks: 7, 8, 10
   References: `crates/rmux-app/src/workspace/splits.rs` (entire file, 559 lines — may need split), `crates/rmux-app/src/workspace/model.rs:175-208` (focus methods on `Workspace`)
