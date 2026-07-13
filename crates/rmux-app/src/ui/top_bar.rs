@@ -113,10 +113,7 @@ pub fn show(
             // Right sidebar toggle (20×20, mirrors the left ☰ style). Drives
             // the cmux `Cmd+Opt+B` shortcut path; sits left of the bell.
             let right_toggle_rect = Rect::from_center_size(
-                pos2(
-                    rect.right() - 12.0_f32 - bell_width - 18.0_f32,
-                    rect.center().y,
-                ),
+                pos2(rect.right() - 12.0_f32 - bell_width - 18.0_f32, rect.center().y),
                 vec2(20.0_f32, 20.0_f32),
             );
             let right_toggle = ui

@@ -8,9 +8,9 @@
 use rmux_terminal::OscNotification;
 use thiserror::Error;
 
+use super::surface::Surface;
 use crate::browser::BrowserPane;
 use crate::ui::TerminalPane;
-use super::surface::Surface;
 
 /// Error type for pane tree operations.
 #[derive(Error, Debug, PartialEq)]
@@ -98,8 +98,16 @@ pub enum PaneNode {
         /// truth and `terminal_count()` reports 1.
         surfaces: Vec<Surface>,
     },
-    Browser { id: PaneId, browser: Box<BrowserPane> },
-    Split { id: SplitId, direction: SplitDirection, children: Vec<PaneNode>, sizes: Vec<f32> },
+    Browser {
+        id: PaneId,
+        browser: Box<BrowserPane>,
+    },
+    Split {
+        id: SplitId,
+        direction: SplitDirection,
+        children: Vec<PaneNode>,
+        sizes: Vec<f32>,
+    },
 }
 
 impl std::fmt::Debug for PaneNode {
@@ -128,12 +136,7 @@ impl std::fmt::Debug for PaneNode {
 
 impl PaneNode {
     pub fn new_leaf(id: PaneId) -> Self {
-        Self::Leaf {
-            id,
-            terminal: Box::new(None),
-            active_surface: 0,
-            surfaces: Vec::new(),
-        }
+        Self::Leaf { id, terminal: Box::new(None), active_surface: 0, surfaces: Vec::new() }
     }
 
     pub fn new_leaf_with_terminal(id: PaneId, terminal: TerminalPane) -> Self {
@@ -148,12 +151,7 @@ impl PaneNode {
     /// Build a Leaf with a single surface wrapping `terminal`.
     pub fn leaf_with_surfaces(id: PaneId, terminal: TerminalPane) -> Self {
         let surface = Surface::new(super::surface::SurfaceId(1), "Terminal 1", terminal);
-        Self::Leaf {
-            id,
-            terminal: Box::new(None),
-            active_surface: 0,
-            surfaces: vec![surface],
-        }
+        Self::Leaf { id, terminal: Box::new(None), active_surface: 0, surfaces: vec![surface] }
     }
 
     pub fn new_browser(id: PaneId, browser: BrowserPane) -> Self {
@@ -864,8 +862,8 @@ mod tests {
 
     // ----- W2.1: Surface accessors on PaneNode::Leaf -----
 
-    use crate::ui::TerminalPane;
     use super::super::surface::{Surface, SurfaceId};
+    use crate::ui::TerminalPane;
 
     fn make_surface(id: u64, title: &str) -> Surface {
         let term = TerminalPane::spawn(1, 1, 14.0).expect("dummy terminal spawn");

@@ -1869,3 +1869,48 @@ test result: ok. 113 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fi
   implemented") are user-visible in `RUST_LOG=warn` but
   otherwise silent.
 
+
+---
+
+## W4.4 — Fix chord conflicts
+
+**Worker:** Atlas (Rust Core Specialist) · **Date:** 2026-07-13
+
+### What changed
+
+- Removed original `Cmd+Shift+[ → PrevWorkspace` and `Cmd+Shift+] → NextWorkspace` (these were the WRONG chords per cmux — those chords are for surface nav)
+- `Ctrl+Cmd+[ / ]` now map to `PrevWorkspace / NextWorkspace` (the correct cmux chords)
+- Added `Cmd+Shift+N → NewWindow` and `Ctrl+Cmd+W → CloseWindow` registrations
+- Uncommented 4 lines in the integration test + added 2 new assertions
+- Net chord count: 26 chords verified by `test_all_cmux_chords_registered_and_routed`
+
+### Cmux chord reference (final)
+
+| Cmux | Action | Rust modifier |
+|------|--------|---------------|
+| ⌘T | NewSurface | `cmd` |
+| ⌘⇧] | NextSurface | `cmd + shift` |
+| ⌘⇧[ | PreviousSurface | `cmd + shift` |
+| ⌃1..9 | SelectSurface(0..8) | `ctrl` (macOS-only) |
+| ⌥⌘T | CloseOtherTabs | `cmd + alt` |
+| ⌘⇧T | ReopenLastClosed | `cmd + shift` |
+| ⌘⇧M | ToggleCopyMode | `cmd + shift` |
+| ⌘D | SplitRight | `cmd` |
+| ⌘⇧D | SplitDown | `cmd + shift` |
+| ⌥⌘D | SplitBrowserRight (stub) | `cmd + alt` |
+| ⌥⌘⇧D | SplitBrowserDown (stub) | `cmd + alt + shift` |
+| ⌥⌘←/→/↑/↓ | FocusLeft/Right/Up/Down | `cmd + alt` |
+| ⌘⇧↩ | ToggleZoom | `cmd + shift` |
+| ⌘⇧= | EqualizeSplits | `cmd + shift` |
+| ⌃⌘= | EqualizeSplitsAlt | `ctrl + cmd` |
+| ⌘B | ToggleSidebar (left) | `cmd` |
+| ⌥⌘B | ToggleRightSidebar | `cmd + alt` |
+| ⌘N | NewWorkspace | `cmd` |
+| ⌘⇧N | NewWindow (stub) | `cmd + shift` |
+| ⌃⌘] | NextWorkspace | `ctrl + cmd` |
+| ⌃⌘[ | PrevWorkspace | `ctrl + cmd` |
+| ⌘1..9 | SwitchWorkspace(0..8) | `cmd` |
+| ⌘⇧W | CloseWorkspace | `cmd + shift` |
+| ⌘⇧R | RenameWorkspace | `cmd + shift` |
+| ⌃⌘W | CloseWindow (stub) | `ctrl + cmd` |
+

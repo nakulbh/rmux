@@ -479,10 +479,7 @@ impl Workspace {
         pane_id: PaneId,
         surface: Surface,
     ) -> Result<(), PaneTreeError> {
-        let node = self
-            .root
-            .find_pane_mut(pane_id)
-            .ok_or(PaneTreeError::PaneNotFound(pane_id))?;
+        let node = self.root.find_pane_mut(pane_id).ok_or(PaneTreeError::PaneNotFound(pane_id))?;
         if !node.is_leaf() {
             return Err(PaneTreeError::PaneNotFound(pane_id));
         }

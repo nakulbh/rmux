@@ -493,11 +493,7 @@ impl WorkspaceManager {
         let workspace_id = self.active().id;
         let pane_id = self.active().active_pane;
         let surface = self.close_surface_in_active(idx)?;
-        self.closed_tabs.push_back(ClosedTab {
-            surface,
-            workspace_id,
-            pane_id,
-        });
+        self.closed_tabs.push_back(ClosedTab { surface, workspace_id, pane_id });
         while self.closed_tabs.len() > MAX_CLOSED_TABS {
             self.closed_tabs.pop_front();
         }
@@ -511,28 +507,19 @@ impl WorkspaceManager {
     /// [`WorkspaceError::NoClosedTabs`] when the stack is empty.
     #[allow(dead_code)]
     pub fn reopen_last_closed_tab(&mut self) -> Result<(), WorkspaceError> {
-        let entry = self
-            .closed_tabs
-            .pop_back()
-            .ok_or(WorkspaceError::NoClosedTabs)?;
+        let entry = self.closed_tabs.pop_back().ok_or(WorkspaceError::NoClosedTabs)?;
         let ClosedTab { surface, workspace_id, pane_id } = entry;
 
-        let ws_idx = self
-            .workspaces
-            .iter()
-            .position(|w| w.id == workspace_id)
-            .unwrap_or(self.active_index);
+        let ws_idx =
+            self.workspaces.iter().position(|w| w.id == workspace_id).unwrap_or(self.active_index);
 
         if ws_idx != self.active_index {
             self.active_index = ws_idx;
         }
 
         let ws = &mut self.workspaces[ws_idx];
-        let target_pane = if ws.root.find_pane_mut(pane_id).is_some() {
-            pane_id
-        } else {
-            ws.active_pane
-        };
+        let target_pane =
+            if ws.root.find_pane_mut(pane_id).is_some() { pane_id } else { ws.active_pane };
         ws.add_surface_to_pane(target_pane, surface)
             .map_err(|_| WorkspaceError::PaneNotFound(pane_id))?;
 
@@ -862,9 +849,7 @@ mod tests {
         manager.new_surface_in_active(None).unwrap();
         assert_eq!(manager.terminal_count(), 3);
 
-        manager
-            .close_surface_in_active_with_capture(None)
-            .expect("close should succeed");
+        manager.close_surface_in_active_with_capture(None).expect("close should succeed");
         assert_eq!(manager.terminal_count(), 2);
     }
 
@@ -887,9 +872,7 @@ mod tests {
         manager.new_surface_in_active(None).unwrap();
         manager.new_surface_in_active(None).unwrap();
 
-        manager
-            .close_surface_in_active_with_capture(None)
-            .expect("close should succeed");
+        manager.close_surface_in_active_with_capture(None).expect("close should succeed");
 
         let count = closed_tabs_len_via_drain(&mut manager);
         assert_eq!(count, 1);
@@ -902,9 +885,7 @@ mod tests {
         manager.new_surface_in_active(None).unwrap();
         manager.new_surface_in_active(None).unwrap();
 
-        manager
-            .close_surface_in_active_with_capture(None)
-            .expect("close should succeed");
+        manager.close_surface_in_active_with_capture(None).expect("close should succeed");
 
         manager.reopen_last_closed_tab().expect("reopen should succeed");
 
@@ -930,9 +911,7 @@ mod tests {
             manager.new_surface_in_active(None).unwrap();
         }
         for _ in 0..16 {
-            manager
-                .close_surface_in_active_with_capture(Some(0))
-                .expect("close should succeed");
+            manager.close_surface_in_active_with_capture(Some(0)).expect("close should succeed");
         }
         let count = closed_tabs_len_via_drain(&mut manager);
         assert_eq!(count, 16, "stack should be trimmed to MAX_CLOSED_TABS");
@@ -945,9 +924,7 @@ mod tests {
         manager.create_workspace("WS 2".to_string());
         manager.new_surface_in_active(None).unwrap();
         manager.new_surface_in_active(None).unwrap();
-        manager
-            .close_surface_in_active_with_capture(None)
-            .expect("close should succeed");
+        manager.close_surface_in_active_with_capture(None).expect("close should succeed");
 
         manager.close_workspace(WorkspaceId(2)).expect("close ws2");
         assert_eq!(manager.active().id, ws1_id);
@@ -965,9 +942,7 @@ mod tests {
         manager.split_active_right().expect("split ok");
         manager.new_surface_in_active(None).unwrap();
         manager.new_surface_in_active(None).unwrap();
-        manager
-            .close_surface_in_active_with_capture(None)
-            .expect("close should succeed");
+        manager.close_surface_in_active_with_capture(None).expect("close should succeed");
 
         let new_pane = manager
             .active()
@@ -978,10 +953,7 @@ mod tests {
         manager.focus_pane_global(new_pane);
         manager.new_surface_in_active(None).unwrap();
 
-        manager
-            .active_mut()
-            .close_pane(original_pane)
-            .expect("close original pane");
+        manager.active_mut().close_pane(original_pane).expect("close original pane");
 
         manager.reopen_last_closed_tab().expect("reopen should succeed");
 
@@ -993,13 +965,9 @@ mod tests {
     fn test_close_then_reopen_preserves_surface_data() {
         let mut manager = WorkspaceManager::new();
         manager.new_surface_in_active(None).unwrap();
-        manager
-            .new_surface_in_active(Some("Renamed".to_string()))
-            .unwrap();
+        manager.new_surface_in_active(Some("Renamed".to_string())).unwrap();
 
-        manager
-            .close_surface_in_active_with_capture(None)
-            .expect("close should succeed");
+        manager.close_surface_in_active_with_capture(None).expect("close should succeed");
 
         manager.reopen_last_closed_tab().expect("reopen should succeed");
 
@@ -1018,28 +986,15 @@ mod tests {
         manager.new_surface_in_active(None).unwrap();
         manager.new_surface_in_active(None).unwrap();
 
-        manager
-            .close_surface_in_active_with_capture(Some(2))
-            .expect("close T3");
-        manager
-            .close_surface_in_active_with_capture(Some(0))
-            .expect("close T1");
+        manager.close_surface_in_active_with_capture(Some(2)).expect("close T3");
+        manager.close_surface_in_active_with_capture(Some(0)).expect("close T1");
 
         manager.reopen_last_closed_tab().expect("reopen #1");
-        assert_eq!(
-            manager.active().active_surface().unwrap().title,
-            "Terminal 1"
-        );
+        assert_eq!(manager.active().active_surface().unwrap().title, "Terminal 1");
 
         manager.reopen_last_closed_tab().expect("reopen #2");
-        assert_eq!(
-            manager.active().active_surface().unwrap().title,
-            "Terminal 3"
-        );
+        assert_eq!(manager.active().active_surface().unwrap().title, "Terminal 3");
 
-        assert!(matches!(
-            manager.reopen_last_closed_tab(),
-            Err(WorkspaceError::NoClosedTabs)
-        ));
+        assert!(matches!(manager.reopen_last_closed_tab(), Err(WorkspaceError::NoClosedTabs)));
     }
 }

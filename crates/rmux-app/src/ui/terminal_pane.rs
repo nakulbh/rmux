@@ -613,6 +613,7 @@ impl TerminalPane {
     }
 
     /// Whether the pane is currently in copy mode.
+    #[allow(dead_code)]
     pub fn is_copy_mode(&self) -> bool {
         self.copy_mode
     }

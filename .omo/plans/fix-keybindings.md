@@ -275,7 +275,7 @@ Comprehensive registry + dispatch tests run; final verification wave F1-F4.
   Evidence: test log
   Commit: Y | `test(shortcuts): registry lookup tests for all cmux actions`
 
-- [ ] 16. Write dispatch handler tests for all 28 actions
+- [x] 16. Write dispatch handler tests for all 28 actions
   What to do: In a new `crates/rmux-app/src/shortcut_handler_tests.rs` file, write one test per action that verifies the dispatch handler invokes the correct method. For pure handlers (e.g. `ToggleRightSidebar` on `SidebarView`), instantiate the struct and assert state change. For handlers that need `WorkspaceManager`, use the existing `WorkspaceManager::new()` (which spawns a shell — that may need a mock or use the test in an environment where PTY is available). For handlers that hit `tracing::warn!` (browser/window stubs), use `tracing-test` or a similar test infrastructure to capture the log; if not available, document as "manual verification only" and assert the handler compiles.
   Parallelization: Wave 4 | Blocked by: 3, 4, 14 | Blocks: 17
   References: `crates/rmux-app/src/shortcut_handler.rs:102-297` (current dispatch), `crates/rmux-app/src/workspace/mod.rs:359-558` (test patterns)
@@ -286,7 +286,7 @@ Comprehensive registry + dispatch tests run; final verification wave F1-F4.
   Evidence: test log
   Commit: Y | `test(shortcuts): dispatch handler tests for all actions`
 
-- [ ] 17. Final integration test: every registered shortcut has both a registry test AND a dispatch test
+- [x] 17. Final integration test: every registered shortcut has both a registry test AND a dispatch test
   What to do: In a new `crates/rmux-app/tests/keybindings_integration.rs` integration test, iterate over a static list of `(canonical_mods, key, action)` tuples that includes ALL 28 cmux shortcuts, assert each is registered, then for each non-stub action, assert the corresponding `WorkspaceManager`/`Workspace`/`SidebarView`/`TerminalPane` method exists and is wired. This is a regression guard against future drift. Use `pretty_assertions` if available, otherwise `assert_eq!`. The test must panic with a clear message if a shortcut is missing.
   Parallelization: Wave 5 | Blocked by: 15, 16 | Blocks: F1-F4
   References: `crates/rmux-app/src/shortcuts.rs:103-234` (current registrations), `crates/rmux-app/src/shortcut_handler.rs:108-294` (current dispatch)

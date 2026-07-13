@@ -154,8 +154,7 @@ fn render_leaf(
     let tab_bar_height = if show_tab_bar { TAB_BAR_HEIGHT } else { 0.0_f32 };
 
     if show_tab_bar {
-        let tab_bar_rect =
-            Rect::from_min_size(rect.min, Vec2::new(rect.width(), TAB_BAR_HEIGHT));
+        let tab_bar_rect = Rect::from_min_size(rect.min, Vec2::new(rect.width(), TAB_BAR_HEIGHT));
         render_tab_bar(ui, leaf, tab_bar_rect, is_active, actions);
     }
 
@@ -164,11 +163,8 @@ fn render_leaf(
         Vec2::new(rect.width(), (rect.height() - tab_bar_height).max(0.0_f32)),
     );
 
-    let mut child_ui = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(terminal_rect)
-            .layout(egui::Layout::default()),
-    );
+    let mut child_ui = ui
+        .new_child(egui::UiBuilder::new().max_rect(terminal_rect).layout(egui::Layout::default()));
 
     if let Some(pane) = leaf.active_terminal_mut() {
         pane.show(&mut child_ui);
@@ -216,11 +212,8 @@ fn render_tab_bar(
 
     let active_idx = leaf.active_surface_index();
     let surface_count = leaf.leaf_surfaces().len();
-    let titles: Vec<String> = leaf
-        .leaf_surfaces()
-        .iter()
-        .map(|s| s.display_title().to_string())
-        .collect();
+    let titles: Vec<String> =
+        leaf.leaf_surfaces().iter().map(|s| s.display_title().to_string()).collect();
 
     let mut tab_ui = ui.new_child(
         egui::UiBuilder::new()
