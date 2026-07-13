@@ -1,4 +1,4 @@
-//! Surface — a single terminal "tab" within a [`PaneNode::Leaf`].
+//! Surface — a single terminal "tab" within a `PaneNode::Leaf`.
 //!
 //! A leaf in the pane tree can hold one or more surfaces. Each surface owns
 //! its own [`TerminalPane`] and a display title shown in the tab bar. The

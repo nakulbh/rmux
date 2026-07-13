@@ -503,7 +503,8 @@ mod tests {
     fn ctrl_cmd_bracket_chord_keeps_both_bits() {
         // ⌃⌘[ / ⌃⌘] (PrevWorkspace/NextWorkspace) are registered as
         // `Modifiers::CTRL | Modifiers::COMMAND`; both bits must survive.
-        let raw = egui::Modifiers { ctrl: true, command: true, mac_cmd: true, ..Default::default() };
+        let raw =
+            egui::Modifiers { ctrl: true, command: true, mac_cmd: true, ..Default::default() };
         let normalized = normalize_lookup_mods(raw);
         assert_eq!(normalized, egui::Modifiers::CTRL | egui::Modifiers::COMMAND);
     }

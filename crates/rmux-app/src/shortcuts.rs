@@ -1,4 +1,4 @@
-//! Global keyboard shortcut handling for [`RmuxApp`].
+//! Global keyboard shortcut handling for `RmuxApp`.
 //!
 //! Split out of `app.rs` to keep both modules focused: this module only
 //! translates key chords into workspace/pane operations.
