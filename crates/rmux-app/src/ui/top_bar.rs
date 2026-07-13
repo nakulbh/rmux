@@ -147,10 +147,10 @@ pub fn show(
                 .on_hover_cursor(CursorIcon::PointingHand)
                 .on_hover_text("Notifications (\u{2318}I)");
             let fill = if bell.hovered() { p.panel_bg } else { p.chrome_bg };
-            ui.painter().rect_filled(bell_rect, CornerRadius::same(2), fill);
+            ui.painter().rect_filled(bell_rect, CornerRadius::same(theme::radius_sm()), fill);
             ui.painter().rect_stroke(
                 bell_rect,
-                CornerRadius::same(2),
+                CornerRadius::same(theme::radius_sm()),
                 Stroke::new(1.0_f32, p.border),
                 StrokeKind::Inside,
             );

@@ -146,7 +146,7 @@ pub struct Theme {
 impl Theme {
     /// Arbor One Dark theme.
     pub fn dark() -> Self {
-        Self { palette: Palette::dark(), radius: 2.0_f32, dark: true }
+        Self { palette: Palette::dark(), radius: 6.0_f32, dark: true }
     }
 
     /// Small radius — rows, buttons, inputs, cards, tabs.
@@ -242,4 +242,11 @@ impl Theme {
 /// Convenience: get the dark palette.
 pub fn palette() -> Palette {
     Palette::dark()
+}
+
+/// Corner radius for cards, buttons, badges, and inputs — the single
+/// source of truth so these surfaces feel like one rounded-card system
+/// (matching cmux) instead of a scatter of mismatched hardcoded radii.
+pub fn radius_sm() -> u8 {
+    Theme::dark().radius_sm() as u8
 }

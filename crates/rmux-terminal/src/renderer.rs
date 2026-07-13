@@ -1,99 +1,134 @@
-//! Terminal renderer.
-//!
-//! Converts a [`GridSnapshot`] into egui paint commands for display.
-//! Handles color mapping, cursor rendering, and font metrics.
-
 use crate::state::GridSnapshot;
 use alacritty_terminal::vte::ansi::CursorShape;
 use egui::{Color32, Pos2, Rect, Ui, Vec2};
 
-/// Arbor terminal cursor color `#ebdbb2` (see `docs/UI_REDESIGN.md`).
-///
-/// Kept as literal channel values (not a theme token) so the renderer
-/// stays decoupled from the app's theme module.
-const CURSOR_RGB: (u8, u8, u8) = (0xeb, 0xdb, 0xb2);
-/// Cursor alpha for block/hollow shapes (glyph underneath stays readable).
 const CURSOR_BLOCK_ALPHA: u8 = 128;
-/// Cursor alpha for the thin underline/beam shapes (near-opaque).
 const CURSOR_LINE_ALPHA: u8 = 200;
 
-/// The cursor overlay color at the given alpha.
-fn cursor_color(alpha: u8) -> Color32 {
-    let (r, g, b) = CURSOR_RGB;
-    Color32::from_rgba_unmultiplied(r, g, b, alpha)
+fn cursor_color(alpha: u8, theme_color: Color32) -> Color32 {
+    Color32::from_rgba_unmultiplied(theme_color.r(), theme_color.g(), theme_color.b(), alpha)
 }
 
-/// Renders terminal grid cells as egui paint commands.
-///
-/// Handles background rectangles, foreground glyphs, and cursor overlay.
-/// The renderer uses a monospace font and caches cell dimensions.
 pub struct TerminalRenderer {
-    /// Font size for terminal text in pixels.
     pub font_size: f32,
-    /// Pre-calculated dimensions of one character cell.
     cell_size: Vec2,
+    cell_size_measured: bool,
 }
 
 impl TerminalRenderer {
-    /// Create a new renderer with the given font size.
-    ///
-    /// The cell size is calculated based on the font size
-    /// using a fixed estimate for monospace character proportions.
     pub fn new(font_size: f32) -> Self {
-        let cell_size = Self::calc_cell_size(font_size);
-        Self { font_size, cell_size }
+        let cell_size = Self::estimate_cell_size(font_size);
+        Self { font_size, cell_size, cell_size_measured: false }
     }
 
-    /// Draw the terminal grid into the egui UI.
-    ///
-    /// # Arguments
-    ///
-    /// * `ui` - The egui UI to draw into.
-    /// * `rect` - The allocated region for the terminal.
-    /// * `snapshot` - The grid snapshot to render.
-    /// * `cursor_visible` - Whether the cursor should blink/show.
-    pub fn draw(&self, ui: &mut Ui, rect: Rect, snapshot: &GridSnapshot, cursor_visible: bool) {
+    /// Measure cell size from the actual loaded font on the first call.
+    /// Subsequent calls are a no-op.
+    fn ensure_cell_size_measured(&mut self, ui: &Ui) {
+        if self.cell_size_measured {
+            return;
+        }
+        let font_id = egui::FontId::monospace(self.font_size);
+        let glyph_width = ui.fonts(|f| {
+            f.layout("M".to_string(), font_id.clone(), Color32::WHITE, f32::INFINITY).size().x
+        });
+        let row_height = ui.fonts(|f| f.row_height(&font_id));
+
+        self.cell_size = Vec2::new(glyph_width, row_height);
+        self.cell_size_measured = true;
+    }
+
+    pub fn draw(&mut self, ui: &mut Ui, rect: Rect, snapshot: &GridSnapshot, cursor_visible: bool) {
         if !ui.is_rect_visible(rect) {
             return;
         }
 
-        let painter = ui.painter();
-        let font_id = egui::FontId::monospace(self.font_size);
+        self.ensure_cell_size_measured(ui);
 
-        // Calculate how many rows/cols we can display
-        let visible_cols = ((rect.width() / self.cell_size.x).floor() as u16).min(snapshot.cols);
-        let visible_rows = ((rect.height() / self.cell_size.y).floor() as u16).min(snapshot.rows);
+        let painter = ui.painter();
+        let cell_w = self.cell_size.x;
+        let cell_h = self.cell_size.y;
+
+        // Fill unused rows below the grid with terminal background
+        let used_height = snapshot.rows as f32 * cell_h;
+        if used_height < rect.height() {
+            let fill = Rect::from_min_max(
+                Pos2::new(rect.left(), rect.top() + used_height),
+                Pos2::new(rect.right(), rect.bottom()),
+            );
+            painter.rect_filled(fill, 0.0, snapshot.terminal_bg);
+        }
+        // Fill unused columns to the right
+        let used_width = snapshot.cols as f32 * cell_w;
+        if used_width < rect.width() {
+            let fill = Rect::from_min_max(
+                Pos2::new(rect.left() + used_width, rect.top()),
+                Pos2::new(rect.right(), rect.top() + used_height.min(rect.height())),
+            );
+            painter.rect_filled(fill, 0.0, snapshot.terminal_bg);
+        }
+
+        let visible_cols = ((rect.width() / cell_w).floor() as u16).min(snapshot.cols);
+        let visible_rows = ((rect.height() / cell_h).floor() as u16).min(snapshot.rows);
+
+        let font_id = egui::FontId::monospace(self.font_size);
 
         for row in 0..visible_rows {
             for col in 0..visible_cols {
                 let cell = &snapshot.cells[row as usize][col as usize];
 
                 let cell_rect = Rect::from_min_size(
-                    Pos2::new(
-                        rect.left() + col as f32 * self.cell_size.x,
-                        rect.top() + row as f32 * self.cell_size.y,
-                    ),
+                    Pos2::new(rect.left() + col as f32 * cell_w, rect.top() + row as f32 * cell_h),
                     self.cell_size,
                 );
 
-                // Draw background
                 painter.rect_filled(cell_rect, 0.0, cell.bg);
 
-                // Draw text character (skip spaces for performance)
                 if cell.c != ' ' {
-                    let text_pos = Pos2::new(cell_rect.left(), cell_rect.top());
-                    let color = cell.fg;
-                    painter.text(text_pos, egui::Align2::LEFT_TOP, cell.c, font_id.clone(), color);
+                    let base_x = cell_rect.left();
+                    let base_y = cell_rect.top();
+
+                    // Faux bold: offset the character 0.5px to the right and draw again
+                    if cell.bold {
+                        painter.text(
+                            Pos2::new(base_x + 0.5, base_y),
+                            egui::Align2::LEFT_TOP,
+                            cell.c,
+                            font_id.clone(),
+                            cell.fg,
+                        );
+                        painter.text(
+                            Pos2::new(base_x, base_y),
+                            egui::Align2::LEFT_TOP,
+                            cell.c,
+                            font_id.clone(),
+                            cell.fg,
+                        );
+                    } else {
+                        painter.text(
+                            Pos2::new(base_x, base_y),
+                            egui::Align2::LEFT_TOP,
+                            cell.c,
+                            font_id.clone(),
+                            cell.fg,
+                        );
+                    }
+
+                    if cell.underline {
+                        let line_y = cell_rect.bottom() - 1.5;
+                        let underline_rect = Rect::from_min_max(
+                            Pos2::new(cell_rect.left(), line_y),
+                            Pos2::new(cell_rect.right(), cell_rect.bottom() - 0.5),
+                        );
+                        painter.rect_filled(underline_rect, 0.0, cell.fg);
+                    }
                 }
 
-                // Draw cursor overlay
                 if cell.is_cursor && cursor_visible {
                     let overlay_color = match snapshot.cursor_shape {
                         CursorShape::Block | CursorShape::HollowBlock => {
-                            cursor_color(CURSOR_BLOCK_ALPHA)
+                            cursor_color(CURSOR_BLOCK_ALPHA, snapshot.cursor_color)
                         }
                         CursorShape::Underline => {
-                            // Draw a thin line at the bottom of the cell
                             let underline_rect = Rect::from_min_max(
                                 Pos2::new(cell_rect.left(), cell_rect.bottom() - 2.0),
                                 Pos2::new(cell_rect.right(), cell_rect.bottom()),
@@ -101,17 +136,20 @@ impl TerminalRenderer {
                             painter.rect_filled(
                                 underline_rect,
                                 0.0,
-                                cursor_color(CURSOR_LINE_ALPHA),
+                                cursor_color(CURSOR_LINE_ALPHA, snapshot.cursor_color),
                             );
                             continue;
                         }
                         CursorShape::Beam => {
-                            // Draw a thin vertical bar at the left of the cell
                             let beam_rect = Rect::from_min_max(
                                 Pos2::new(cell_rect.left(), cell_rect.top()),
                                 Pos2::new(cell_rect.left() + 2.0, cell_rect.bottom()),
                             );
-                            painter.rect_filled(beam_rect, 0.0, cursor_color(CURSOR_LINE_ALPHA));
+                            painter.rect_filled(
+                                beam_rect,
+                                0.0,
+                                cursor_color(CURSOR_LINE_ALPHA, snapshot.cursor_color),
+                            );
                             continue;
                         }
                         CursorShape::Hidden => continue,
@@ -122,31 +160,20 @@ impl TerminalRenderer {
         }
     }
 
-    /// Change the font size and recalculate cell dimensions.
-    ///
-    /// After calling this, [`cols_rows_for_rect`](Self::cols_rows_for_rect) and
-    /// [`draw`](Self::draw) will use the new font size.
     pub fn set_font_size(&mut self, font_size: f32) {
         self.font_size = font_size;
-        self.cell_size = Self::calc_cell_size(font_size);
+        self.cell_size = Self::estimate_cell_size(font_size);
+        self.cell_size_measured = false;
     }
 
-    /// Calculate the required cell size for the given font.
-    ///
-    /// In this MVP, we use a fixed estimate: monospace characters
-    /// are approximately 0.6 × font_size wide and font_size tall.
-    fn calc_cell_size(font_size: f32) -> Vec2 {
-        // Monospace character width is roughly 0.6 of font height
-        let char_width = font_size * 0.6;
-        Vec2::new(char_width, font_size)
+    fn estimate_cell_size(font_size: f32) -> Vec2 {
+        Vec2::new(font_size * 0.6, font_size)
     }
 
-    /// Get the current cell dimensions.
     pub fn cell_size(&self) -> Vec2 {
         self.cell_size
     }
 
-    /// Calculate the number of columns and rows that fit in a given pixel area.
     pub fn cols_rows_for_rect(&self, rect: Rect) -> (u16, u16) {
         let cols = (rect.width() / self.cell_size.x).floor() as u16;
         let rows = (rect.height() / self.cell_size.y).floor() as u16;
@@ -159,11 +186,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_cell_size_calculation() {
+    fn test_estimate_fallback() {
         let renderer = TerminalRenderer::new(14.0);
         let size = renderer.cell_size();
-        assert!(size.x > 5.0, "Cell width should be reasonable");
-        assert!(size.y > 10.0, "Cell height should be reasonable");
+        assert!(size.x > 5.0);
+        assert!(size.y > 10.0);
     }
 
     #[test]
@@ -171,8 +198,8 @@ mod tests {
         let renderer = TerminalRenderer::new(14.0);
         let rect = Rect::from_min_max(Pos2::ZERO, Pos2::new(800.0, 480.0));
         let (cols, rows) = renderer.cols_rows_for_rect(rect);
-        assert!(cols > 0, "Should have at least 1 column");
-        assert!(rows > 0, "Should have at least 1 row");
+        assert!(cols > 0);
+        assert!(rows > 0);
     }
 
     #[test]
@@ -182,15 +209,16 @@ mod tests {
     }
 
     #[test]
-    fn test_set_font_size() {
+    fn test_set_font_size_resets_measurement() {
         let mut renderer = TerminalRenderer::new(14.0);
-        let original_cell_size = renderer.cell_size();
+        let original = renderer.cell_size();
 
         renderer.set_font_size(20.0);
         assert_eq!(renderer.font_size, 20.0);
+        assert!(!renderer.cell_size_measured);
 
-        let new_cell_size = renderer.cell_size();
-        assert!(new_cell_size.x > original_cell_size.x);
-        assert!(new_cell_size.y > original_cell_size.y);
+        let updated = renderer.cell_size();
+        assert!(updated.x > original.x);
+        assert!(updated.y > original.y);
     }
 }
