@@ -1,40 +1,60 @@
 # rmux
 
-rmux is a cross-platform, memory-efficient terminal multiplexer GUI written in Rust. It combines an egui desktop interface with terminal emulation, PTY-backed panes, workspaces, split layouts, browser splits, notifications, and a command socket for automation.
+[![CI](https://github.com/nakulbh/rmux/actions/workflows/ci.yml/badge.svg)](https://github.com/nakulbh/rmux/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](#license)
 
-The project targets Linux, macOS, and Windows, with a goal of staying lightweight enough for many active panes.
+**rmux** is a cross-platform, memory-efficient terminal multiplexer GUI written in Rust. It pairs an `egui` desktop interface with terminal emulation, PTY-backed panes, workspaces, split layouts, browser splits, notifications, and a command socket for automation.
+
+It's a from-scratch reimplementation of [cmux](https://github.com/manaflow-ai/cmux)'s core experience — cmux is macOS-only (Swift/AppKit + libghostty) and reports 2–5 GB RAM usage with many panes open. rmux targets Linux, macOS, and Windows from one codebase, with a strict memory budget.
+
+## Goals
+
+- **Cross-platform** — Linux, macOS, Windows from a single codebase
+- **Memory-efficient** — under 100 MB with 20 active terminal panes
+- **Fast startup** — under 500 ms to first rendered frame
+- **Feature parity with cmux core** — workspaces, splits, notifications, CLI/socket API
+- **CLI compatibility** — `rmux-cli` accepts equivalent commands where practical
 
 ## Features
 
 - Multi-workspace terminal sessions
-- Horizontal and vertical pane splits
-- Keyboard-first navigation
+- Horizontal and vertical pane splits, with focus navigation and zoom
+- Keyboard-first navigation (see [Keyboard Shortcuts](#keyboard-shortcuts))
 - Terminal find, copy, scrollback, and font controls
-- Browser split support
-- Notification panel and desktop notification plumbing
-- Rust workspace split into app, terminal, API, CLI, and config crates
+- Browser split support (`wry`-backed webview panes)
+- Notification panel and desktop notification plumbing (OSC 9/99/777)
+- Unix socket API + CLI client for scripting/automation
+- Workspace split into focused crates: app, terminal, API, CLI, config
 
-## Build Instructions
+## Status
 
-Install the Rust toolchain first, then build from the workspace root:
+Actively developed. Phases 0–3 (foundation, terminal pane, workspaces/splits, notifications + CLI/socket API) are complete. Phase 4 (browser pane) is in progress. See [`docs/PLAN.md`](docs/PLAN.md) for the full phased roadmap, including upcoming SSH + session restore and agent-hook integration work.
+
+## Getting Started
+
+### Prerequisites
+
+Install the [Rust toolchain](https://www.rust-lang.org/tools/install) (stable, edition 2024 support required).
+
+### Build
 
 ```sh
 cargo build --workspace
 ```
 
-Run the app:
+### Run
 
 ```sh
 cargo run -p rmux-app
 ```
 
-Run the full development check:
+### Verify
 
 ```sh
 just check
 ```
 
-If `just` is not installed, run the commands directly:
+If `just` isn't installed, run the equivalent commands directly:
 
 ```sh
 cargo fmt --all -- --check
@@ -42,7 +62,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-Build documentation:
+### Build docs
 
 ```sh
 cargo doc --no-deps --workspace
@@ -88,13 +108,49 @@ macOS uses Cmd where Linux and Windows use Ctrl.
 | Reset Font Size | Cmd+0 | Ctrl+0 |
 | Copy, when text is selected | Cmd+C | Ctrl+C |
 
+See [`docs/KEY_BINDINGS.md`](docs/KEY_BINDINGS.md) for the full reference.
+
 ## Project Layout
 
 | Path | Purpose |
 |---|---|
-| `crates/rmux-app` | Main egui application |
-| `crates/rmux-terminal` | Terminal emulation and PTY integration |
-| `crates/rmux-cli` | CLI client |
-| `crates/rmux-api` | Socket API and protocol |
-| `crates/rmux-config` | Configuration schema and loading |
+| `crates/rmux-app` | Main `egui` application — window, event loop, orchestrates all subsystems |
+| `crates/rmux-terminal` | Terminal emulation and PTY integration (`alacritty_terminal` + `portable-pty`) |
+| `crates/rmux-cli` | CLI client — connects to the socket API |
+| `crates/rmux-api` | Socket server — JSON-RPC protocol, method dispatch, event streaming |
+| `crates/rmux-config` | Configuration schema and loading (`rmux.json`, Ghostty config import) |
 | `docs` | Design, architecture, and project notes |
+
+## Tech Stack
+
+| Purpose | Crate |
+|---|---|
+| GUI | `eframe`, `egui` |
+| Terminal emulation | `alacritty_terminal` |
+| PTY | `portable-pty` |
+| Async runtime | `tokio` |
+| Browser pane | `wry` |
+| Notifications | `notify-rust` |
+| Serialization | `serde`, `serde_json` |
+| Errors | `thiserror`, `anyhow` |
+| Logging | `tracing` |
+
+## Documentation
+
+| File | Contents |
+|---|---|
+| [`docs/PLAN.md`](docs/PLAN.md) | Full phased roadmap and task list |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Detailed architecture and data flow |
+| [`docs/API_REFERENCE.md`](docs/API_REFERENCE.md) | Socket API / CLI protocol reference |
+| [`docs/CONVENTIONS.md`](docs/CONVENTIONS.md) | Rust coding conventions |
+| [`docs/TESTING_STRATEGY.md`](docs/TESTING_STRATEGY.md) | Testing approach and CI pipeline |
+| [`docs/KEY_BINDINGS.md`](docs/KEY_BINDINGS.md) | Full keyboard shortcut reference |
+| [`AGENTS.md`](AGENTS.md) | Contribution/agent instructions, code style, and dependency policy |
+
+## Contributing
+
+See [`AGENTS.md`](AGENTS.md) for coding conventions, the verification checklist, and dependency policy. In short: run `just check` before committing, follow conventional commit messages, and keep one logical change per commit.
+
+## License
+
+MIT
