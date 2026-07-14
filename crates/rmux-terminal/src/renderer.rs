@@ -73,12 +73,21 @@ impl TerminalRenderer {
         let font_id = egui::FontId::monospace(self.font_size);
 
         for row in 0..visible_rows {
-            for col in 0..visible_cols {
+            let mut col = 0_u16;
+            while col < visible_cols {
                 let cell = &snapshot.cells[row as usize][col as usize];
+
+                // Double-width cells (CJK, many emoji, some ambiguous-width
+                // symbols) span this column and the next. Widen this cell's
+                // rect to cover both and skip the next column entirely — if
+                // we painted it separately, its own opaque background fill
+                // would land on top of (and clip) the right half of this
+                // cell's glyph, since text isn't clipped per-cell.
+                let span = if cell.wide && col + 1 < visible_cols { 2 } else { 1 };
 
                 let cell_rect = Rect::from_min_size(
                     Pos2::new(rect.left() + col as f32 * cell_w, rect.top() + row as f32 * cell_h),
-                    self.cell_size,
+                    Vec2::new(cell_w * span as f32, cell_h),
                 );
 
                 painter.rect_filled(cell_rect, 0.0, cell.bg);
@@ -124,9 +133,11 @@ impl TerminalRenderer {
                 }
 
                 if cell.is_cursor && cursor_visible {
-                    let overlay_color = match snapshot.cursor_shape {
+                    match snapshot.cursor_shape {
                         CursorShape::Block | CursorShape::HollowBlock => {
-                            cursor_color(CURSOR_BLOCK_ALPHA, snapshot.cursor_color)
+                            let overlay_color =
+                                cursor_color(CURSOR_BLOCK_ALPHA, snapshot.cursor_color);
+                            painter.rect_filled(cell_rect, 0.0, overlay_color);
                         }
                         CursorShape::Underline => {
                             let underline_rect = Rect::from_min_max(
@@ -138,7 +149,6 @@ impl TerminalRenderer {
                                 0.0,
                                 cursor_color(CURSOR_LINE_ALPHA, snapshot.cursor_color),
                             );
-                            continue;
                         }
                         CursorShape::Beam => {
                             let beam_rect = Rect::from_min_max(
@@ -150,12 +160,12 @@ impl TerminalRenderer {
                                 0.0,
                                 cursor_color(CURSOR_LINE_ALPHA, snapshot.cursor_color),
                             );
-                            continue;
                         }
-                        CursorShape::Hidden => continue,
-                    };
-                    painter.rect_filled(cell_rect, 0.0, overlay_color);
+                        CursorShape::Hidden => {}
+                    }
                 }
+
+                col += span;
             }
         }
     }
