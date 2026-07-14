@@ -4,6 +4,8 @@
 //! a self-contained egui widget that can be placed in split layouts.
 
 use anyhow::Result;
+use image::ImageEncoder;
+use image::codecs::png::PngEncoder;
 use rmux_terminal::{
     InputMapper, OscNotification, OscScanner, PtyBackend, PtyError, TermState, TerminalRenderer,
 };
@@ -84,6 +86,12 @@ pub struct TerminalPane {
     /// Timestamp (in seconds, from `ui.input(|i| i.time)`) when the overlay
     /// was last shown. Used to fade the overlay out after 2 seconds.
     dimension_overlay_timer: f64,
+
+    /// Incremented on every successful [`Self::try_paste_image`] call, used
+    /// to give each pasted image's temp file a unique name so a second
+    /// paste doesn't overwrite (and thus corrupt) the file a CLI tool may
+    /// still be reading from the first paste.
+    paste_counter: u64,
 }
 
 impl TerminalPane {
@@ -164,6 +172,7 @@ impl TerminalPane {
             copy_mode: false,
             dimension_overlay_visible: false,
             dimension_overlay_timer: 0.0_f64,
+            paste_counter: 0,
         })
     }
 
@@ -389,6 +398,13 @@ impl TerminalPane {
                 // Cmd-only chords (macOS) are reserved for app-level shortcuts
                 // (split, close, new workspace, etc.) — never forward to the shell.
                 // Physical Ctrl is still forwarded so Ctrl+C/Ctrl+D keep working.
+                //
+                // Note: Cmd+V specifically can never reach this branch as a key
+                // press — egui-winit intercepts it at the windowing layer as a
+                // paste command and swallows the event entirely when the OS
+                // clipboard doesn't hold text (see ShortcutAction::PasteImage's
+                // doc comment in shortcuts.rs for why image paste uses Cmd+Shift+I
+                // instead, dispatched through the global shortcut registry).
                 if modifiers.command && !modifiers.ctrl {
                     continue;
                 }
@@ -476,6 +492,57 @@ impl TerminalPane {
             egui::Key::C => self.state.copy_selected_text().is_some(),
             _ => false,
         }
+    }
+
+    /// Try to paste a clipboard image into the terminal.
+    ///
+    /// Saves the image as a PNG in the system temp directory and writes the
+    /// file path to the PTY input, matching the behavior of iTerm2, Kitty,
+    /// and WezTerm for image pastes. Bound to `Cmd+Shift+I` via
+    /// `ShortcutAction::PasteImage`, not `Cmd+V` — see that variant's doc
+    /// comment in `shortcuts.rs` for why.
+    ///
+    /// Returns `true` if an image was found on the clipboard and pasted.
+    pub fn try_paste_image(&mut self) -> bool {
+        let mut clipboard = match arboard::Clipboard::new() {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+
+        let image_data = match clipboard.get_image() {
+            Ok(img) => img,
+            Err(_) => return false,
+        };
+
+        let (width, height) = (image_data.width, image_data.height);
+        let bytes = image_data.bytes.into_owned();
+
+        let mut png = Vec::new();
+        let encoder = PngEncoder::new(&mut png);
+        if encoder
+            .write_image(&bytes, width as u32, height as u32, image::ExtendedColorType::Rgba8)
+            .is_err()
+        {
+            return false;
+        }
+
+        self.paste_counter += 1;
+        let mut path = std::env::temp_dir();
+        path.push(format!("rmux-paste-{}-{}.png", std::process::id(), self.paste_counter));
+
+        if std::fs::write(&path, &png).is_err() {
+            return false;
+        }
+
+        // Quote the path (spaces are rare in temp dirs but not impossible)
+        // and don't send a trailing newline: the user is typically about to
+        // type more around the pasted reference (e.g. "describe this: <path>
+        // please"), so auto-submitting the line would be surprising.
+        let path_str = path.to_string_lossy();
+        self.backend.write(format!("\"{path_str}\"").as_bytes()).ok();
+
+        tracing::debug!(path = %path_str, width, height, "Pasted clipboard image");
+        true
     }
 
     /// Map an egui key event to terminal bytes.

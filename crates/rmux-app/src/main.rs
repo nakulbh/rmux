@@ -172,11 +172,13 @@ fn setup_fonts(ctx: &egui::Context) {
         "NerdFontSymbols".to_owned(),
         std::sync::Arc::new(egui::FontData::from_static(NERD_FONT_SYMBOLS)),
     );
-    fonts
-        .families
-        .entry(egui::FontFamily::Monospace)
-        .or_default()
-        .push("NerdFontSymbols".to_owned());
+    // Appended as a last-resort fallback in BOTH families: Monospace for
+    // terminal content (CLI tool icons), Proportional for rmux's own UI
+    // chrome icons (e.g. the notification bell in top_bar.rs), which use
+    // `FontId::proportional` and would otherwise miss this fallback.
+    for family in [egui::FontFamily::Monospace, egui::FontFamily::Proportional] {
+        fonts.families.entry(family).or_default().push("NerdFontSymbols".to_owned());
+    }
 
     ctx.set_fonts(fonts);
 }

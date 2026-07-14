@@ -111,6 +111,18 @@ pub enum ShortcutAction {
     /// Alternate binding for [`ShortcutAction::NextWorkspace`].
     #[allow(dead_code)]
     NextWorkspaceAlt,
+    /// Paste a clipboard image into the active terminal (writes it to a
+    /// temp PNG and injects the path, like iTerm2/Kitty/WezTerm).
+    ///
+    /// This is intentionally **not** bound to Cmd+V: egui-winit's
+    /// `is_paste_command()` intercepts any Cmd+V-containing chord at the
+    /// windowing layer and always calls `Clipboard::get_text()` — when the
+    /// clipboard holds an image instead of text, that call fails and
+    /// egui-winit swallows the keystroke entirely (no `Event::Key` or
+    /// `Event::Paste` ever reaches the app). There is no way to intercept
+    /// Cmd+V for this from application code with the current egui/eframe
+    /// version, so this uses a separate chord instead.
+    PasteImage,
 }
 
 /// Registry that maps keyboard chords to [`ShortcutAction`]s.
@@ -318,6 +330,10 @@ impl Default for ShortcutRegistry {
         // ⌘⇧M → Toggle copy mode (vim-style scrollback navigation)
         reg.register(cmd_ctrl_shift(), Key::M, ShortcutAction::ToggleCopyMode);
 
+        // ⌘⇧I → Paste clipboard image into the active terminal (see
+        // ShortcutAction::PasteImage doc comment for why this isn't Cmd+V).
+        reg.register(cmd_ctrl_shift(), Key::I, ShortcutAction::PasteImage);
+
         // ⌥⌘D → Split browser right
         reg.register(cmd_alt(), Key::D, ShortcutAction::SplitBrowserRight);
 
@@ -428,7 +444,7 @@ pub fn action_target(action: ShortcutAction) -> ActionTarget {
         NewSurface | NextSurface | PreviousSurface | SelectSurface(_) | CloseTab
         | CloseOtherTabs | ReopenLastClosed | EqualizeSplitsAlt | PrevWorkspaceAlt
         | NextWorkspaceAlt => ActionTarget::Workspace,
-        ToggleCopyMode => ActionTarget::Terminal,
+        ToggleCopyMode | PasteImage => ActionTarget::Terminal,
         ToggleRightSidebar => ActionTarget::Sidebar,
         SplitBrowserRight | SplitBrowserDown => ActionTarget::Browser,
         NewWindow | CloseWindow => ActionTarget::Window,
@@ -616,6 +632,12 @@ mod tests {
     fn test_cmd_shift_m_toggle_copy_mode() {
         let reg = ShortcutRegistry::default();
         assert_eq!(reg.lookup(cmd_ctrl_shift(), Key::M), Some(ShortcutAction::ToggleCopyMode));
+    }
+
+    #[test]
+    fn test_cmd_shift_i_paste_image() {
+        let reg = ShortcutRegistry::default();
+        assert_eq!(reg.lookup(cmd_ctrl_shift(), Key::I), Some(ShortcutAction::PasteImage));
     }
 
     /// Locks the documented `Cmd/Ctrl+R` conflict: `RenameTab` is
@@ -874,6 +896,11 @@ mod tests {
     #[test]
     fn test_action_target_toggle_copy_mode_is_terminal() {
         assert_eq!(action_target(ShortcutAction::ToggleCopyMode), ActionTarget::Terminal);
+    }
+
+    #[test]
+    fn test_action_target_paste_image_is_terminal() {
+        assert_eq!(action_target(ShortcutAction::PasteImage), ActionTarget::Terminal);
     }
 
     #[test]

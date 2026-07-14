@@ -94,21 +94,25 @@ pub fn show(
 
             // Notification bell (right): h=22, px=6, sized to content.
             // The count is only shown when there are unread notifications.
+            //
+            // Renders a small filled circle (accent when there are unread
+            // notifications, text_muted otherwise) as the notification
+            // indicator. This avoids relying on Nerd Font PUA glyphs or
+            // emoji codepoints, both of which egui/epaint may fail to
+            // render (producing tofu boxes).
             let unread = notifications.unread_count();
-            let icon_galley = ui.painter().layout_no_wrap(
-                "🔔".to_string(),
-                FontId::proportional(11.0_f32),
-                p.text_muted,
-            );
-            let count_galley = (unread > 0).then(|| {
+            let dot_radius = 4.0_f32;
+            let has_unread = unread > 0;
+            let dot_color = if has_unread { p.accent } else { p.text_muted };
+            let icon_width = dot_radius * 2.0_f32 + 2.0_f32;
+            let count_galley = has_unread.then(|| {
                 ui.painter().layout_no_wrap(
                     format!(" {unread}"),
                     FontId::proportional(11.0_f32),
                     p.accent,
                 )
             });
-            let content_width =
-                icon_galley.size().x + count_galley.as_ref().map_or(0.0_f32, |g| g.size().x);
+            let content_width = icon_width + count_galley.as_ref().map_or(0.0_f32, |g| g.size().x);
             let bell_width = content_width + 2.0_f32 * 6.0_f32;
 
             // Settings gear (20×20, mirrors the left ☰ style). Sits left of
@@ -178,12 +182,9 @@ pub fn show(
                 Stroke::new(1.0_f32, p.border),
                 StrokeKind::Inside,
             );
-            let icon_pos = pos2(
-                bell_rect.left() + 6.0_f32,
-                bell_rect.center().y - icon_galley.size().y / 2.0_f32,
-            );
-            let count_x = icon_pos.x + icon_galley.size().x;
-            ui.painter().galley(icon_pos, icon_galley, p.text_muted);
+            let dot_center = pos2(bell_rect.left() + 6.0_f32 + dot_radius, bell_rect.center().y);
+            ui.painter().circle_filled(dot_center, dot_radius, dot_color);
+            let count_x = dot_center.x + dot_radius + 2.0_f32;
             if let Some(count) = count_galley {
                 let count_pos = pos2(count_x, bell_rect.center().y - count.size().y / 2.0_f32);
                 ui.painter().galley(count_pos, count, p.accent);

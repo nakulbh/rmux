@@ -3722,9 +3722,11 @@ name = "rmux-app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arboard",
  "clap",
  "eframe",
  "egui",
+ "image",
  "notify-rust",
  "rmux-api",
  "rmux-terminal",
