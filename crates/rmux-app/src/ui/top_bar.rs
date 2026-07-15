@@ -22,6 +22,7 @@ pub fn show(
     sidebar_visible: &mut bool,
     notification_panel_visible: &mut bool,
     right_sidebar_visible: &mut bool,
+    settings_open: &mut bool,
 ) {
     let p = theme::palette();
     egui::TopBottomPanel::top("rmux_top_bar")
@@ -93,22 +94,49 @@ pub fn show(
 
             // Notification bell (right): h=22, px=6, sized to content.
             // The count is only shown when there are unread notifications.
+            //
+            // Renders a small filled circle (accent when there are unread
+            // notifications, text_muted otherwise) as the notification
+            // indicator. This avoids relying on Nerd Font PUA glyphs or
+            // emoji codepoints, both of which egui/epaint may fail to
+            // render (producing tofu boxes).
             let unread = notifications.unread_count();
-            let icon_galley = ui.painter().layout_no_wrap(
-                "🔔".to_string(),
-                FontId::proportional(11.0_f32),
-                p.text_muted,
-            );
-            let count_galley = (unread > 0).then(|| {
+            let dot_radius = 4.0_f32;
+            let has_unread = unread > 0;
+            let dot_color = if has_unread { p.accent } else { p.text_muted };
+            let icon_width = dot_radius * 2.0_f32 + 2.0_f32;
+            let count_galley = has_unread.then(|| {
                 ui.painter().layout_no_wrap(
                     format!(" {unread}"),
                     FontId::proportional(11.0_f32),
                     p.accent,
                 )
             });
-            let content_width =
-                icon_galley.size().x + count_galley.as_ref().map_or(0.0_f32, |g| g.size().x);
+            let content_width = icon_width + count_galley.as_ref().map_or(0.0_f32, |g| g.size().x);
             let bell_width = content_width + 2.0_f32 * 6.0_f32;
+
+            // Settings gear (20×20, mirrors the left ☰ style). Sits left of
+            // the right-sidebar toggle; opens the settings panel (theme, etc).
+            let settings_rect = Rect::from_center_size(
+                pos2(rect.right() - 12.0_f32 - bell_width - 18.0_f32 - 26.0_f32, rect.center().y),
+                vec2(20.0_f32, 20.0_f32),
+            );
+            let settings = ui
+                .interact(settings_rect, ui.id().with("settings_gear"), Sense::click())
+                .on_hover_cursor(CursorIcon::PointingHand)
+                .on_hover_text("Settings");
+            let settings_icon_color =
+                if *settings_open || settings.hovered() { p.text_primary } else { p.text_muted };
+            ui.painter().text(
+                settings_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "\u{2699}",
+                FontId::proportional(13.0_f32),
+                settings_icon_color,
+            );
+            if settings.clicked() {
+                *settings_open = !*settings_open;
+            }
 
             // Right sidebar toggle (20×20, mirrors the left ☰ style). Drives
             // the cmux `Cmd+Opt+B` shortcut path; sits left of the bell.
@@ -154,12 +182,9 @@ pub fn show(
                 Stroke::new(1.0_f32, p.border),
                 StrokeKind::Inside,
             );
-            let icon_pos = pos2(
-                bell_rect.left() + 6.0_f32,
-                bell_rect.center().y - icon_galley.size().y / 2.0_f32,
-            );
-            let count_x = icon_pos.x + icon_galley.size().x;
-            ui.painter().galley(icon_pos, icon_galley, p.text_muted);
+            let dot_center = pos2(bell_rect.left() + 6.0_f32 + dot_radius, bell_rect.center().y);
+            ui.painter().circle_filled(dot_center, dot_radius, dot_color);
+            let count_x = dot_center.x + dot_radius + 2.0_f32;
             if let Some(count) = count_galley {
                 let count_pos = pos2(count_x, bell_rect.center().y - count.size().y / 2.0_f32);
                 ui.painter().galley(count_pos, count, p.accent);

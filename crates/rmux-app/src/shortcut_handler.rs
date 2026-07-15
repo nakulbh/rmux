@@ -22,6 +22,7 @@ fn should_dispatch_when_text_focused(action: ShortcutAction) -> bool {
             | ShortcutAction::FontSizeReset
             | ShortcutAction::ClearScreen
             | ShortcutAction::ClearScrollback
+            | ShortcutAction::PasteImage
     )
 }
 
@@ -354,6 +355,16 @@ impl RmuxApp {
                 }
             }
 
+            ShortcutAction::PasteImage => {
+                if let Some(t) = self.active_terminal_mut() {
+                    if t.try_paste_image() {
+                        tracing::info!("Pasted clipboard image to terminal");
+                    } else {
+                        tracing::debug!("No image on clipboard to paste");
+                    }
+                }
+            }
+
             ShortcutAction::SplitBrowserRight => {
                 tracing::warn!("Browser split not yet implemented");
             }
@@ -431,6 +442,11 @@ mod tests {
     #[test]
     fn clear_scrollback_dispatches_when_text_focused() {
         assert!(should_dispatch_when_text_focused(ShortcutAction::ClearScrollback));
+    }
+
+    #[test]
+    fn paste_image_dispatches_when_text_focused() {
+        assert!(should_dispatch_when_text_focused(ShortcutAction::PasteImage));
     }
 
     // --- Focus-dependent actions (must be skipped when text is focused) ---

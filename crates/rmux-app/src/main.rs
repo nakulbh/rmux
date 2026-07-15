@@ -115,6 +115,15 @@ const UI_SANS_FONT_CANDIDATES: &[&str] = &[
     "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
 ];
 
+/// Icon glyphs (Private Use Area code points) used by nvim-web-devicons,
+/// lazy.nvim, starship/oh-my-posh, k9s, lsd/exa, and most modern CLI tool
+/// UIs. Neither a system monospace font nor egui's bundled "Hack" contain
+/// these — without a fallback they render as tofu boxes. This is the
+/// "Mono" variant (single-width glyphs, sized to sit cleanly in one
+/// terminal cell) from the Nerd Fonts symbols-only release, MIT licensed
+/// (see `assets/fonts/NERD_FONTS_LICENSE.txt`).
+const NERD_FONT_SYMBOLS: &[u8] = include_bytes!("../assets/fonts/SymbolsNerdFontMono-Regular.ttf");
+
 /// Load custom fonts for the UI and terminal.
 ///
 /// egui's bundled default fonts ("Hack" for monospace, "Ubuntu-Light" for
@@ -126,9 +135,14 @@ const UI_SANS_FONT_CANDIDATES: &[&str] = &[
 /// `Proportional` families so terminal text and the rest of the UI render
 /// crisply like a native app. Falls back to egui's bundled fonts for
 /// whichever family has no candidate present on disk.
+///
+/// A bundled Nerd Font symbols-only font is always appended as the last
+/// fallback in the `Monospace` family, so PUA icon glyphs used by CLI dev
+/// tools resolve instead of rendering as tofu boxes, regardless of
+/// whether the system font found above (or egui's own bundled font)
+/// happens to include them.
 fn setup_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
-    let mut changed = false;
 
     if let Some(bytes) = load_first_readable(MONOSPACE_FONT_CANDIDATES) {
         fonts.font_data.insert(
@@ -140,7 +154,6 @@ fn setup_fonts(ctx: &egui::Context) {
             .entry(egui::FontFamily::Monospace)
             .or_default()
             .insert(0, "SystemMono".to_owned());
-        changed = true;
     }
 
     if let Some(bytes) = load_first_readable(UI_SANS_FONT_CANDIDATES) {
@@ -153,12 +166,21 @@ fn setup_fonts(ctx: &egui::Context) {
             .entry(egui::FontFamily::Proportional)
             .or_default()
             .insert(0, "SystemSans".to_owned());
-        changed = true;
     }
 
-    if changed {
-        ctx.set_fonts(fonts);
+    fonts.font_data.insert(
+        "NerdFontSymbols".to_owned(),
+        std::sync::Arc::new(egui::FontData::from_static(NERD_FONT_SYMBOLS)),
+    );
+    // Appended as a last-resort fallback in BOTH families: Monospace for
+    // terminal content (CLI tool icons), Proportional for rmux's own UI
+    // chrome icons (e.g. the notification bell in top_bar.rs), which use
+    // `FontId::proportional` and would otherwise miss this fallback.
+    for family in [egui::FontFamily::Monospace, egui::FontFamily::Proportional] {
+        fonts.families.entry(family).or_default().push("NerdFontSymbols".to_owned());
     }
+
+    ctx.set_fonts(fonts);
 }
 
 /// Return the bytes of the first path in `candidates` that exists and

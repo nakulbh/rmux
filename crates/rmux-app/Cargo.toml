@@ -23,3 +23,5 @@ tokio = { workspace = true }
 rmux-terminal = { path = "../rmux-terminal" }
 rmux-api = { path = "../rmux-api" }
 wry = { workspace = true }
+arboard = "3"
+image = { version = "0.25", default-features = false, features = ["png"] }

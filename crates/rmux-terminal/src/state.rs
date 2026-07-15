@@ -113,6 +113,13 @@ pub struct GridCell {
     pub underline: bool,
     /// Whether this cell is the cursor position (for overlay rendering).
     pub is_cursor: bool,
+    /// Whether this cell holds a double-width character (CJK, many emoji,
+    /// and some symbols in Unicode's East Asian "ambiguous width" ranges
+    /// that terminal apps render at 2 columns). The renderer spans this
+    /// cell's background and glyph across the next column and skips
+    /// painting that column separately, so its background fill doesn't
+    /// clip the right half of the glyph.
+    pub wide: bool,
 }
 
 impl TermState {
@@ -197,6 +204,7 @@ impl TermState {
                         italic: cell.flags.contains(Flags::ITALIC),
                         underline: cell.flags.intersects(Flags::ALL_UNDERLINES),
                         is_cursor: false,
+                        wide: cell.flags.contains(Flags::WIDE_CHAR),
                     };
                 }
             }
@@ -406,6 +414,7 @@ impl Default for GridCell {
             italic: false,
             underline: false,
             is_cursor: false,
+            wide: false,
         }
     }
 }
@@ -455,6 +464,30 @@ mod tests {
         assert!(!cell.italic);
         assert!(!cell.underline);
         assert!(!cell.is_cursor);
+        assert!(!cell.wide);
+    }
+
+    #[test]
+    fn test_wide_char_flag_set_for_double_width_glyph() {
+        let mut state = TermState::new(80, 24, 1000);
+        // A CJK character is double-width; alacritty flags the cell holding
+        // it WIDE_CHAR and inserts a WIDE_CHAR_SPACER cell right after it.
+        state.feed_bytes("中".as_bytes());
+        let snapshot = state.snapshot();
+
+        assert_eq!(snapshot.cells[0][0].c, '中');
+        assert!(
+            snapshot.cells[0][0].wide,
+            "leading cell of a double-width glyph must be marked wide"
+        );
+    }
+
+    #[test]
+    fn test_ascii_cells_are_not_wide() {
+        let mut state = TermState::new(80, 24, 1000);
+        state.feed_bytes(b"a");
+        let snapshot = state.snapshot();
+        assert!(!snapshot.cells[0][0].wide);
     }
 
     #[test]
