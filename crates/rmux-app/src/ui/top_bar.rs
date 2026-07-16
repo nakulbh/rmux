@@ -15,6 +15,7 @@ use egui::{
 };
 
 use crate::notifications::NotificationManager;
+use crate::ui::shortcut_hints;
 use crate::ui::theme::{self, metrics};
 use crate::workspace::WorkspaceManager;
 
@@ -72,6 +73,9 @@ pub fn show(
 ) -> Option<TopBarAction> {
     let p = theme::palette();
     let mut action = None;
+    // Hold ⌘ (macOS) / Ctrl (Linux/Windows) to reveal chord badges on each
+    // control — same discoverability pattern as cmux.
+    let show_hints = shortcut_hints::primary_mod_held(ctx);
 
     egui::TopBottomPanel::top("rmux_top_bar")
         .exact_height(metrics::TOP_BAR_HEIGHT)
@@ -92,10 +96,11 @@ pub fn show(
 
             // --- Toolbar icon cluster (all left-aligned, cmux order) ---
 
-            // 1. Sidebar toggle
+            // 1. Sidebar toggle  (⌘B / Ctrl+B)
+            let sidebar_center = pos2(x, cy);
             if icon_button(
                 ui,
-                pos2(x, cy),
+                sidebar_center,
                 "sidebar_toggle",
                 sidebar_visible,
                 true,
@@ -105,13 +110,17 @@ pub fn show(
             ) {
                 action = Some(TopBarAction::ToggleSidebar);
             }
+            if show_hints {
+                shortcut_hints::draw_overlay_badge(ui, sidebar_center, &shortcut_hints::chord("B"));
+            }
             x += ICON_SIZE + ICON_GAP;
 
-            // 2. Notification bell + unread badge
+            // 2. Notification bell + unread badge  (⌘I / Ctrl+I)
+            let bell_center = pos2(x, cy);
             let unread = notifications.unread_count();
             if icon_button(
                 ui,
-                pos2(x, cy),
+                bell_center,
                 "notification_bell",
                 notification_panel_visible,
                 true,
@@ -121,22 +130,30 @@ pub fn show(
             ) {
                 action = Some(TopBarAction::ToggleNotifications);
             }
-            if unread > 0 {
+            if unread > 0 && !show_hints {
                 draw_badge(ui, pos2(x + 8.0_f32, cy - 8.0_f32), unread, &p);
+            }
+            if show_hints {
+                shortcut_hints::draw_overlay_badge(ui, bell_center, &shortcut_hints::chord("I"));
             }
             x += ICON_SIZE + ICON_GAP;
 
-            // 3. Plus (+ ▾) — new workspace; right half / long-term: menu
-            if plus_button(ui, pos2(x, cy), &p) {
+            // 3. Plus (+ ▾) — new workspace  (⌘N / Ctrl+N)
+            let plus_center = pos2(x, cy);
+            if plus_button(ui, plus_center, &p) {
                 action = Some(TopBarAction::NewWorkspace);
+            }
+            if show_hints {
+                shortcut_hints::draw_overlay_badge(ui, plus_center, &shortcut_hints::chord("N"));
             }
             x += ICON_SIZE + 6.0_f32 + ICON_GAP;
 
-            // 4. Back (previous workspace)
+            // 4. Back (previous workspace)  (⌘[ / Ctrl+[)
+            let prev_center = pos2(x, cy);
             let can_nav = manager.workspace_count() > 1;
             if icon_button(
                 ui,
-                pos2(x, cy),
+                prev_center,
                 "ws_prev",
                 false,
                 can_nav,
@@ -147,12 +164,16 @@ pub fn show(
             {
                 action = Some(TopBarAction::PrevWorkspace);
             }
+            if show_hints {
+                shortcut_hints::draw_overlay_badge(ui, prev_center, &shortcut_hints::chord("["));
+            }
             x += ICON_SIZE + ICON_GAP;
 
-            // 5. Forward (next workspace)
+            // 5. Forward (next workspace)  (⌘] / Ctrl+])
+            let next_center = pos2(x, cy);
             if icon_button(
                 ui,
-                pos2(x, cy),
+                next_center,
                 "ws_next",
                 false,
                 can_nav,
@@ -162,6 +183,9 @@ pub fn show(
             ) && can_nav
             {
                 action = Some(TopBarAction::NextWorkspace);
+            }
+            if show_hints {
+                shortcut_hints::draw_overlay_badge(ui, next_center, &shortcut_hints::chord("]"));
             }
             x += ICON_SIZE + CLUSTER_TAB_GAP;
 
@@ -181,6 +205,14 @@ pub fn show(
                     .on_hover_cursor(CursorIcon::PointingHand);
                 if resp.clicked() && !is_active {
                     action = Some(TopBarAction::SelectWorkspace(idx));
+                }
+                // Cmd/Ctrl+1..9 switch workspaces — badge on the tab.
+                if show_hints && idx < 9 {
+                    shortcut_hints::draw_overlay_badge(
+                        ui,
+                        pos2(x + tab_w / 2.0_f32, cy),
+                        &shortcut_hints::chord(&(idx + 1).to_string()),
+                    );
                 }
                 x += tab_w + 4.0_f32;
             }

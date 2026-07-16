@@ -135,7 +135,8 @@ impl SidebarView {
     /// This should be called from the main `update` loop. It draws the
     /// workspace card list (with per-workspace unread badges) and handles
     /// click events for workspace switching. New workspaces are created
-    /// from the top-bar `+` button (or Cmd/Ctrl+N).
+    /// from the top-bar `+` button (or Cmd/Ctrl+N). While ⌘/Ctrl is held,
+    /// each card shows its `⌘1`…`⌘9` switch shortcut (cmux style).
     pub fn show(
         &mut self,
         ctx: &egui::Context,
@@ -146,13 +147,15 @@ impl SidebarView {
             return;
         }
 
+        let show_hints = crate::ui::shortcut_hints::primary_mod_held(ctx);
+
         egui::SidePanel::left("rmux_sidebar")
             .frame(egui::Frame::default().fill(p().sidebar_bg).inner_margin(egui::Margin::same(8)))
             .min_width(crate::ui::theme::metrics::SIDEBAR_MIN_WIDTH)
             .max_width(crate::ui::theme::metrics::SIDEBAR_MAX_WIDTH)
             .default_width(crate::ui::theme::metrics::SIDEBAR_DEFAULT_WIDTH)
             .resizable(true)
-            .show(ctx, |ui| self.render_sidebar(ui, manager, notifications));
+            .show(ctx, |ui| self.render_sidebar(ui, manager, notifications, show_hints));
     }
 
     /// Render the sidebar contents: header, card list, and footer hint.
@@ -161,6 +164,7 @@ impl SidebarView {
         ui: &mut egui::Ui,
         manager: &mut WorkspaceManager,
         notifications: &NotificationManager,
+        show_hints: bool,
     ) {
         // Snapshot workspace data so cards can take `&mut manager` for renames.
         let workspaces: Vec<TabData> = manager
@@ -209,8 +213,8 @@ impl SidebarView {
                         let is_active = i == active_index;
                         let is_editing = self.editing_index == Some(i);
 
-                        let card_response =
-                            self.render_card(ui, tab, is_active, is_editing, i, manager);
+                        let card_response = self
+                            .render_card(ui, tab, is_active, is_editing, i, manager, show_hints);
 
                         // Detect single click for switching (only when not editing)
                         if card_response.clicked() && !is_editing {
@@ -238,7 +242,10 @@ impl SidebarView {
     /// Render a single workspace card.
     ///
     /// If `is_editing` is true, renders a `TextEdit` widget for inline rename.
+    /// When `show_hints` is true (primary modifier held), paints a `⌘N`
+    /// badge for workspaces 1–9 instead of the unread count chip.
     /// Returns the response for click/double-click detection.
+    #[allow(clippy::too_many_arguments)]
     fn render_card(
         &mut self,
         ui: &mut egui::Ui,
@@ -247,6 +254,7 @@ impl SidebarView {
         is_editing: bool,
         index: usize,
         manager: &mut WorkspaceManager,
+        show_hints: bool,
     ) -> egui::Response {
         let base_height = if tab.status.is_some() { 52.0_f32 } else { 42.0_f32 };
         let git_extra = if tab.git_branch.is_some() { 14.0_f32 } else { 0.0_f32 };
@@ -331,10 +339,20 @@ impl SidebarView {
 
             let content = rect.shrink2(egui::Vec2::new(CARD_PAD_X, CARD_PAD_Y));
 
-            // Unread notification badge: accent-filled circle r=8 at the
-            // right edge of line 1, count in 9px mono `accent_fg`.
-            let badge_reserved = if tab.unread > 0 { 20.0_f32 } else { 0.0_f32 };
-            if tab.unread > 0 {
+            // While ⌘/Ctrl is held: show workspace switch chord (⌘1…) at the
+            // right edge (cmux). Otherwise: unread notification count chip.
+            let badge_reserved = if show_hints && index < 9 {
+                28.0_f32
+            } else if tab.unread > 0 {
+                20.0_f32
+            } else {
+                0.0_f32
+            };
+            if show_hints && index < 9 {
+                let badge_center =
+                    egui::Pos2::new(content.right() - 12.0_f32, content.top() + 9.0_f32);
+                crate::ui::shortcut_hints::draw_workspace_badge(ui, badge_center, index, is_active);
+            } else if tab.unread > 0 {
                 let badge_center =
                     egui::Pos2::new(content.right() - 8.0_f32, content.top() + 8.0_f32);
                 painter.circle_filled(badge_center, 8.0_f32, p().accent);
