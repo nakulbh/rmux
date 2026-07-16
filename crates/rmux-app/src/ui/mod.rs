@@ -2,7 +2,7 @@
 //!
 //! # Components
 //!
-//! - `top_bar` — Top chrome bar (sidebar toggle, title, bell)
+//! - `top_bar` — cmux-style top chrome (left toolbar + workspace tabs)
 //! - `sidebar` — `SidebarView` for workspace tab navigation
 //! - `workspace_view` — Pane tree renderer for split layouts
 //! - `terminal_pane` — Terminal pane widget (PTY + rendering + input)
