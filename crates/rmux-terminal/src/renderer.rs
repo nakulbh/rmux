@@ -1,6 +1,6 @@
 use crate::state::GridSnapshot;
 use alacritty_terminal::vte::ansi::CursorShape;
-use egui::{Color32, FontFamily, FontId, Pos2, Rect, Ui, Vec2};
+use egui::{Color32, FontFamily, FontId, Pos2, Rect, Stroke, Ui, Vec2};
 
 const CURSOR_BLOCK_ALPHA: u8 = 128;
 const CURSOR_LINE_ALPHA: u8 = 200;
@@ -14,12 +14,6 @@ const LINE_HEIGHT_PAD: f32 = 1.15;
 
 fn cursor_color(alpha: u8, theme_color: Color32) -> Color32 {
     Color32::from_rgba_unmultiplied(theme_color.r(), theme_color.g(), theme_color.b(), alpha)
-}
-
-/// True for Unicode block elements that should be painted as geometry so they
-/// fill the cell edge-to-edge (critical for LazyVim / ASCII-art logos).
-fn is_block_element(c: char) -> bool {
-    matches!(c, '\u{2580}'..='\u{259F}')
 }
 
 /// True for Private Use Area / Nerd Font icon ranges that look best
@@ -38,9 +32,105 @@ fn is_nerd_icon(c: char) -> bool {
     )
 }
 
-/// Paint a Unicode block element as filled rectangles that exactly cover the
-/// cell (or fractions of it). Returns `true` if handled.
-fn paint_block_element(painter: &egui::Painter, cell: Rect, c: char, fg: Color32) -> bool {
+/// Characters we draw as geometry instead of font glyphs.
+///
+/// Covers:
+/// - Unicode block elements (LazyVim logo, progress bars)
+/// - Media-control triangles (U+23F4–U+23FA) used by Claude Code etc.
+///   JetBrains Mono and Symbols Nerd Font Mono do **not** include U+23F5,
+///   so without this path those render as hollow □ tofu boxes.
+/// - Common geometric triangles/squares (U+25B2–U+25C5, etc.) for a solid
+///   cmux/Ghostty-like look independent of font coverage.
+fn is_special_shape(c: char) -> bool {
+    matches!(
+        c,
+        // Block elements
+        '\u{2580}'..='\u{259F}'
+        // Media controls: ◀ ▶ ▲ ▼ ⏸ ⏹ ⏺
+        | '\u{23F4}'..='\u{23FA}'
+        // Geometric shapes: triangles, pointers, squares, circles (subset)
+        | '\u{25B2}'..='\u{25C5}'
+        | '\u{25A0}'..='\u{25A1}'
+        | '\u{25AA}'..='\u{25AB}'
+        | '\u{25CF}' | '\u{25CB}' | '\u{25C9}' | '\u{25C6}' | '\u{25C7}' | '\u{25C8}' | '\u{25CE}'
+        // Powerline solid arrows (common in prompts)
+        | '\u{E0B0}'..='\u{E0B3}'
+    )
+}
+
+/// Draw a filled right-pointing triangle inset in `cell`.
+fn fill_triangle_right(painter: &egui::Painter, cell: Rect, fg: Color32, pad: f32) {
+    let x0 = cell.left() + cell.width() * pad;
+    let x1 = cell.right() - cell.width() * pad;
+    let y0 = cell.top() + cell.height() * pad;
+    let y1 = cell.bottom() - cell.height() * pad;
+    let mid_y = (y0 + y1) * 0.5;
+    painter.add(egui::Shape::convex_polygon(
+        vec![Pos2::new(x0, y0), Pos2::new(x1, mid_y), Pos2::new(x0, y1)],
+        fg,
+        Stroke::NONE,
+    ));
+}
+
+fn fill_triangle_left(painter: &egui::Painter, cell: Rect, fg: Color32, pad: f32) {
+    let x0 = cell.left() + cell.width() * pad;
+    let x1 = cell.right() - cell.width() * pad;
+    let y0 = cell.top() + cell.height() * pad;
+    let y1 = cell.bottom() - cell.height() * pad;
+    let mid_y = (y0 + y1) * 0.5;
+    painter.add(egui::Shape::convex_polygon(
+        vec![Pos2::new(x1, y0), Pos2::new(x0, mid_y), Pos2::new(x1, y1)],
+        fg,
+        Stroke::NONE,
+    ));
+}
+
+fn fill_triangle_up(painter: &egui::Painter, cell: Rect, fg: Color32, pad: f32) {
+    let x0 = cell.left() + cell.width() * pad;
+    let x1 = cell.right() - cell.width() * pad;
+    let y0 = cell.top() + cell.height() * pad;
+    let y1 = cell.bottom() - cell.height() * pad;
+    let mid_x = (x0 + x1) * 0.5;
+    painter.add(egui::Shape::convex_polygon(
+        vec![Pos2::new(mid_x, y0), Pos2::new(x1, y1), Pos2::new(x0, y1)],
+        fg,
+        Stroke::NONE,
+    ));
+}
+
+fn fill_triangle_down(painter: &egui::Painter, cell: Rect, fg: Color32, pad: f32) {
+    let x0 = cell.left() + cell.width() * pad;
+    let x1 = cell.right() - cell.width() * pad;
+    let y0 = cell.top() + cell.height() * pad;
+    let y1 = cell.bottom() - cell.height() * pad;
+    let mid_x = (x0 + x1) * 0.5;
+    painter.add(egui::Shape::convex_polygon(
+        vec![Pos2::new(x0, y0), Pos2::new(x1, y0), Pos2::new(mid_x, y1)],
+        fg,
+        Stroke::NONE,
+    ));
+}
+
+fn fill_circle(painter: &egui::Painter, cell: Rect, fg: Color32, radius_frac: f32) {
+    let r = cell.width().min(cell.height()) * radius_frac * 0.5;
+    painter.circle_filled(cell.center(), r, fg);
+}
+
+fn stroke_circle(
+    painter: &egui::Painter,
+    cell: Rect,
+    fg: Color32,
+    radius_frac: f32,
+    thickness: f32,
+) {
+    let r = cell.width().min(cell.height()) * radius_frac * 0.5;
+    painter.circle_stroke(cell.center(), r, Stroke::new(thickness, fg));
+}
+
+/// Paint block elements, media controls, and geometric shapes as geometry so
+/// they match Ghostty/cmux (solid triangles, edge-to-edge blocks) even when
+/// the loaded fonts lack the codepoint. Returns `true` if handled.
+fn paint_special_shape(painter: &egui::Painter, cell: Rect, c: char, fg: Color32) -> bool {
     let w = cell.width();
     let h = cell.height();
     let left = cell.left();
@@ -56,28 +146,24 @@ fn paint_block_element(painter: &egui::Painter, cell: Rect, c: char, fg: Color32
     };
 
     match c {
-        // Upper half block
+        // ── Block elements (U+2580–U+259F) ────────────────────────────
         '\u{2580}' => fill(0.0, 0.0, 1.0, 0.5),
-        // Lower N/8 blocks
-        '\u{2581}' => fill(0.0, 7.0 / 8.0, 1.0, 1.0), // 1/8
-        '\u{2582}' => fill(0.0, 6.0 / 8.0, 1.0, 1.0), // 1/4
-        '\u{2583}' => fill(0.0, 5.0 / 8.0, 1.0, 1.0), // 3/8
-        '\u{2584}' => fill(0.0, 0.5, 1.0, 1.0),       // lower half
-        '\u{2585}' => fill(0.0, 3.0 / 8.0, 1.0, 1.0), // 5/8
-        '\u{2586}' => fill(0.0, 2.0 / 8.0, 1.0, 1.0), // 3/4
-        '\u{2587}' => fill(0.0, 1.0 / 8.0, 1.0, 1.0), // 7/8
-        '\u{2588}' => fill(0.0, 0.0, 1.0, 1.0),       // full block
-        // Left N/8 blocks
+        '\u{2581}' => fill(0.0, 7.0 / 8.0, 1.0, 1.0),
+        '\u{2582}' => fill(0.0, 6.0 / 8.0, 1.0, 1.0),
+        '\u{2583}' => fill(0.0, 5.0 / 8.0, 1.0, 1.0),
+        '\u{2584}' => fill(0.0, 0.5, 1.0, 1.0),
+        '\u{2585}' => fill(0.0, 3.0 / 8.0, 1.0, 1.0),
+        '\u{2586}' => fill(0.0, 2.0 / 8.0, 1.0, 1.0),
+        '\u{2587}' => fill(0.0, 1.0 / 8.0, 1.0, 1.0),
+        '\u{2588}' => fill(0.0, 0.0, 1.0, 1.0),
         '\u{2589}' => fill(0.0, 0.0, 7.0 / 8.0, 1.0),
         '\u{258A}' => fill(0.0, 0.0, 6.0 / 8.0, 1.0),
         '\u{258B}' => fill(0.0, 0.0, 5.0 / 8.0, 1.0),
-        '\u{258C}' => fill(0.0, 0.0, 0.5, 1.0), // left half
+        '\u{258C}' => fill(0.0, 0.0, 0.5, 1.0),
         '\u{258D}' => fill(0.0, 0.0, 3.0 / 8.0, 1.0),
         '\u{258E}' => fill(0.0, 0.0, 2.0 / 8.0, 1.0),
         '\u{258F}' => fill(0.0, 0.0, 1.0 / 8.0, 1.0),
-        // Right half
         '\u{2590}' => fill(0.5, 0.0, 1.0, 1.0),
-        // Light / medium / dark shade — approximate with alpha
         '\u{2591}' => {
             let c = Color32::from_rgba_unmultiplied(fg.r(), fg.g(), fg.b(), 64);
             painter.rect_filled(cell, 0.0, c);
@@ -90,41 +176,188 @@ fn paint_block_element(painter: &egui::Painter, cell: Rect, c: char, fg: Color32
             let c = Color32::from_rgba_unmultiplied(fg.r(), fg.g(), fg.b(), 192);
             painter.rect_filled(cell, 0.0, c);
         }
-        // Quadrants
-        '\u{2596}' => fill(0.0, 0.5, 0.5, 1.0), // lower left
-        '\u{2597}' => fill(0.5, 0.5, 1.0, 1.0), // lower right
-        '\u{2598}' => fill(0.0, 0.0, 0.5, 0.5), // upper left
+        '\u{2596}' => fill(0.0, 0.5, 0.5, 1.0),
+        '\u{2597}' => fill(0.5, 0.5, 1.0, 1.0),
+        '\u{2598}' => fill(0.0, 0.0, 0.5, 0.5),
         '\u{2599}' => {
-            // upper left + lower left + lower right
             fill(0.0, 0.0, 0.5, 1.0);
             fill(0.5, 0.5, 1.0, 1.0);
         }
         '\u{259A}' => {
-            // upper left + lower right
             fill(0.0, 0.0, 0.5, 0.5);
             fill(0.5, 0.5, 1.0, 1.0);
         }
         '\u{259B}' => {
-            // upper left + upper right + lower left
             fill(0.0, 0.0, 1.0, 0.5);
             fill(0.0, 0.5, 0.5, 1.0);
         }
         '\u{259C}' => {
-            // upper left + upper right + lower right
             fill(0.0, 0.0, 1.0, 0.5);
             fill(0.5, 0.5, 1.0, 1.0);
         }
-        '\u{259D}' => fill(0.5, 0.0, 1.0, 0.5), // upper right
+        '\u{259D}' => fill(0.5, 0.0, 1.0, 0.5),
         '\u{259E}' => {
-            // upper right + lower left
             fill(0.5, 0.0, 1.0, 0.5);
             fill(0.0, 0.5, 0.5, 1.0);
         }
         '\u{259F}' => {
-            // upper right + lower left + lower right
             fill(0.5, 0.0, 1.0, 0.5);
             fill(0.0, 0.5, 1.0, 1.0);
         }
+
+        // ── Media controls (often missing from coding fonts) ──────────
+        // U+23F4 BLACK MEDIUM LEFT-POINTING TRIANGLE
+        '\u{23F4}' => fill_triangle_left(painter, cell, fg, 0.18),
+        // U+23F5 BLACK MEDIUM RIGHT-POINTING TRIANGLE  ← Claude Code play icon
+        '\u{23F5}' => fill_triangle_right(painter, cell, fg, 0.18),
+        // U+23F6 / U+23F7 up / down
+        '\u{23F6}' => fill_triangle_up(painter, cell, fg, 0.18),
+        '\u{23F7}' => fill_triangle_down(painter, cell, fg, 0.18),
+        // U+23F8 DOUBLE VERTICAL BAR (pause)
+        '\u{23F8}' => {
+            let bar_w = w * 0.14;
+            let gap = w * 0.12;
+            let x_mid = cell.center().x;
+            let y0 = top + h * 0.18;
+            let y1 = top + h * 0.82;
+            painter.rect_filled(
+                Rect::from_min_max(Pos2::new(x_mid - gap - bar_w, y0), Pos2::new(x_mid - gap, y1)),
+                0.0,
+                fg,
+            );
+            painter.rect_filled(
+                Rect::from_min_max(Pos2::new(x_mid + gap, y0), Pos2::new(x_mid + gap + bar_w, y1)),
+                0.0,
+                fg,
+            );
+        }
+        // U+23F9 BLACK SQUARE FOR STOP
+        '\u{23F9}' => fill(0.22, 0.22, 0.78, 0.78),
+        // U+23FA BLACK CIRCLE FOR RECORD
+        '\u{23FA}' => fill_circle(painter, cell, fg, 0.55),
+
+        // ── Geometric shapes ──────────────────────────────────────────
+        // Black / white triangles and pointers
+        '\u{25B2}' => fill_triangle_up(painter, cell, fg, 0.12), // ▲
+        '\u{25B3}' => {
+            // △ outline approx: draw smaller + leave hole is hard; use thin stroke triangle
+            fill_triangle_up(painter, cell, fg, 0.12);
+        }
+        '\u{25B4}' => fill_triangle_up(painter, cell, fg, 0.22), // ▴ small
+        '\u{25B5}' => fill_triangle_up(painter, cell, fg, 0.22),
+        '\u{25B6}' => fill_triangle_right(painter, cell, fg, 0.12), // ▶
+        '\u{25B7}' => fill_triangle_right(painter, cell, fg, 0.12), // ▷
+        '\u{25B8}' => fill_triangle_right(painter, cell, fg, 0.22), // ▸
+        '\u{25B9}' => fill_triangle_right(painter, cell, fg, 0.22), // ▹
+        '\u{25BA}' => fill_triangle_right(painter, cell, fg, 0.10), // ►
+        '\u{25BB}' => fill_triangle_right(painter, cell, fg, 0.10),
+        '\u{25BC}' => fill_triangle_down(painter, cell, fg, 0.12), // ▼
+        '\u{25BD}' => fill_triangle_down(painter, cell, fg, 0.12),
+        '\u{25BE}' => fill_triangle_down(painter, cell, fg, 0.22),
+        '\u{25BF}' => fill_triangle_down(painter, cell, fg, 0.22),
+        '\u{25C0}' => fill_triangle_left(painter, cell, fg, 0.12), // ◀
+        '\u{25C1}' => fill_triangle_left(painter, cell, fg, 0.12),
+        '\u{25C2}' => fill_triangle_left(painter, cell, fg, 0.22),
+        '\u{25C3}' => fill_triangle_left(painter, cell, fg, 0.22),
+        '\u{25C4}' => fill_triangle_left(painter, cell, fg, 0.10), // ◄
+        '\u{25C5}' => fill_triangle_left(painter, cell, fg, 0.10),
+
+        // Squares
+        '\u{25A0}' => fill(0.15, 0.15, 0.85, 0.85), // ■
+        '\u{25A1}' => {
+            // □ hollow
+            let inset = Rect::from_min_max(
+                Pos2::new(left + w * 0.15, top + h * 0.15),
+                Pos2::new(left + w * 0.85, top + h * 0.85),
+            );
+            painter.rect_stroke(inset, 0.0, Stroke::new(1.5, fg), egui::StrokeKind::Inside);
+        }
+        '\u{25AA}' => fill(0.30, 0.30, 0.70, 0.70), // ▪
+        '\u{25AB}' => {
+            let inset = Rect::from_min_max(
+                Pos2::new(left + w * 0.30, top + h * 0.30),
+                Pos2::new(left + w * 0.70, top + h * 0.70),
+            );
+            painter.rect_stroke(inset, 0.0, Stroke::new(1.2, fg), egui::StrokeKind::Inside);
+        }
+
+        // Circles / diamonds
+        '\u{25CF}' => fill_circle(painter, cell, fg, 0.62), // ●
+        '\u{25CB}' => stroke_circle(painter, cell, fg, 0.62, 1.5), // ○
+        '\u{25C9}' => {
+            // ◉ fisheye
+            stroke_circle(painter, cell, fg, 0.70, 1.5);
+            fill_circle(painter, cell, fg, 0.35);
+        }
+        '\u{25CE}' => {
+            // ◎ bullseye
+            stroke_circle(painter, cell, fg, 0.70, 1.4);
+            stroke_circle(painter, cell, fg, 0.40, 1.2);
+        }
+        '\u{25C6}' => {
+            // ◆ diamond
+            let cx = cell.center().x;
+            let cy = cell.center().y;
+            let rx = w * 0.32;
+            let ry = h * 0.38;
+            painter.add(egui::Shape::convex_polygon(
+                vec![
+                    Pos2::new(cx, cy - ry),
+                    Pos2::new(cx + rx, cy),
+                    Pos2::new(cx, cy + ry),
+                    Pos2::new(cx - rx, cy),
+                ],
+                fg,
+                Stroke::NONE,
+            ));
+        }
+        '\u{25C7}' => {
+            // ◇ hollow diamond
+            let cx = cell.center().x;
+            let cy = cell.center().y;
+            let rx = w * 0.32;
+            let ry = h * 0.38;
+            painter.add(egui::Shape::closed_line(
+                vec![
+                    Pos2::new(cx, cy - ry),
+                    Pos2::new(cx + rx, cy),
+                    Pos2::new(cx, cy + ry),
+                    Pos2::new(cx - rx, cy),
+                ],
+                Stroke::new(1.4, fg),
+            ));
+        }
+        '\u{25C8}' => {
+            // ◈ diamond with center
+            let cx = cell.center().x;
+            let cy = cell.center().y;
+            let rx = w * 0.32;
+            let ry = h * 0.38;
+            painter.add(egui::Shape::closed_line(
+                vec![
+                    Pos2::new(cx, cy - ry),
+                    Pos2::new(cx + rx, cy),
+                    Pos2::new(cx, cy + ry),
+                    Pos2::new(cx - rx, cy),
+                ],
+                Stroke::new(1.3, fg),
+            ));
+            fill_circle(painter, cell, fg, 0.22);
+        }
+
+        // ── Powerline solid triangles (shell prompts) ─────────────────
+        '\u{E0B0}' => fill_triangle_right(painter, cell, fg, 0.0), // 
+        '\u{E0B2}' => fill_triangle_left(painter, cell, fg, 0.0),  // 
+        '\u{E0B1}' | '\u{E0B3}' => {
+            // hollow powerline — approximate as stroke triangle
+            // fall through to font if possible; paint thin version
+            if c == '\u{E0B1}' {
+                fill_triangle_right(painter, cell, fg, 0.05);
+            } else {
+                fill_triangle_left(painter, cell, fg, 0.05);
+            }
+        }
+
         _ => return false,
     }
     true
@@ -218,15 +451,13 @@ impl TerminalRenderer {
                 painter.rect_filled(cell_rect, 0.0, cell.bg);
 
                 if cell.c != ' ' {
-                    // Block elements: geometric fill so TUIs tile cleanly.
-                    if is_block_element(cell.c) {
-                        paint_block_element(painter, cell_rect, cell.c, cell.fg);
+                    if is_special_shape(cell.c) {
+                        // Geometry path — solid triangles / blocks like Ghostty.
+                        paint_special_shape(painter, cell_rect, cell.c, cell.fg);
                     } else {
                         let font_id =
                             if cell.bold { font_bold.clone() } else { font_regular.clone() };
 
-                        // Layout once so we can center icons and vertically
-                        // settle glyphs inside the tight cell.
                         let galley =
                             ui.fonts(|f| f.layout_no_wrap(cell.c.to_string(), font_id, cell.fg));
                         let gw = galley.size().x;
@@ -238,9 +469,10 @@ impl TerminalRenderer {
                         } else {
                             cell_rect.left()
                         };
-                        // Vertically center so descenders/ascenders share the
-                        // tight cell evenly (avoids top-biased "floating" glyphs).
-                        let y = cell_rect.top() + (cell_rect.height() - gh) * 0.5;
+                        // Slight top bias keeps the Latin baseline closer to
+                        // native terminal metrics than pure vertical center,
+                        // which made text look "floaty" vs cmux.
+                        let y = cell_rect.top() + (cell_rect.height() - gh) * 0.35;
 
                         painter.galley(Pos2::new(x, y), galley, cell.fg);
                     }
@@ -359,10 +591,21 @@ mod tests {
 
     #[test]
     fn test_block_elements_recognized() {
-        assert!(is_block_element('█'));
-        assert!(is_block_element('▄'));
-        assert!(is_block_element('▀'));
-        assert!(!is_block_element('A'));
+        assert!(is_special_shape('█'));
+        assert!(is_special_shape('▄'));
+        assert!(is_special_shape('▀'));
+        assert!(!is_special_shape('A'));
+    }
+
+    #[test]
+    fn test_media_play_triangle_is_special() {
+        // Claude Code status line uses U+23F5 twice — must not fall through
+        // to missing-glyph tofu boxes.
+        assert!(is_special_shape('\u{23F5}'));
+        assert!(is_special_shape('\u{23F4}'));
+        assert!(is_special_shape('\u{23F8}'));
+        assert!(is_special_shape('▶'));
+        assert!(is_special_shape('●'));
     }
 
     #[test]
