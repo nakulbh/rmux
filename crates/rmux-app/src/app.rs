@@ -479,10 +479,10 @@ impl RmuxApp {
             new_tab = workspace_view::render_pane_tree(ui, &mut self.workspace_manager, zoomed);
         });
         // Tab-bar "+" — same path as Cmd+T so theme/font match.
-        if new_tab {
-            if let Err(e) = self.new_surface_with_terminal(None) {
-                tracing::warn!(error = %e, "tab-bar new surface failed");
-            }
+        if new_tab
+            && let Err(e) = self.new_surface_with_terminal(None)
+        {
+            tracing::warn!(error = %e, "tab-bar new surface failed");
         }
     }
 }
