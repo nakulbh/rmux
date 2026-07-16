@@ -1,12 +1,133 @@
 use crate::state::GridSnapshot;
 use alacritty_terminal::vte::ansi::CursorShape;
-use egui::{Color32, Pos2, Rect, Ui, Vec2};
+use egui::{Color32, FontFamily, FontId, Pos2, Rect, Ui, Vec2};
 
 const CURSOR_BLOCK_ALPHA: u8 = 128;
 const CURSOR_LINE_ALPHA: u8 = 200;
 
+/// Extra vertical padding factor applied on top of measured glyph height so
+/// descenders ("gypq") and combining marks don't clip, while still keeping
+/// cells tight enough that box-drawing / block-element TUIs (LazyVim logo,
+/// borders) tile without visible gaps. Ghostty/cmux use a similar tight
+/// line height around JetBrains Mono.
+const LINE_HEIGHT_PAD: f32 = 1.15;
+
 fn cursor_color(alpha: u8, theme_color: Color32) -> Color32 {
     Color32::from_rgba_unmultiplied(theme_color.r(), theme_color.g(), theme_color.b(), alpha)
+}
+
+/// True for Unicode block elements that should be painted as geometry so they
+/// fill the cell edge-to-edge (critical for LazyVim / ASCII-art logos).
+fn is_block_element(c: char) -> bool {
+    matches!(c, '\u{2580}'..='\u{259F}')
+}
+
+/// True for Private Use Area / Nerd Font icon ranges that look best
+/// centered in the cell (devicons, codicons, material, etc.).
+fn is_nerd_icon(c: char) -> bool {
+    let cp = c as u32;
+    matches!(
+        cp,
+        0xE000..=0xF8FF // BMP PUA (most Nerd Font icons live here)
+            | 0xF0000..=0xFFFFD // Supplementary PUA-A
+            | 0x100000..=0x10FFFD // Supplementary PUA-B
+            | 0x23FB..=0x23FE // power symbols
+            | 0x2665 // heart
+            | 0x26A1 // high voltage
+            | 0x2B58 // heavy circle
+    )
+}
+
+/// Paint a Unicode block element as filled rectangles that exactly cover the
+/// cell (or fractions of it). Returns `true` if handled.
+fn paint_block_element(painter: &egui::Painter, cell: Rect, c: char, fg: Color32) -> bool {
+    let w = cell.width();
+    let h = cell.height();
+    let left = cell.left();
+    let top = cell.top();
+
+    // Helper: fill a sub-rect of the cell given fractional x0,y0,x1,y1 in 0..=1.
+    let fill = |x0: f32, y0: f32, x1: f32, y1: f32| {
+        let r = Rect::from_min_max(
+            Pos2::new(left + x0 * w, top + y0 * h),
+            Pos2::new(left + x1 * w, top + y1 * h),
+        );
+        painter.rect_filled(r, 0.0, fg);
+    };
+
+    match c {
+        // Upper half block
+        '\u{2580}' => fill(0.0, 0.0, 1.0, 0.5),
+        // Lower N/8 blocks
+        '\u{2581}' => fill(0.0, 7.0 / 8.0, 1.0, 1.0), // 1/8
+        '\u{2582}' => fill(0.0, 6.0 / 8.0, 1.0, 1.0), // 1/4
+        '\u{2583}' => fill(0.0, 5.0 / 8.0, 1.0, 1.0), // 3/8
+        '\u{2584}' => fill(0.0, 0.5, 1.0, 1.0),       // lower half
+        '\u{2585}' => fill(0.0, 3.0 / 8.0, 1.0, 1.0), // 5/8
+        '\u{2586}' => fill(0.0, 2.0 / 8.0, 1.0, 1.0), // 3/4
+        '\u{2587}' => fill(0.0, 1.0 / 8.0, 1.0, 1.0), // 7/8
+        '\u{2588}' => fill(0.0, 0.0, 1.0, 1.0),       // full block
+        // Left N/8 blocks
+        '\u{2589}' => fill(0.0, 0.0, 7.0 / 8.0, 1.0),
+        '\u{258A}' => fill(0.0, 0.0, 6.0 / 8.0, 1.0),
+        '\u{258B}' => fill(0.0, 0.0, 5.0 / 8.0, 1.0),
+        '\u{258C}' => fill(0.0, 0.0, 0.5, 1.0), // left half
+        '\u{258D}' => fill(0.0, 0.0, 3.0 / 8.0, 1.0),
+        '\u{258E}' => fill(0.0, 0.0, 2.0 / 8.0, 1.0),
+        '\u{258F}' => fill(0.0, 0.0, 1.0 / 8.0, 1.0),
+        // Right half
+        '\u{2590}' => fill(0.5, 0.0, 1.0, 1.0),
+        // Light / medium / dark shade — approximate with alpha
+        '\u{2591}' => {
+            let c = Color32::from_rgba_unmultiplied(fg.r(), fg.g(), fg.b(), 64);
+            painter.rect_filled(cell, 0.0, c);
+        }
+        '\u{2592}' => {
+            let c = Color32::from_rgba_unmultiplied(fg.r(), fg.g(), fg.b(), 128);
+            painter.rect_filled(cell, 0.0, c);
+        }
+        '\u{2593}' => {
+            let c = Color32::from_rgba_unmultiplied(fg.r(), fg.g(), fg.b(), 192);
+            painter.rect_filled(cell, 0.0, c);
+        }
+        // Quadrants
+        '\u{2596}' => fill(0.0, 0.5, 0.5, 1.0), // lower left
+        '\u{2597}' => fill(0.5, 0.5, 1.0, 1.0), // lower right
+        '\u{2598}' => fill(0.0, 0.0, 0.5, 0.5), // upper left
+        '\u{2599}' => {
+            // upper left + lower left + lower right
+            fill(0.0, 0.0, 0.5, 1.0);
+            fill(0.5, 0.5, 1.0, 1.0);
+        }
+        '\u{259A}' => {
+            // upper left + lower right
+            fill(0.0, 0.0, 0.5, 0.5);
+            fill(0.5, 0.5, 1.0, 1.0);
+        }
+        '\u{259B}' => {
+            // upper left + upper right + lower left
+            fill(0.0, 0.0, 1.0, 0.5);
+            fill(0.0, 0.5, 0.5, 1.0);
+        }
+        '\u{259C}' => {
+            // upper left + upper right + lower right
+            fill(0.0, 0.0, 1.0, 0.5);
+            fill(0.5, 0.5, 1.0, 1.0);
+        }
+        '\u{259D}' => fill(0.5, 0.0, 1.0, 0.5), // upper right
+        '\u{259E}' => {
+            // upper right + lower left
+            fill(0.5, 0.0, 1.0, 0.5);
+            fill(0.0, 0.5, 0.5, 1.0);
+        }
+        '\u{259F}' => {
+            // upper right + lower left + lower right
+            fill(0.5, 0.0, 1.0, 0.5);
+            fill(0.0, 0.5, 1.0, 1.0);
+        }
+        _ => return false,
+    }
+    true
 }
 
 pub struct TerminalRenderer {
@@ -27,13 +148,16 @@ impl TerminalRenderer {
         if self.cell_size_measured {
             return;
         }
-        let font_id = egui::FontId::monospace(self.font_size);
+        let font_id = FontId::monospace(self.font_size);
         let glyph_width = ui.fonts(|f| {
             f.layout("M".to_string(), font_id.clone(), Color32::WHITE, f32::INFINITY).size().x
         });
-        let row_height = ui.fonts(|f| f.row_height(&font_id));
+        // Prefer a tight height derived from the font size rather than
+        // egui's paragraph `row_height`, which includes extra leading that
+        // leaves visible gaps between block-element rows (LazyVim logo).
+        let row_height = self.font_size * LINE_HEIGHT_PAD;
 
-        self.cell_size = Vec2::new(glyph_width, row_height);
+        self.cell_size = Vec2::new(glyph_width.max(1.0), row_height.max(1.0));
         self.cell_size_measured = true;
     }
 
@@ -70,7 +194,8 @@ impl TerminalRenderer {
         let visible_cols = ((rect.width() / cell_w).floor() as u16).min(snapshot.cols);
         let visible_rows = ((rect.height() / cell_h).floor() as u16).min(snapshot.rows);
 
-        let font_id = egui::FontId::monospace(self.font_size);
+        let font_regular = FontId::monospace(self.font_size);
+        let font_bold = FontId::new(self.font_size, FontFamily::Name("JetBrainsMonoBold".into()));
 
         for row in 0..visible_rows {
             let mut col = 0_u16;
@@ -93,33 +218,31 @@ impl TerminalRenderer {
                 painter.rect_filled(cell_rect, 0.0, cell.bg);
 
                 if cell.c != ' ' {
-                    let base_x = cell_rect.left();
-                    let base_y = cell_rect.top();
-
-                    // Faux bold: offset the character 0.5px to the right and draw again
-                    if cell.bold {
-                        painter.text(
-                            Pos2::new(base_x + 0.5, base_y),
-                            egui::Align2::LEFT_TOP,
-                            cell.c,
-                            font_id.clone(),
-                            cell.fg,
-                        );
-                        painter.text(
-                            Pos2::new(base_x, base_y),
-                            egui::Align2::LEFT_TOP,
-                            cell.c,
-                            font_id.clone(),
-                            cell.fg,
-                        );
+                    // Block elements: geometric fill so TUIs tile cleanly.
+                    if is_block_element(cell.c) {
+                        paint_block_element(painter, cell_rect, cell.c, cell.fg);
                     } else {
-                        painter.text(
-                            Pos2::new(base_x, base_y),
-                            egui::Align2::LEFT_TOP,
-                            cell.c,
-                            font_id.clone(),
-                            cell.fg,
-                        );
+                        let font_id =
+                            if cell.bold { font_bold.clone() } else { font_regular.clone() };
+
+                        // Layout once so we can center icons and vertically
+                        // settle glyphs inside the tight cell.
+                        let galley =
+                            ui.fonts(|f| f.layout_no_wrap(cell.c.to_string(), font_id, cell.fg));
+                        let gw = galley.size().x;
+                        let gh = galley.size().y;
+
+                        let x = if is_nerd_icon(cell.c) {
+                            // Center nerd icons in the cell (Ghostty-style).
+                            cell_rect.left() + (cell_rect.width() - gw) * 0.5
+                        } else {
+                            cell_rect.left()
+                        };
+                        // Vertically center so descenders/ascenders share the
+                        // tight cell evenly (avoids top-biased "floating" glyphs).
+                        let y = cell_rect.top() + (cell_rect.height() - gh) * 0.5;
+
+                        painter.galley(Pos2::new(x, y), galley, cell.fg);
                     }
 
                     if cell.underline {
@@ -177,7 +300,9 @@ impl TerminalRenderer {
     }
 
     fn estimate_cell_size(font_size: f32) -> Vec2 {
-        Vec2::new(font_size * 0.6, font_size)
+        // JetBrains Mono advance ≈ 0.6 × em; height uses the same pad factor
+        // as the measured path so resize math stays stable before first paint.
+        Vec2::new(font_size * 0.6, font_size * LINE_HEIGHT_PAD)
     }
 
     pub fn cell_size(&self) -> Vec2 {
@@ -230,5 +355,20 @@ mod tests {
         let updated = renderer.cell_size();
         assert!(updated.x > original.x);
         assert!(updated.y > original.y);
+    }
+
+    #[test]
+    fn test_block_elements_recognized() {
+        assert!(is_block_element('█'));
+        assert!(is_block_element('▄'));
+        assert!(is_block_element('▀'));
+        assert!(!is_block_element('A'));
+    }
+
+    #[test]
+    fn test_nerd_icon_ranges() {
+        assert!(is_nerd_icon('\u{f002}')); // search icon
+        assert!(is_nerd_icon('\u{e0b0}')); // powerline
+        assert!(!is_nerd_icon('A'));
     }
 }
