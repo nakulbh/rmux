@@ -20,8 +20,7 @@ Targets Linux, macOS, and Windows.
 ## Demo
 
 <div align="center">
-<img src="assets/videos/demo-shortcuts.gif" width="45%">
-<img src="assets/videos/demo-overview.gif" width="45%">
+<img src="assets/videos/demo-shortcuts.gif" width="80%">
 </div>
 
 ## Features
