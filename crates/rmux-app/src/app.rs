@@ -102,7 +102,8 @@ impl eframe::App for RmuxApp {
             self.add_pane_notification(workspace_id, pane_id, notification);
         }
 
-        // Auto-close panes whose process has exited
+        // Auto-close tabs/panes whose process has exited; respawn the last
+        // shell of the last workspace so the window is never left dead.
         let cleanup = self.workspace_manager.close_exited_panes();
         for (workspace_id, pane_id) in cleanup.panes {
             self.publish_event(
@@ -112,6 +113,22 @@ impl eframe::App for RmuxApp {
         }
         for workspace_id in cleanup.workspaces {
             self.publish_event("workspace.closed", json!({ "id": workspace_id }));
+        }
+        for (workspace_id, pane_id) in cleanup.panes_needing_respawn {
+            // Switch to the workspace that owns the empty pane, then attach.
+            if let Some(idx) =
+                self.workspace_manager.workspaces().iter().position(|w| w.id.0 == workspace_id)
+            {
+                self.workspace_manager.switch_to(idx);
+            }
+            attach_terminal(
+                &mut self.workspace_manager,
+                crate::workspace::splits::PaneId(pane_id),
+                self.font_size,
+                self.terminal_theme,
+                None,
+            );
+            tracing::info!(workspace_id, pane_id, "Respawned terminal after shell exit");
         }
 
         // Handle any pending socket API requests on the main thread
@@ -479,9 +496,7 @@ impl RmuxApp {
             new_tab = workspace_view::render_pane_tree(ui, &mut self.workspace_manager, zoomed);
         });
         // Tab-bar "+" — same path as Cmd+T so theme/font match.
-        if new_tab
-            && let Err(e) = self.new_surface_with_terminal(None)
-        {
+        if new_tab && let Err(e) = self.new_surface_with_terminal(None) {
             tracing::warn!(error = %e, "tab-bar new surface failed");
         }
     }

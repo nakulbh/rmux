@@ -64,6 +64,9 @@ pub struct ExitCleanup {
     pub panes: Vec<(u64, u64)>,
     /// Ids of workspaces closed because their last pane exited.
     pub workspaces: Vec<u64>,
+    /// `(workspace_id, pane_id)` leaves that were cleared after their last
+    /// shell exited and need a fresh terminal attached (only workspace left).
+    pub panes_needing_respawn: Vec<(u64, u64)>,
 }
 
 /// Manages multiple workspaces and tracks which is active.
@@ -307,18 +310,37 @@ impl WorkspaceManager {
         out
     }
 
-    /// Close all panes whose process has exited.
+    /// Close terminals whose process has exited.
     ///
-    /// If a pane was the last in its workspace, closes the entire workspace.
-    /// The last remaining workspace is never closed. Returns the panes and
-    /// workspaces that were removed so callers can publish events for them.
+    /// Order of operations per workspace:
+    /// 1. Drop individual dead **tabs** when the leaf still has live ones
+    ///    (typing `exit` on one Cmd+T tab removes just that tab).
+    /// 2. Close **panes** where every remaining shell is dead.
+    /// 3. If that was the last pane of a non-last workspace, close the
+    ///    workspace. The last workspace is never closed — its dead pane
+    ///    is cleared instead so the app can respawn a live shell.
+    ///
+    /// Returns panes/workspaces removed so callers can publish events.
+    /// `panes_needing_respawn` lists leaf ids that were cleared and need
+    /// a fresh `TerminalPane` attached by the app.
     pub fn close_exited_panes(&mut self) -> ExitCleanup {
         let mut cleanup = ExitCleanup::default();
         let mut i = 0;
         while i < self.workspaces.len() {
             let workspace_id = self.workspaces[i].id;
-            let exited: Vec<PaneId> = self.workspaces[i].root.collect_exited_panes();
 
+            // 1. Individual dead tabs (multi-surface leaves with live peers).
+            let removed_tabs = self.workspaces[i].root.close_exited_surfaces();
+            if removed_tabs > 0 {
+                tracing::debug!(
+                    workspace_id = workspace_id.0,
+                    removed_tabs,
+                    "Closed exited terminal tabs"
+                );
+            }
+
+            // 2. Panes where every shell is dead.
+            let exited: Vec<PaneId> = self.workspaces[i].root.collect_exited_panes();
             if exited.is_empty() {
                 i += 1;
                 continue;
@@ -333,12 +355,25 @@ impl WorkspaceManager {
                     }
                     Err(splits::PaneTreeError::CannotCloseLastPane) => {
                         if self.workspaces.len() > 1 {
-                            tracing::info!(workspace_id = ?workspace_id, "Last pane exited, closing workspace");
+                            tracing::info!(
+                                workspace_id = ?workspace_id,
+                                "Last pane exited, closing workspace"
+                            );
                             let _ = self.close_workspace(workspace_id);
                             cleanup.panes.push((workspace_id.0, pane_id.0));
                             cleanup.workspaces.push(workspace_id.0);
                             workspace_removed = true;
                             break;
+                        }
+                        // Last pane of the only workspace: clear the dead
+                        // shell so the app can attach a fresh one.
+                        if let Some(leaf) = self.workspaces[i].root.find_pane_mut(*pane_id) {
+                            leaf.clear_terminals();
+                            cleanup.panes_needing_respawn.push((workspace_id.0, pane_id.0));
+                            tracing::info!(
+                                pane_id = pane_id.0,
+                                "Last shell exited; cleared pane for respawn"
+                            );
                         }
                     }
                     Err(e) => {
