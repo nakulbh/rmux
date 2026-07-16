@@ -63,6 +63,11 @@ pub struct TerminalPane {
     rows: u16,
     /// Whether the underlying process has exited.
     exited: bool,
+    /// Human-readable exit banner (set once when the process is reaped).
+    /// Kept separate from Debug so we never paint `ExitStatus { … }` tofu.
+    exit_message: Option<String>,
+    /// Whether the process exited successfully (code 0, no signal).
+    exit_success: bool,
 
     // Find bar state
     /// Whether the find/search bar is currently visible.
@@ -165,6 +170,8 @@ impl TerminalPane {
             cols,
             rows,
             exited: false,
+            exit_message: None,
+            exit_success: false,
             find_visible: false,
             find_query: String::new(),
             find_results: Vec::new(),
@@ -186,10 +193,22 @@ impl TerminalPane {
             self.state.feed_bytes(&data);
         }
 
-        // Check if the PTY process has exited
-        if !self.exited && self.backend.try_wait().is_some() {
-            self.exited = true;
-            self.name.push_str(" [exited]");
+        // Check if the PTY process has exited; record a clean banner once.
+        if !self.exited {
+            if let Some(status) = self.backend.try_wait() {
+                self.exited = true;
+                self.exit_success = status.success();
+                self.exit_message = Some(if status.success() {
+                    "Process exited".to_owned()
+                } else {
+                    // portable_pty::ExitStatus Display: "Exited with code N"
+                    // or "Terminated by SIGINT", etc.
+                    format!("Process exited · {status}")
+                });
+                if !self.name.ends_with(" [exited]") {
+                    self.name.push_str(" [exited]");
+                }
+            }
         }
     }
 
@@ -318,14 +337,17 @@ impl TerminalPane {
             self.show_find_bar(ui, rect.x_range().min, rect.bottom());
         }
 
-        // Show exit status
+        // Exit banner — short human text, never Debug of ExitStatus.
         if self.exited {
+            let palette = theme::palette();
+            let msg = self.exit_message.as_deref().unwrap_or("Process exited");
+            let color = if self.exit_success { palette.text_muted } else { palette.danger };
             ui.painter().text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
-                format!("Process exited (code: {:?})", self.backend.try_wait()),
-                egui::FontId::monospace(13.0_f32),
-                theme::palette().danger,
+                msg,
+                egui::FontId::proportional(13.0_f32),
+                color,
             );
         }
 
