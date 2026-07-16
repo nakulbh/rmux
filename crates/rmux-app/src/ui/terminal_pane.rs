@@ -265,8 +265,11 @@ impl TerminalPane {
             }
         }
 
-        // Handle keyboard input when focused
-        if self.has_focus {
+        // Handle keyboard input when focused — but never while another egui
+        // widget owns the keyboard (sidebar rename TextEdit, find bar, URL
+        // bar, etc.). Without this gate, typed characters land in both the
+        // focused widget and the PTY simultaneously.
+        if self.has_focus && !ui.ctx().wants_keyboard_input() {
             self.handle_keyboard_input(ui);
         }
 

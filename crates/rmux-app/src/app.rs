@@ -141,8 +141,20 @@ impl eframe::App for RmuxApp {
         }
 
         // Render the sidebar (left panel). New workspaces are created from
-        // the top-bar `+` button (or Cmd/Ctrl+N).
-        self.sidebar.show(ctx, &mut self.workspace_manager, &self.notifications);
+        // the top-bar `+` button (or Cmd/Ctrl+N). Hover × closes a card.
+        if let Some(crate::ui::sidebar::SidebarAction::CloseWorkspace(id)) =
+            self.sidebar.show(ctx, &mut self.workspace_manager, &self.notifications)
+        {
+            match self.workspace_manager.close_workspace(id) {
+                Ok(()) => {
+                    self.publish_event("workspace.closed", json!({ "id": id.0 }));
+                    tracing::info!(workspace_id = id.0, "Closed workspace via sidebar ×");
+                }
+                Err(err) => {
+                    tracing::warn!(workspace_id = id.0, error = %err, "Could not close workspace");
+                }
+            }
+        }
 
         // Render the notification panel (right panel, before the central
         // panel). The panel is shown when EITHER `Cmd+Opt+B` (right
