@@ -46,29 +46,29 @@ pub fn chord_with(extra: &str, key: &str) -> String {
     format!("{}{extra}{key}", mod_glyph())
 }
 
-/// Draw a dark floating pill badge centered on `center` (cmux toolbar style).
+/// Draw a compact dark pill badge centered on `center` (cmux toolbar style).
 ///
-/// Used for top-bar icons: solid near-black fill, light text, rounded.
+/// Kept intentionally small so the underlying icon still peeks around the
+/// chip edges — cmux uses ~9px type with tight padding, not full-button
+/// cover-ups.
 pub fn draw_overlay_badge(ui: &mut egui::Ui, center: Pos2, label: &str) {
     let p = theme::palette();
     let galley = ui.painter().layout_no_wrap(
         label.to_owned(),
-        FontId::proportional(11.0_f32),
+        FontId::proportional(9.0_f32),
         Color32::from_rgb(0xe8, 0xea, 0xee),
     );
-    let pad_x = 6.0_f32;
-    let pad_y = 3.0_f32;
+    let pad_x = 3.0_f32;
+    let pad_y = 1.5_f32;
     let size = vec2(galley.size().x + pad_x * 2.0_f32, galley.size().y + pad_y * 2.0_f32);
-    // Minimum so single-glyph chords still read as a chip.
-    let size = vec2(size.x.max(28.0_f32), size.y.max(18.0_f32));
     let rect = Rect::from_center_size(center, size);
 
     let fill = Color32::from_rgb(0x2a, 0x2e, 0x36);
     let border = Color32::from_rgb(0x4a, 0x50, 0x5c);
-    ui.painter().rect_filled(rect, CornerRadius::same(5), fill);
+    ui.painter().rect_filled(rect, CornerRadius::same(3), fill);
     ui.painter().rect_stroke(
         rect,
-        CornerRadius::same(5),
+        CornerRadius::same(3),
         Stroke::new(1.0_f32, border),
         StrokeKind::Inside,
     );
@@ -82,7 +82,7 @@ pub fn draw_overlay_badge(ui: &mut egui::Ui, center: Pos2, label: &str) {
     );
 }
 
-/// Draw a small circular/pill badge for sidebar workspace numbers (`⌘1`).
+/// Draw a small circular badge for sidebar workspace numbers (`⌘1`).
 ///
 /// Placed at the right edge of a card. Active cards use the accent fill
 /// (cmux blue chip); inactive use a muted fill.
@@ -95,10 +95,10 @@ pub fn draw_workspace_badge(ui: &mut egui::Ui, center: Pos2, index: usize, activ
     let label = chord(&(index + 1).to_string());
     let galley = ui.painter().layout_no_wrap(
         label,
-        FontId::proportional(10.0_f32),
+        FontId::proportional(9.0_f32),
         if active { p.accent_fg } else { p.text_primary },
     );
-    let r = (galley.size().x / 2.0_f32 + 5.0_f32).max(11.0_f32);
+    let r = (galley.size().x / 2.0_f32 + 3.5_f32).max(9.0_f32);
     let fill = if active { p.accent } else { p.panel_bg };
     let border = if active { p.accent } else { p.border };
     ui.painter().circle_filled(center, r, fill);

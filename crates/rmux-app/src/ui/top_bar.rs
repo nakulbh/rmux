@@ -206,14 +206,9 @@ pub fn show(
                 if resp.clicked() && !is_active {
                     action = Some(TopBarAction::SelectWorkspace(idx));
                 }
-                // Cmd/Ctrl+1..9 switch workspaces — badge on the tab.
-                if show_hints && idx < 9 {
-                    shortcut_hints::draw_overlay_badge(
-                        ui,
-                        pos2(x + tab_w / 2.0_f32, cy),
-                        &shortcut_hints::chord(&(idx + 1).to_string()),
-                    );
-                }
+                // Workspace number chords (⌘1…) live on the sidebar cards
+                // only — painting them on the tab title would cover the name
+                // (cmux keeps top-bar tabs free of number badges).
                 x += tab_w + 4.0_f32;
             }
 
