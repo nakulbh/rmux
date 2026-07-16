@@ -194,20 +194,20 @@ impl TerminalPane {
         }
 
         // Check if the PTY process has exited; record a clean banner once.
-        if !self.exited {
-            if let Some(status) = self.backend.try_wait() {
-                self.exited = true;
-                self.exit_success = status.success();
-                self.exit_message = Some(if status.success() {
-                    "Process exited".to_owned()
-                } else {
-                    // portable_pty::ExitStatus Display: "Exited with code N"
-                    // or "Terminated by SIGINT", etc.
-                    format!("Process exited · {status}")
-                });
-                if !self.name.ends_with(" [exited]") {
-                    self.name.push_str(" [exited]");
-                }
+        if !self.exited
+            && let Some(status) = self.backend.try_wait()
+        {
+            self.exited = true;
+            self.exit_success = status.success();
+            self.exit_message = Some(if status.success() {
+                "Process exited".to_owned()
+            } else {
+                // portable_pty::ExitStatus Display: "Exited with code N"
+                // or "Terminated by SIGINT", etc.
+                format!("Process exited · {status}")
+            });
+            if !self.name.ends_with(" [exited]") {
+                self.name.push_str(" [exited]");
             }
         }
     }
