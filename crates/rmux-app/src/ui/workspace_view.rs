@@ -178,9 +178,9 @@ fn render_leaf(
 
     if let Some(pane) = leaf.active_terminal_mut() {
         // Sync keyboard-driven focus (FocusLeft/Right/Up/Down) into the pane
-        // before rendering so keystrokes and the focus glow follow `active_pane`
-        // immediately. Click detection inside `show()` runs after this and can
-        // still flip focus to a different pane, which is promoted below.
+        // before rendering so keystrokes follow `active_pane` immediately.
+        // Click detection inside `show()` runs after this and can still flip
+        // focus to a different pane, which is promoted below.
         if pane.has_focus() != is_active {
             pane.set_focus(is_active);
         }
@@ -192,12 +192,6 @@ fn render_leaf(
         let painter = child_ui.painter();
         let palette = theme::palette();
         painter.rect_filled(terminal_rect, 0.0_f32, palette.panel_bg);
-        painter.rect_stroke(
-            terminal_rect.shrink(0.5_f32),
-            egui::CornerRadius::ZERO,
-            egui::Stroke::new(1.0_f32, palette.border),
-            egui::StrokeKind::Inside,
-        );
         painter.text(
             terminal_rect.center(),
             egui::Align2::CENTER_CENTER,
@@ -205,6 +199,12 @@ fn render_leaf(
             egui::FontId::monospace(12.0_f32),
             palette.text_muted,
         );
+    }
+
+    // cmux focus model: no accent border — unfocused splits are dimmed so
+    // the active pane reads as the lit one.
+    if !is_active {
+        ui.painter().rect_filled(terminal_rect, 0.0_f32, egui::Color32::from_black_alpha(100));
     }
 }
 
@@ -232,8 +232,7 @@ fn render_tab_bar(
 
     let active_idx = leaf.active_surface_index();
     let surface_count = leaf.leaf_surfaces().len();
-    let titles: Vec<String> =
-        leaf.leaf_surfaces().iter().map(|s| s.display_title().to_string()).collect();
+    let titles: Vec<String> = leaf.leaf_surfaces().iter().map(|s| s.display_title()).collect();
 
     let mut x = rect.left() + 4.0_f32;
     let cy = rect.center().y;

@@ -68,6 +68,11 @@ pub struct TerminalPane {
     exit_message: Option<String>,
     /// Whether the process exited successfully (code 0, no signal).
     exit_success: bool,
+    /// Cached shell cwd for tab titles (refreshed periodically; avoids
+    /// calling `lsof` / reading `/proc` every frame).
+    last_cwd: Option<PathBuf>,
+    /// Frame counter used to throttle cwd refreshes.
+    cwd_tick: u16,
 
     // Find bar state
     /// Whether the find/search bar is currently visible.
@@ -172,6 +177,10 @@ impl TerminalPane {
             exited: false,
             exit_message: None,
             exit_success: false,
+            // Prefer the spawn cwd so tab labels are correct before the first
+            // process-query refresh.
+            last_cwd: cwd.map(Path::to_path_buf),
+            cwd_tick: 0,
             find_visible: false,
             find_query: String::new(),
             find_results: Vec::new(),
@@ -210,14 +219,39 @@ impl TerminalPane {
                 self.name.push_str(" [exited]");
             }
         }
+
+        // Refresh cwd cache ~every 45 frames (~0.7s at 60fps) for tab titles.
+        self.cwd_tick = self.cwd_tick.wrapping_add(1);
+        if self.cwd_tick.is_multiple_of(45)
+            && let Some(cwd) = self.backend.working_directory()
+        {
+            self.last_cwd = Some(cwd);
+        } else if self.last_cwd.is_none() {
+            // First chance: populate immediately so new tabs aren't "Terminal N".
+            self.last_cwd = self.backend.working_directory();
+        }
     }
 
     /// Best-effort current working directory of this pane's shell.
     ///
     /// Used when spawning a sibling tab/split so the new shell opens in
-    /// the same directory the user has already navigated to.
+    /// the same directory the user has already navigated to. Prefers the
+    /// cached value, falling back to a live query.
     pub fn working_directory(&self) -> Option<PathBuf> {
-        self.backend.working_directory()
+        self.last_cwd.clone().or_else(|| self.backend.working_directory())
+    }
+
+    /// Cached cwd (no live process query). For tab labels during paint.
+    pub fn cached_cwd(&self) -> Option<&Path> {
+        self.last_cwd.as_deref()
+    }
+
+    /// cmux-style tab label: short path (`~/…/project`) or `user@host` at `$HOME`.
+    pub fn tab_label(&self) -> String {
+        if let Some(cwd) = self.cached_cwd() {
+            return format_cwd_tab_title(cwd);
+        }
+        user_host_title()
     }
 
     /// Write raw text to the pane's PTY as if it had been typed.
@@ -314,23 +348,8 @@ impl TerminalPane {
             self.highlight_matches(ui, rect, &snapshot);
         }
 
-        if self.has_focus {
-            let palette = theme::palette();
-            let painter = ui.painter();
-            let glow = [
-                (2.0_f32, palette.accent.gamma_multiply(0.4_f32)),
-                (1.5_f32, palette.accent.gamma_multiply(0.7_f32)),
-                (1.0_f32, palette.accent),
-            ];
-            for (width, color) in glow {
-                painter.rect_stroke(
-                    rect,
-                    egui::CornerRadius::ZERO,
-                    egui::Stroke::new(width, color),
-                    egui::StrokeKind::Inside,
-                );
-            }
-        }
+        // Focus is indicated by dimming *inactive* panes in the workspace
+        // view (cmux-style) — no accent glow border here.
 
         // Render find bar if visible
         if self.find_visible {
@@ -684,6 +703,103 @@ impl TerminalPane {
     /// Click-to-focus still applies afterward within the same `show()` call.
     pub fn set_focus(&mut self, focus: bool) {
         self.has_focus = focus;
+    }
+}
+
+// ─── Tab title helpers (cmux-style path / user@host) ─────────────────────────
+
+/// Format a cwd for the multi-terminal tab strip.
+///
+/// * Under `$HOME` → `~/…` relative path; at home itself → `user@host`
+/// * Deep paths keep the last two components with a `…/` prefix
+pub fn format_cwd_tab_title(cwd: &Path) -> String {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    if let Some(ref home) = home {
+        if cwd == home.as_path() {
+            return user_host_title();
+        }
+        if let Ok(rest) = cwd.strip_prefix(home) {
+            let rel = format!("~/{}", rest.display());
+            return shorten_path_title(&rel);
+        }
+    }
+    shorten_path_title(&cwd.display().to_string())
+}
+
+/// `user@hostname` for home-directory tabs (matches cmux default title).
+fn user_host_title() -> String {
+    let user = std::env::var("USER")
+        .or_else(|_| std::env::var("LOGNAME"))
+        .unwrap_or_else(|_| "user".to_owned());
+    let host = std::env::var("HOST").or_else(|_| std::env::var("HOSTNAME")).unwrap_or_else(|_| {
+        // Best-effort hostname without extra crates.
+        std::process::Command::new("hostname")
+            .output()
+            .ok()
+            .and_then(|o| {
+                let s = String::from_utf8_lossy(&o.stdout).trim().to_owned();
+                if s.is_empty() { None } else { Some(s) }
+            })
+            .unwrap_or_else(|| "localhost".to_owned())
+    });
+    // Drop domain suffix for compactness: MacBook.local → MacBook
+    let host = host.split('.').next().unwrap_or(&host);
+    format!("{user}@{host}")
+}
+
+/// Keep tab labels short: at most ~28 chars, prefer trailing path segments.
+fn shorten_path_title(path: &str) -> String {
+    const MAX: usize = 28;
+    if path.chars().count() <= MAX {
+        return path.to_owned();
+    }
+    // Prefer last two components: …/parent/name
+    let parts: Vec<&str> = path.split('/').filter(|p| !p.is_empty()).collect();
+    if parts.len() >= 2 {
+        let tail = format!("…/{}/{}", parts[parts.len() - 2], parts[parts.len() - 1]);
+        if tail.chars().count() <= MAX {
+            return tail;
+        }
+        let last = parts[parts.len() - 1];
+        if last.chars().count() <= MAX - 2 {
+            return format!("…/{last}");
+        }
+        return truncate_chars(last, MAX);
+    }
+    truncate_chars(path, MAX)
+}
+
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_owned();
+    }
+    let end = s.char_indices().nth(max.saturating_sub(1)).map(|(i, _)| i).unwrap_or(s.len());
+    format!("{}…", &s[..end])
+}
+
+#[cfg(test)]
+mod title_tests {
+    use super::*;
+
+    #[test]
+    fn test_shorten_keeps_short_paths() {
+        assert_eq!(shorten_path_title("~/proj"), "~/proj");
+    }
+
+    #[test]
+    fn test_shorten_deep_path_uses_ellipsis() {
+        let deep = "~/Developer/PersonalProjects/RustPersonalProjects/rmux-cmd-hints";
+        let short = shorten_path_title(deep);
+        assert!(short.contains("rmux-cmd-hints"), "got {short}");
+        assert!(short.chars().count() <= 28, "got {short}");
+    }
+
+    #[test]
+    fn test_format_cwd_home_is_user_host() {
+        if let Ok(home) = std::env::var("HOME") {
+            let title = format_cwd_tab_title(Path::new(&home));
+            assert!(title.contains('@'), "expected user@host, got {title}");
+        }
     }
 }
 
