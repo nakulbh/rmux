@@ -62,16 +62,22 @@ fn init_logging(verbose: bool) {
         .init();
 }
 
+/// Official rmux logo (256×256 PNG) — used as the window / dock / taskbar icon.
+const APP_ICON_PNG: &[u8] = include_bytes!("../assets/rmux_logo.png");
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     init_logging(cli.verbose);
 
     tracing::info!("rmux starting (version {})", env!("CARGO_PKG_VERSION"));
 
-    let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1200.0, 800.0]),
-        ..Default::default()
-    };
+    let mut viewport =
+        egui::ViewportBuilder::default().with_inner_size([1200.0, 800.0]).with_title("rmux");
+    if let Some(icon) = load_app_icon() {
+        viewport = viewport.with_icon(std::sync::Arc::new(icon));
+    }
+
+    let native_options = eframe::NativeOptions { viewport, ..Default::default() };
 
     eframe::run_native(
         "rmux",
@@ -85,6 +91,16 @@ fn main() -> Result<()> {
     .map_err(|e| anyhow::anyhow!("Failed to run application: {e}"))?;
 
     Ok(())
+}
+
+/// Decode the bundled official logo into an `egui::IconData` for the OS window.
+fn load_app_icon() -> Option<egui::IconData> {
+    let image = image::load_from_memory(APP_ICON_PNG)
+        .map_err(|err| tracing::warn!(error = %err, "failed to decode app icon"))
+        .ok()?
+        .into_rgba8();
+    let (width, height) = image.dimensions();
+    Some(egui::IconData { rgba: image.into_raw(), width, height })
 }
 
 /// JetBrains Mono — same primary terminal face Ghostty/cmux embed by default.
