@@ -2,15 +2,17 @@
 //!
 //! # Components
 //!
-//! - `top_bar` — Top chrome bar (sidebar toggle, title, bell)
+//! - `top_bar` — cmux-style top chrome (left toolbar + workspace tabs)
 //! - `sidebar` — `SidebarView` for workspace tab navigation
 //! - `workspace_view` — Pane tree renderer for split layouts
 //! - `terminal_pane` — Terminal pane widget (PTY + rendering + input)
 //! - `notification_panel` — Right-side notification list panel
 //! - `status_bar` — Bottom status bar (workspace context, counts)
+//! - `shortcut_hints` — hold-⌘ / hold-Ctrl chord overlays (cmux style)
 
 pub mod notification_panel;
 pub mod settings_panel;
+pub mod shortcut_hints;
 pub mod sidebar;
 pub mod status_bar;
 mod terminal_pane;

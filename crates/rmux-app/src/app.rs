@@ -122,15 +122,16 @@ impl eframe::App for RmuxApp {
 
         // Render the top bar and status bar first so they span the full
         // window width (egui panel order: top/bottom before side panels).
-        crate::ui::top_bar::show(
+        if let Some(action) = crate::ui::top_bar::show(
             ctx,
             &self.workspace_manager,
             &self.notifications,
-            &mut self.sidebar.visible,
-            &mut self.notification_panel.visible,
-            &mut self.sidebar.right_sidebar_visible,
-            &mut self.settings_panel.open,
-        );
+            self.sidebar.visible,
+            self.notification_panel.visible,
+            self.settings_panel.open,
+        ) {
+            self.handle_top_bar_action(action);
+        }
         crate::ui::status_bar::show(ctx, &self.workspace_manager, &self.notifications);
 
         // Render the settings panel (floating window); apply any theme
@@ -139,15 +140,9 @@ impl eframe::App for RmuxApp {
             self.set_terminal_theme(new_theme);
         }
 
-        // Render the sidebar (left panel); route its "+ New Workspace"
-        // button through the same path as Cmd/Ctrl+N.
-        let create_requested =
-            self.sidebar.show(ctx, &mut self.workspace_manager, &self.notifications);
-        if create_requested {
-            let count = self.workspace_manager.workspace_count() + 1;
-            let ws = self.create_workspace_with_terminal(format!("Workspace {count}"));
-            tracing::info!(workspace_id = ws, "Created workspace via sidebar button");
-        }
+        // Render the sidebar (left panel). New workspaces are created from
+        // the top-bar `+` button (or Cmd/Ctrl+N).
+        self.sidebar.show(ctx, &mut self.workspace_manager, &self.notifications);
 
         // Render the notification panel (right panel, before the central
         // panel). The panel is shown when EITHER `Cmd+Opt+B` (right
@@ -177,6 +172,36 @@ impl eframe::App for RmuxApp {
 }
 
 impl RmuxApp {
+    /// Apply a click from the cmux-style top bar toolbar / workspace tabs.
+    fn handle_top_bar_action(&mut self, action: crate::ui::top_bar::TopBarAction) {
+        use crate::ui::top_bar::TopBarAction;
+        match action {
+            TopBarAction::ToggleSidebar => {
+                self.sidebar.toggle();
+            }
+            TopBarAction::ToggleNotifications => {
+                self.notification_panel.toggle();
+            }
+            TopBarAction::ToggleSettings => {
+                self.settings_panel.open = !self.settings_panel.open;
+            }
+            TopBarAction::NewWorkspace => {
+                let count = self.workspace_manager.workspace_count() + 1;
+                let ws = self.create_workspace_with_terminal(format!("Workspace {count}"));
+                tracing::info!(workspace_id = ws, "Created workspace via top bar");
+            }
+            TopBarAction::PrevWorkspace => {
+                self.workspace_manager.switch_prev();
+            }
+            TopBarAction::NextWorkspace => {
+                self.workspace_manager.switch_next();
+            }
+            TopBarAction::SelectWorkspace(index) => {
+                self.workspace_manager.switch_to(index);
+            }
+        }
+    }
+
     /// Drain and answer all pending socket API requests.
     ///
     /// Runs on the main thread inside `update()`, so the dispatcher has

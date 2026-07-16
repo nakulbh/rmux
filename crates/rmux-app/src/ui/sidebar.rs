@@ -134,22 +134,20 @@ impl SidebarView {
     ///
     /// This should be called from the main `update` loop. It draws the
     /// workspace card list (with per-workspace unread badges) and handles
-    /// click events for workspace switching. The notification bell lives in
-    /// the top bar now.
-    ///
-    /// Returns `true` when the footer "+ New Workspace" button was clicked;
-    /// the caller (`app.rs`) routes that through
-    /// `RmuxApp::create_workspace_with_terminal`, the same path as Cmd/Ctrl+N.
-    #[must_use]
+    /// click events for workspace switching. New workspaces are created
+    /// from the top-bar `+` button (or Cmd/Ctrl+N). While ⌘/Ctrl is held,
+    /// each card shows its `⌘1`…`⌘9` switch shortcut (cmux style).
     pub fn show(
         &mut self,
         ctx: &egui::Context,
         manager: &mut WorkspaceManager,
         notifications: &NotificationManager,
-    ) -> bool {
+    ) {
         if !self.visible {
-            return false;
+            return;
         }
+
+        let show_hints = crate::ui::shortcut_hints::primary_mod_held(ctx);
 
         egui::SidePanel::left("rmux_sidebar")
             .frame(egui::Frame::default().fill(p().sidebar_bg).inner_margin(egui::Margin::same(8)))
@@ -157,19 +155,17 @@ impl SidebarView {
             .max_width(crate::ui::theme::metrics::SIDEBAR_MAX_WIDTH)
             .default_width(crate::ui::theme::metrics::SIDEBAR_DEFAULT_WIDTH)
             .resizable(true)
-            .show(ctx, |ui| self.render_sidebar(ui, manager, notifications))
-            .inner
+            .show(ctx, |ui| self.render_sidebar(ui, manager, notifications, show_hints));
     }
 
-    /// Render the sidebar contents: header, card list, and footer.
-    ///
-    /// Returns `true` when the "+ New Workspace" button was clicked.
+    /// Render the sidebar contents: header, card list, and footer hint.
     fn render_sidebar(
         &mut self,
         ui: &mut egui::Ui,
         manager: &mut WorkspaceManager,
         notifications: &NotificationManager,
-    ) -> bool {
+        show_hints: bool,
+    ) {
         // Snapshot workspace data so cards can take `&mut manager` for renames.
         let workspaces: Vec<TabData> = manager
             .workspaces()
@@ -191,14 +187,12 @@ impl SidebarView {
         // Footer is laid out bottom-up first; the nested top-down layout
         // then fills the remaining space with the header and card list.
         ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-            // --- Footer (added bottom-up: hint, button, separator) ---
+            // --- Footer (toggle shortcut hint only; new-workspace is top bar) ---
             ui.add_space(2.0_f32);
             let toggle_hint =
                 if cfg!(target_os = "macos") { "\u{2318}B to toggle" } else { "Ctrl+B to toggle" };
             ui.label(egui::RichText::new(toggle_hint).size(10.0_f32).color(p().text_disabled));
             ui.add_space(4.0_f32);
-            let create_requested = render_new_workspace_button(ui);
-            ui.add_space(6.0_f32);
             let (line_rect, _) = ui.allocate_exact_size(
                 egui::Vec2::new(ui.available_width(), 1.0_f32),
                 egui::Sense::hover(),
@@ -219,8 +213,8 @@ impl SidebarView {
                         let is_active = i == active_index;
                         let is_editing = self.editing_index == Some(i);
 
-                        let card_response =
-                            self.render_card(ui, tab, is_active, is_editing, i, manager);
+                        let card_response = self
+                            .render_card(ui, tab, is_active, is_editing, i, manager, show_hints);
 
                         // Detect single click for switching (only when not editing)
                         if card_response.clicked() && !is_editing {
@@ -242,16 +236,16 @@ impl SidebarView {
                     manager.switch_to(index);
                 }
             });
-
-            create_requested
-        })
-        .inner
+        });
     }
 
     /// Render a single workspace card.
     ///
     /// If `is_editing` is true, renders a `TextEdit` widget for inline rename.
+    /// When `show_hints` is true (primary modifier held), paints a `⌘N`
+    /// badge for workspaces 1–9 instead of the unread count chip.
     /// Returns the response for click/double-click detection.
+    #[allow(clippy::too_many_arguments)]
     fn render_card(
         &mut self,
         ui: &mut egui::Ui,
@@ -260,6 +254,7 @@ impl SidebarView {
         is_editing: bool,
         index: usize,
         manager: &mut WorkspaceManager,
+        show_hints: bool,
     ) -> egui::Response {
         let base_height = if tab.status.is_some() { 52.0_f32 } else { 42.0_f32 };
         let git_extra = if tab.git_branch.is_some() { 14.0_f32 } else { 0.0_f32 };
@@ -344,10 +339,20 @@ impl SidebarView {
 
             let content = rect.shrink2(egui::Vec2::new(CARD_PAD_X, CARD_PAD_Y));
 
-            // Unread notification badge: accent-filled circle r=8 at the
-            // right edge of line 1, count in 9px mono `accent_fg`.
-            let badge_reserved = if tab.unread > 0 { 20.0_f32 } else { 0.0_f32 };
-            if tab.unread > 0 {
+            // While ⌘/Ctrl is held: show workspace switch chord (⌘1…) at the
+            // right edge (cmux). Otherwise: unread notification count chip.
+            let badge_reserved = if show_hints && index < 9 {
+                28.0_f32
+            } else if tab.unread > 0 {
+                20.0_f32
+            } else {
+                0.0_f32
+            };
+            if show_hints && index < 9 {
+                let badge_center =
+                    egui::Pos2::new(content.right() - 12.0_f32, content.top() + 9.0_f32);
+                crate::ui::shortcut_hints::draw_workspace_badge(ui, badge_center, index, is_active);
+            } else if tab.unread > 0 {
                 let badge_center =
                     egui::Pos2::new(content.right() - 8.0_f32, content.top() + 8.0_f32);
                 painter.circle_filled(badge_center, 8.0_f32, p().accent);
@@ -538,53 +543,6 @@ fn render_header(ui: &mut egui::Ui, count: usize) {
     );
     let text_pos = pill_rect.center() - galley.size() * 0.5_f32;
     painter.galley(text_pos, galley, p().text_muted);
-}
-
-/// Render the footer `+ New Workspace` button.
-///
-/// Returns `true` when clicked. The click is routed through
-/// `RmuxApp::create_workspace_with_terminal` by `app.rs` — the same path as
-/// the Cmd/Ctrl+N shortcut — so the new workspace gets a live terminal.
-/// Hover lifts the fill to `panel_active_bg` with an `accent` border
-/// (arbor "Add Repository" pattern).
-fn render_new_workspace_button(ui: &mut egui::Ui) -> bool {
-    let size = egui::Vec2::new(ui.available_width(), crate::ui::theme::metrics::BUTTON_HEIGHT);
-    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
-    if !ui.is_rect_visible(rect) {
-        return false;
-    }
-
-    let hovered = response.hovered();
-    let fill = if hovered { p().panel_active_bg } else { p().panel_bg };
-    let border_color = if hovered { p().accent } else { p().border };
-    let radius = egui::CornerRadius::same(card_radius());
-    let painter = ui.painter();
-    painter.rect_filled(rect, radius, fill);
-    painter.rect_stroke(
-        rect,
-        radius,
-        egui::Stroke::new(1.0_f32, border_color),
-        egui::StrokeKind::Inside,
-    );
-
-    let label_font = egui::FontId::proportional(12.0_f32);
-    let plus = painter.layout_no_wrap("+ ".to_owned(), label_font.clone(), p().accent);
-    let label = painter.layout_no_wrap("New Workspace".to_owned(), label_font, p().text_primary);
-    let total_width = plus.size().x + label.size().x;
-    let plus_pos = egui::Pos2::new(
-        rect.center().x - total_width / 2.0_f32,
-        rect.center().y - plus.size().y / 2.0_f32,
-    );
-    let label_pos =
-        egui::Pos2::new(plus_pos.x + plus.size().x, rect.center().y - label.size().y / 2.0_f32);
-    painter.galley(plus_pos, plus, p().accent);
-    painter.galley(label_pos, label, p().text_primary);
-
-    let shortcut_hint = if cfg!(target_os = "macos") { "\u{2318}N" } else { "Ctrl+N" };
-    let response = response
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text(format!("New workspace ({shortcut_hint})"));
-    response.clicked()
 }
 
 #[cfg(test)]

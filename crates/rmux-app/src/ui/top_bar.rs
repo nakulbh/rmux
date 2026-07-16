@@ -1,33 +1,85 @@
-//! Top chrome bar: sidebar toggle, centered workspace title, notification bell.
+//! Top chrome bar styled after cmux: left-aligned toolbar + workspace tabs.
 //!
-//! 34px `chrome_bg` strip with a 1px `chrome_border` hairline along its
-//! bottom edge (see `docs/UI_REDESIGN.md` §D).
+//! Layout (left → right, after macOS traffic lights):
+//! ```text
+//! [sidebar] [bell ¹] [+ ▾] [←] [→]   [📁 Workspace 1]
+//!                                       ─────────────  (accent underline)
+//! ```
+//!
+//! Icons are stroke-drawn (no emoji / Nerd Font dependency) so they stay
+//! crisp at any DPI and match cmux's thin SF-Symbols aesthetic.
 
-use egui::{CornerRadius, CursorIcon, FontId, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
+use egui::{
+    Color32, CornerRadius, CursorIcon, FontId, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Vec2,
+    pos2, vec2,
+};
 
 use crate::notifications::NotificationManager;
+use crate::ui::shortcut_hints;
 use crate::ui::theme::{self, metrics};
 use crate::workspace::WorkspaceManager;
 
-/// Horizontal offset of the leftmost control (clears macOS traffic lights).
-fn left_offset() -> f32 {
-    if cfg!(target_os = "macos") { 76.0_f32 } else { 12.0_f32 }
+/// Actions the top bar can request of the app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TopBarAction {
+    /// Toggle the left workspace sidebar.
+    ToggleSidebar,
+    /// Toggle the right notification panel.
+    ToggleNotifications,
+    /// Open / close the settings panel.
+    ToggleSettings,
+    /// Create a new workspace (same path as Cmd/Ctrl+N).
+    NewWorkspace,
+    /// Switch to the previous workspace.
+    PrevWorkspace,
+    /// Switch to the next workspace.
+    NextWorkspace,
+    /// Switch to the workspace at the given index.
+    SelectWorkspace(usize),
 }
 
+/// Horizontal offset of the leftmost control (clears macOS traffic lights).
+fn left_offset() -> f32 {
+    if cfg!(target_os = "macos") { 78.0_f32 } else { 12.0_f32 }
+}
+
+/// Near-black fill matching cmux's title bar (darker than chrome_bg).
+fn bar_bg(p: &theme::Palette) -> Color32 {
+    // Slightly darker than app_bg for a flat, elevated chrome strip.
+    Color32::from_rgb(
+        p.app_bg.r().saturating_sub(8),
+        p.app_bg.g().saturating_sub(8),
+        p.app_bg.b().saturating_sub(8),
+    )
+}
+
+/// Toolbar icon hit-target size (cmux uses compact ~28px squares).
+const ICON_SIZE: f32 = 28.0_f32;
+/// Gap between toolbar icons.
+const ICON_GAP: f32 = 2.0_f32;
+/// Gap between the icon cluster and the first workspace tab.
+const CLUSTER_TAB_GAP: f32 = 10.0_f32;
+
 /// Render the top bar. Call before any side panels so it spans the window.
+///
+/// Returns the action (if any) the user requested this frame.
 pub fn show(
     ctx: &egui::Context,
     manager: &WorkspaceManager,
     notifications: &NotificationManager,
-    sidebar_visible: &mut bool,
-    notification_panel_visible: &mut bool,
-    right_sidebar_visible: &mut bool,
-    settings_open: &mut bool,
-) {
+    sidebar_visible: bool,
+    notification_panel_visible: bool,
+    settings_open: bool,
+) -> Option<TopBarAction> {
     let p = theme::palette();
+    let mut action = None;
+    // Hold ⌘ (macOS) / Ctrl (Linux/Windows) to reveal chord badges on each
+    // control — same discoverability pattern as cmux.
+    let show_hints = shortcut_hints::primary_mod_held(ctx);
+
     egui::TopBottomPanel::top("rmux_top_bar")
         .exact_height(metrics::TOP_BAR_HEIGHT)
-        .frame(egui::Frame::default().fill(p.chrome_bg))
+        .frame(egui::Frame::default().fill(bar_bg(&p)))
         .show_separator_line(false)
         .show(ctx, |ui| {
             let rect = ui.max_rect();
@@ -39,158 +91,386 @@ pub fn show(
                 Stroke::new(1.0_f32, p.chrome_border),
             );
 
-            // Center: workspace name (14px strong) + optional pane-count
-            // suffix (11px muted), measured and centered as one unit.
-            let ws = manager.active();
-            let name_galley = ui.painter().layout_no_wrap(
-                ws.name.clone(),
-                FontId::proportional(14.0_f32),
-                p.text_primary,
-            );
-            let panes = ws.pane_count();
-            let suffix_galley = (panes > 1).then(|| {
-                ui.painter().layout_no_wrap(
-                    format!(" · {panes} panes"),
-                    FontId::proportional(11.0_f32),
-                    p.text_muted,
-                )
-            });
-            let total_width =
-                name_galley.size().x + suffix_galley.as_ref().map_or(0.0_f32, |g| g.size().x);
-            let mut cursor_x = rect.center().x - total_width / 2.0_f32;
-            let name_pos = pos2(cursor_x, rect.center().y - name_galley.size().y / 2.0_f32);
-            cursor_x += name_galley.size().x;
-            ui.painter().galley(name_pos, name_galley, p.text_primary);
-            if let Some(suffix) = suffix_galley {
-                let suffix_pos = pos2(cursor_x, rect.center().y - suffix.size().y / 2.0_f32);
-                ui.painter().galley(suffix_pos, suffix, p.text_muted);
-            }
+            let cy = rect.center().y;
+            let mut x = rect.left() + left_offset();
 
-            // Sidebar toggle (left): 20×20, radius 2, no fill
-            let toggle_rect = Rect::from_center_size(
-                pos2(rect.left() + left_offset() + 10.0_f32, rect.center().y),
-                vec2(20.0_f32, 20.0_f32),
-            );
-            let toggle = ui
-                .interact(toggle_rect, ui.id().with("sidebar_toggle"), Sense::click())
-                .on_hover_cursor(CursorIcon::PointingHand);
-            let icon_color = if !*sidebar_visible {
-                p.accent
-            } else if toggle.hovered() {
-                p.text_primary
-            } else {
-                p.text_muted
-            };
-            ui.painter().text(
-                toggle_rect.center(),
-                egui::Align2::CENTER_CENTER,
-                "☰",
-                FontId::proportional(12.0_f32),
-                icon_color,
-            );
-            if toggle.clicked() {
-                *sidebar_visible = !*sidebar_visible;
-            }
+            // --- Toolbar icon cluster (all left-aligned, cmux order) ---
 
-            // Notification bell (right): h=22, px=6, sized to content.
-            // The count is only shown when there are unread notifications.
-            //
-            // Renders a small filled circle (accent when there are unread
-            // notifications, text_muted otherwise) as the notification
-            // indicator. This avoids relying on Nerd Font PUA glyphs or
-            // emoji codepoints, both of which egui/epaint may fail to
-            // render (producing tofu boxes).
+            // 1. Sidebar toggle  (⌘B / Ctrl+B)
+            let sidebar_center = pos2(x, cy);
+            if icon_button(
+                ui,
+                sidebar_center,
+                "sidebar_toggle",
+                sidebar_visible,
+                true,
+                "Toggle sidebar (\u{2318}B)",
+                &p,
+                draw_sidebar_icon,
+            ) {
+                action = Some(TopBarAction::ToggleSidebar);
+            }
+            if show_hints {
+                shortcut_hints::draw_overlay_badge(ui, sidebar_center, &shortcut_hints::chord("B"));
+            }
+            x += ICON_SIZE + ICON_GAP;
+
+            // 2. Notification bell + unread badge  (⌘I / Ctrl+I)
+            let bell_center = pos2(x, cy);
             let unread = notifications.unread_count();
-            let dot_radius = 4.0_f32;
-            let has_unread = unread > 0;
-            let dot_color = if has_unread { p.accent } else { p.text_muted };
-            let icon_width = dot_radius * 2.0_f32 + 2.0_f32;
-            let count_galley = has_unread.then(|| {
-                ui.painter().layout_no_wrap(
-                    format!(" {unread}"),
-                    FontId::proportional(11.0_f32),
-                    p.accent,
-                )
-            });
-            let content_width = icon_width + count_galley.as_ref().map_or(0.0_f32, |g| g.size().x);
-            let bell_width = content_width + 2.0_f32 * 6.0_f32;
+            if icon_button(
+                ui,
+                bell_center,
+                "notification_bell",
+                notification_panel_visible,
+                true,
+                "Notifications (\u{2318}I)",
+                &p,
+                draw_bell_icon,
+            ) {
+                action = Some(TopBarAction::ToggleNotifications);
+            }
+            if unread > 0 && !show_hints {
+                draw_badge(ui, pos2(x + 8.0_f32, cy - 8.0_f32), unread, &p);
+            }
+            if show_hints {
+                shortcut_hints::draw_overlay_badge(ui, bell_center, &shortcut_hints::chord("I"));
+            }
+            x += ICON_SIZE + ICON_GAP;
 
-            // Settings gear (20×20, mirrors the left ☰ style). Sits left of
-            // the right-sidebar toggle; opens the settings panel (theme, etc).
-            let settings_rect = Rect::from_center_size(
-                pos2(rect.right() - 12.0_f32 - bell_width - 18.0_f32 - 26.0_f32, rect.center().y),
-                vec2(20.0_f32, 20.0_f32),
-            );
-            let settings = ui
-                .interact(settings_rect, ui.id().with("settings_gear"), Sense::click())
-                .on_hover_cursor(CursorIcon::PointingHand)
-                .on_hover_text("Settings");
-            let settings_icon_color =
-                if *settings_open || settings.hovered() { p.text_primary } else { p.text_muted };
-            ui.painter().text(
-                settings_rect.center(),
-                egui::Align2::CENTER_CENTER,
-                "\u{2699}",
-                FontId::proportional(13.0_f32),
-                settings_icon_color,
-            );
-            if settings.clicked() {
-                *settings_open = !*settings_open;
+            // 3. Plus (+ ▾) — new workspace  (⌘N / Ctrl+N)
+            let plus_center = pos2(x, cy);
+            if plus_button(ui, plus_center, &p) {
+                action = Some(TopBarAction::NewWorkspace);
+            }
+            if show_hints {
+                shortcut_hints::draw_overlay_badge(ui, plus_center, &shortcut_hints::chord("N"));
+            }
+            x += ICON_SIZE + 6.0_f32 + ICON_GAP;
+
+            // 4. Back (previous workspace)  (⌘[ / Ctrl+[)
+            let prev_center = pos2(x, cy);
+            let can_nav = manager.workspace_count() > 1;
+            if icon_button(
+                ui,
+                prev_center,
+                "ws_prev",
+                false,
+                can_nav,
+                "Previous workspace",
+                &p,
+                draw_chevron_left,
+            ) && can_nav
+            {
+                action = Some(TopBarAction::PrevWorkspace);
+            }
+            if show_hints {
+                shortcut_hints::draw_overlay_badge(ui, prev_center, &shortcut_hints::chord("["));
+            }
+            x += ICON_SIZE + ICON_GAP;
+
+            // 5. Forward (next workspace)  (⌘] / Ctrl+])
+            let next_center = pos2(x, cy);
+            if icon_button(
+                ui,
+                next_center,
+                "ws_next",
+                false,
+                can_nav,
+                "Next workspace",
+                &p,
+                draw_chevron_right,
+            ) && can_nav
+            {
+                action = Some(TopBarAction::NextWorkspace);
+            }
+            if show_hints {
+                shortcut_hints::draw_overlay_badge(ui, next_center, &shortcut_hints::chord("]"));
+            }
+            x += ICON_SIZE + CLUSTER_TAB_GAP;
+
+            // --- Workspace tabs (folder + name, accent underline on active) ---
+            let active_idx =
+                manager.workspaces().iter().position(|w| w.id == manager.active().id).unwrap_or(0);
+
+            for (idx, ws) in manager.workspaces().iter().enumerate() {
+                let is_active = idx == active_idx;
+                let tab_w = workspace_tab(ui, pos2(x, cy), rect.height(), &ws.name, is_active, &p);
+                let tab_rect = Rect::from_center_size(
+                    pos2(x + tab_w / 2.0_f32, cy),
+                    vec2(tab_w, rect.height() - 2.0_f32),
+                );
+                let resp = ui
+                    .interact(tab_rect, ui.id().with(("ws_tab", idx)), Sense::click())
+                    .on_hover_cursor(CursorIcon::PointingHand);
+                if resp.clicked() && !is_active {
+                    action = Some(TopBarAction::SelectWorkspace(idx));
+                }
+                // Workspace number chords (⌘1…) live on the sidebar cards
+                // only — painting them on the tab title would cover the name
+                // (cmux keeps top-bar tabs free of number badges).
+                x += tab_w + 4.0_f32;
             }
 
-            // Right sidebar toggle (20×20, mirrors the left ☰ style). Drives
-            // the cmux `Cmd+Opt+B` shortcut path; sits left of the bell.
-            let right_toggle_rect = Rect::from_center_size(
-                pos2(rect.right() - 12.0_f32 - bell_width - 18.0_f32, rect.center().y),
-                vec2(20.0_f32, 20.0_f32),
-            );
-            let right_toggle = ui
-                .interact(right_toggle_rect, ui.id().with("right_sidebar_toggle"), Sense::click())
-                .on_hover_cursor(CursorIcon::PointingHand)
-                .on_hover_text("Toggle right sidebar (\u{2318}\u{2325}B)");
-            let right_icon_color = if !*right_sidebar_visible {
-                p.accent
-            } else if right_toggle.hovered() {
-                p.text_primary
-            } else {
-                p.text_muted
-            };
-            ui.painter().text(
-                right_toggle_rect.center(),
-                egui::Align2::CENTER_CENTER,
-                "\u{25a5}",
-                FontId::proportional(12.0_f32),
-                right_icon_color,
-            );
-            if right_toggle.clicked() {
-                *right_sidebar_visible = !*right_sidebar_visible;
-            }
-
-            let bell_rect = Rect::from_min_size(
-                pos2(rect.right() - 12.0_f32 - bell_width, rect.center().y - 11.0_f32),
-                vec2(bell_width, 22.0_f32),
-            );
-            let bell = ui
-                .interact(bell_rect, ui.id().with("notification_bell"), Sense::click())
-                .on_hover_cursor(CursorIcon::PointingHand)
-                .on_hover_text("Notifications (\u{2318}I)");
-            let fill = if bell.hovered() { p.panel_bg } else { p.chrome_bg };
-            ui.painter().rect_filled(bell_rect, CornerRadius::same(theme::radius_sm()), fill);
-            ui.painter().rect_stroke(
-                bell_rect,
-                CornerRadius::same(theme::radius_sm()),
-                Stroke::new(1.0_f32, p.border),
-                StrokeKind::Inside,
-            );
-            let dot_center = pos2(bell_rect.left() + 6.0_f32 + dot_radius, bell_rect.center().y);
-            ui.painter().circle_filled(dot_center, dot_radius, dot_color);
-            let count_x = dot_center.x + dot_radius + 2.0_f32;
-            if let Some(count) = count_galley {
-                let count_pos = pos2(count_x, bell_rect.center().y - count.size().y / 2.0_f32);
-                ui.painter().galley(count_pos, count, p.accent);
-            }
-            if bell.clicked() {
-                *notification_panel_visible = !*notification_panel_visible;
+            // --- Settings gear (far right, muted — keeps settings reachable
+            // without cluttering the cmux-style left cluster) ---
+            let settings_center = pos2(rect.right() - 18.0_f32, cy);
+            if icon_button(
+                ui,
+                settings_center,
+                "settings_gear",
+                settings_open,
+                true,
+                "Settings",
+                &p,
+                draw_gear_icon,
+            ) {
+                action = Some(TopBarAction::ToggleSettings);
             }
         });
+
+    action
+}
+
+// ─── Buttons ────────────────────────────────────────────────────────────────
+
+/// Compact square toolbar button. `draw` paints a 14×14 icon at `center`.
+#[allow(clippy::too_many_arguments)]
+fn icon_button(
+    ui: &mut egui::Ui,
+    center: Pos2,
+    id: &str,
+    active: bool,
+    enabled: bool,
+    tip: &str,
+    p: &theme::Palette,
+    draw: impl FnOnce(&egui::Painter, Pos2, Color32),
+) -> bool {
+    let rect = Rect::from_center_size(center, vec2(ICON_SIZE, ICON_SIZE));
+    let mut resp = ui.interact(rect, ui.id().with(id), Sense::click());
+    if enabled {
+        resp = resp.on_hover_cursor(CursorIcon::PointingHand).on_hover_text(tip);
+    }
+
+    let color = if !enabled {
+        p.text_disabled
+    } else if active {
+        p.accent
+    } else if resp.hovered() {
+        p.text_primary
+    } else {
+        p.text_muted
+    };
+
+    if enabled && resp.hovered() {
+        ui.painter().rect_filled(rect.shrink(2.0_f32), CornerRadius::same(4), p.panel_active_bg);
+    }
+
+    draw(ui.painter(), center, color);
+    enabled && resp.clicked()
+}
+
+/// Plus button with a small dropdown chevron (cmux "+ ▾").
+fn plus_button(ui: &mut egui::Ui, center: Pos2, p: &theme::Palette) -> bool {
+    // Slightly wider to fit + and chevron.
+    let size = vec2(ICON_SIZE + 6.0_f32, ICON_SIZE);
+    let rect = Rect::from_center_size(center + vec2(3.0_f32, 0.0_f32), size);
+    let resp = ui
+        .interact(rect, ui.id().with("new_plus"), Sense::click())
+        .on_hover_cursor(CursorIcon::PointingHand)
+        .on_hover_text("New workspace (\u{2318}N)");
+
+    let color = if resp.hovered() { p.text_primary } else { p.text_muted };
+
+    if resp.hovered() {
+        ui.painter().rect_filled(rect.shrink(2.0_f32), CornerRadius::same(4), p.panel_active_bg);
+    }
+
+    // Plus cross
+    let painter = ui.painter();
+    let s = 5.0_f32;
+    let stroke = Stroke::new(1.5_f32, color);
+    let px = center.x - 2.0_f32;
+    painter.line_segment([pos2(px - s, center.y), pos2(px + s, center.y)], stroke);
+    painter.line_segment([pos2(px, center.y - s), pos2(px, center.y + s)], stroke);
+
+    // Small down-chevron to the right of +
+    let cx = center.x + 9.0_f32;
+    let cy = center.y + 0.5_f32;
+    let ch = 2.5_f32;
+    painter.line_segment(
+        [pos2(cx - ch, cy - 1.0_f32), pos2(cx, cy + ch - 1.0_f32)],
+        Stroke::new(1.2_f32, color),
+    );
+    painter.line_segment(
+        [pos2(cx, cy + ch - 1.0_f32), pos2(cx + ch, cy - 1.0_f32)],
+        Stroke::new(1.2_f32, color),
+    );
+
+    resp.clicked()
+}
+
+/// Draw a workspace tab: accent folder + name; accent underline when active.
+/// Returns the tab's total width so the caller can advance the cursor.
+fn workspace_tab(
+    ui: &mut egui::Ui,
+    left_center: Pos2,
+    bar_h: f32,
+    name: &str,
+    active: bool,
+    p: &theme::Palette,
+) -> f32 {
+    let text_color = if active { p.text_primary } else { p.text_muted };
+    let folder_color = if active { p.accent } else { p.text_muted };
+
+    let name_galley =
+        ui.painter().layout_no_wrap(name.to_owned(), FontId::proportional(12.5_f32), text_color);
+
+    let folder_w = 14.0_f32;
+    let gap = 5.0_f32;
+    let pad_x = 8.0_f32;
+    let total_w = pad_x + folder_w + gap + name_galley.size().x + pad_x;
+
+    let origin = pos2(left_center.x, left_center.y);
+
+    // Folder icon
+    let folder_center = pos2(origin.x + pad_x + folder_w / 2.0_f32, origin.y);
+    draw_folder_icon(ui.painter(), folder_center, folder_color, active);
+
+    // Name
+    let name_pos =
+        pos2(origin.x + pad_x + folder_w + gap, origin.y - name_galley.size().y / 2.0_f32);
+    ui.painter().galley(name_pos, name_galley, text_color);
+
+    // Accent underline under the whole tab when active (cmux style)
+    if active {
+        let y = left_center.y + bar_h / 2.0_f32 - 1.5_f32;
+        ui.painter().hline(origin.x..=origin.x + total_w, y, Stroke::new(2.0_f32, p.accent));
+    }
+
+    total_w
+}
+
+/// Unread count badge (small filled circle with number), cmux-style.
+fn draw_badge(ui: &mut egui::Ui, center: Pos2, count: usize, p: &theme::Palette) {
+    let label = if count > 99 { "99+".to_owned() } else { count.to_string() };
+    let galley = ui.painter().layout_no_wrap(label, FontId::proportional(9.0_f32), Color32::WHITE);
+    let r = (galley.size().x / 2.0_f32 + 3.5_f32).max(7.0_f32);
+    ui.painter().circle_filled(center, r, p.accent);
+    ui.painter().galley(
+        pos2(center.x - galley.size().x / 2.0_f32, center.y - galley.size().y / 2.0_f32),
+        galley,
+        Color32::WHITE,
+    );
+}
+
+// ─── Icon painters (14×14 stroke icons, SF-Symbols weight) ───────────────────
+
+fn draw_sidebar_icon(painter: &egui::Painter, c: Pos2, color: Color32) {
+    // Rounded rect with a left sidebar pane.
+    let w = 13.0_f32;
+    let h = 11.0_f32;
+    let rect = Rect::from_center_size(c, vec2(w, h));
+    let stroke = Stroke::new(1.3_f32, color);
+    painter.rect_stroke(rect, CornerRadius::same(2), stroke, StrokeKind::Outside);
+    // Vertical divider ~1/3 from left
+    let div_x = rect.left() + w * 0.35_f32;
+    painter.line_segment([pos2(div_x, rect.top()), pos2(div_x, rect.bottom())], stroke);
+    // Fill left pane lightly
+    let left = Rect::from_min_max(rect.min, pos2(div_x, rect.bottom()));
+    painter.rect_filled(
+        left.shrink(1.0_f32),
+        CornerRadius::same(1),
+        color.gamma_multiply(0.35_f32),
+    );
+}
+
+fn draw_bell_icon(painter: &egui::Painter, c: Pos2, color: Color32) {
+    let stroke = Stroke::new(1.3_f32, color);
+    // Bell body: inverted U / dome
+    let top = c.y - 5.0_f32;
+    let bottom = c.y + 3.0_f32;
+    let half_w = 5.0_f32;
+    // Dome arc approximated with a few line segments
+    let points = [
+        pos2(c.x - half_w, bottom - 1.0_f32),
+        pos2(c.x - half_w, c.y - 1.0_f32),
+        pos2(c.x - half_w * 0.7_f32, top + 1.5_f32),
+        pos2(c.x, top),
+        pos2(c.x + half_w * 0.7_f32, top + 1.5_f32),
+        pos2(c.x + half_w, c.y - 1.0_f32),
+        pos2(c.x + half_w, bottom - 1.0_f32),
+    ];
+    painter.add(Shape::line(points.to_vec(), stroke));
+    // Bottom rim
+    painter.line_segment(
+        [
+            pos2(c.x - half_w - 1.5_f32, bottom - 1.0_f32),
+            pos2(c.x + half_w + 1.5_f32, bottom - 1.0_f32),
+        ],
+        stroke,
+    );
+    // Clapper
+    painter.circle_filled(pos2(c.x, bottom + 1.5_f32), 1.2_f32, color);
+}
+
+fn draw_chevron_left(painter: &egui::Painter, c: Pos2, color: Color32) {
+    let stroke = Stroke::new(1.5_f32, color);
+    let s = 4.0_f32;
+    painter.line_segment([pos2(c.x + s * 0.4_f32, c.y - s), pos2(c.x - s * 0.5_f32, c.y)], stroke);
+    painter.line_segment([pos2(c.x - s * 0.5_f32, c.y), pos2(c.x + s * 0.4_f32, c.y + s)], stroke);
+}
+
+fn draw_chevron_right(painter: &egui::Painter, c: Pos2, color: Color32) {
+    let stroke = Stroke::new(1.5_f32, color);
+    let s = 4.0_f32;
+    painter.line_segment([pos2(c.x - s * 0.4_f32, c.y - s), pos2(c.x + s * 0.5_f32, c.y)], stroke);
+    painter.line_segment([pos2(c.x + s * 0.5_f32, c.y), pos2(c.x - s * 0.4_f32, c.y + s)], stroke);
+}
+
+fn draw_folder_icon(painter: &egui::Painter, c: Pos2, color: Color32, filled: bool) {
+    let w = 13.0_f32;
+    let h = 10.0_f32;
+    let rect = Rect::from_center_size(c + vec2(0.0_f32, 0.5_f32), vec2(w, h));
+    // Tab on top-left
+    let tab = Rect::from_min_size(pos2(rect.left(), rect.top() - 2.5_f32), vec2(5.0_f32, 3.0_f32));
+    if filled {
+        painter.rect_filled(rect, CornerRadius::same(1), color);
+        painter.rect_filled(tab, CornerRadius::same(1), color);
+    } else {
+        let stroke = Stroke::new(1.2_f32, color);
+        painter.rect_stroke(rect, CornerRadius::same(1), stroke, StrokeKind::Outside);
+        painter.rect_stroke(tab, CornerRadius::same(1), stroke, StrokeKind::Outside);
+    }
+}
+
+fn draw_gear_icon(painter: &egui::Painter, c: Pos2, color: Color32) {
+    // Simple gear: outer circle + inner hole + 4 spokes (reads as settings).
+    let stroke = Stroke::new(1.2_f32, color);
+    painter.circle_stroke(c, 5.0_f32, stroke);
+    painter.circle_stroke(c, 2.0_f32, stroke);
+    for angle in [0.0_f32, 45.0, 90.0, 135.0] {
+        let rad = angle.to_radians();
+        let dir = Vec2::new(rad.cos(), rad.sin());
+        painter.line_segment([c + dir * 5.0_f32, c + dir * 7.0_f32], stroke);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_top_bar_action_variants() {
+        // Smoke: enum is usable and Copy.
+        let a = TopBarAction::NewWorkspace;
+        let b = a;
+        assert_eq!(a, b);
+        assert_eq!(TopBarAction::SelectWorkspace(2), TopBarAction::SelectWorkspace(2));
+    }
+
+    #[test]
+    fn test_left_offset_is_positive() {
+        assert!(left_offset() > 0.0_f32);
+    }
 }
