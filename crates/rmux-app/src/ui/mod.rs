@@ -3,7 +3,7 @@
 //! # Components
 //!
 //! - `top_bar` — cmux-style top chrome (left toolbar + workspace tabs)
-//! - `sidebar` — `SidebarView` for workspace tab navigation
+//! - `sidebar` — cmux-style workspace cards (name, hover ×, rename)
 //! - `workspace_view` — Pane tree renderer for split layouts
 //! - `terminal_pane` — Terminal pane widget (PTY + rendering + input)
 //! - `notification_panel` — Right-side notification list panel

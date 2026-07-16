@@ -62,16 +62,22 @@ fn init_logging(verbose: bool) {
         .init();
 }
 
+/// Official rmux logo (256×256 PNG) — used as the window / dock / taskbar icon.
+const APP_ICON_PNG: &[u8] = include_bytes!("../assets/rmux_logo.png");
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     init_logging(cli.verbose);
 
     tracing::info!("rmux starting (version {})", env!("CARGO_PKG_VERSION"));
 
-    let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1200.0, 800.0]),
-        ..Default::default()
-    };
+    let mut viewport =
+        egui::ViewportBuilder::default().with_inner_size([1200.0, 800.0]).with_title("rmux");
+    if let Some(icon) = load_app_icon() {
+        viewport = viewport.with_icon(std::sync::Arc::new(icon));
+    }
+
+    let native_options = eframe::NativeOptions { viewport, ..Default::default() };
 
     eframe::run_native(
         "rmux",
@@ -87,20 +93,20 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Monospace font candidates, in preference order. Used for terminal text
-/// (`egui::FontFamily::Monospace`).
-const MONOSPACE_FONT_CANDIDATES: &[&str] = &[
-    // macOS: SF Mono (used by Terminal.app/iTerm2 by default on modern macOS)
-    "/System/Library/Fonts/SFNSMono.ttf",
-    "/System/Library/Fonts/Monaco.ttf",
-    // Windows
-    "C:\\Windows\\Fonts\\consola.ttf",
-    "C:\\Windows\\Fonts\\cascadiamono.ttf",
-    // Linux (common distro font paths)
-    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
-    "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
-    "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
-];
+/// Decode the bundled official logo into an `egui::IconData` for the OS window.
+fn load_app_icon() -> Option<egui::IconData> {
+    let image = image::load_from_memory(APP_ICON_PNG)
+        .map_err(|err| tracing::warn!(error = %err, "failed to decode app icon"))
+        .ok()?
+        .into_rgba8();
+    let (width, height) = image.dimensions();
+    Some(egui::IconData { rgba: image.into_raw(), width, height })
+}
+
+/// JetBrains Mono — same primary terminal face Ghostty/cmux embed by default.
+/// OFL-1.1; see `assets/fonts/JETBRAINS_MONO_LICENSE.txt`.
+const JETBRAINS_MONO_REGULAR: &[u8] = include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf");
+const JETBRAINS_MONO_BOLD: &[u8] = include_bytes!("../assets/fonts/JetBrainsMono-Bold.ttf");
 
 /// UI sans-serif font candidates, in preference order. Used for regular UI
 /// text (`egui::FontFamily::Proportional`) — sidebar labels, buttons, etc.
@@ -117,44 +123,54 @@ const UI_SANS_FONT_CANDIDATES: &[&str] = &[
 
 /// Icon glyphs (Private Use Area code points) used by nvim-web-devicons,
 /// lazy.nvim, starship/oh-my-posh, k9s, lsd/exa, and most modern CLI tool
-/// UIs. Neither a system monospace font nor egui's bundled "Hack" contain
-/// these — without a fallback they render as tofu boxes. This is the
-/// "Mono" variant (single-width glyphs, sized to sit cleanly in one
-/// terminal cell) from the Nerd Fonts symbols-only release, MIT licensed
-/// (see `assets/fonts/NERD_FONTS_LICENSE.txt`).
+/// UIs. Neither JetBrains Mono nor egui's bundled "Hack" contain these —
+/// without a fallback they render as tofu boxes. This is the "Mono" variant
+/// (single-width glyphs, sized to sit cleanly in one terminal cell) from the
+/// Nerd Fonts symbols-only release, MIT licensed (see
+/// `assets/fonts/NERD_FONTS_LICENSE.txt`).
 const NERD_FONT_SYMBOLS: &[u8] = include_bytes!("../assets/fonts/SymbolsNerdFontMono-Regular.ttf");
 
 /// Load custom fonts for the UI and terminal.
 ///
-/// egui's bundled default fonts ("Hack" for monospace, "Ubuntu-Light" for
-/// proportional text) render noticeably heavier/blockier than the native
-/// fonts they're meant to stand in for — egui does *not* pull platform
-/// fonts automatically. We look for real system fonts (SF Mono/SF on
-/// macOS, Consolas/Segoe UI on Windows, DejaVu/Liberation on Linux) and,
-/// if found, install them as the first choice in the `Monospace` and
-/// `Proportional` families so terminal text and the rest of the UI render
-/// crisply like a native app. Falls back to egui's bundled fonts for
-/// whichever family has no candidate present on disk.
+/// Matches Ghostty/cmux defaults as closely as egui allows:
+/// 1. **JetBrains Mono** as the primary monospace face (bundled) — crisp
+///    coding font with consistent cell metrics for TUIs like LazyVim.
+/// 2. **Symbols Nerd Font Mono** as fallback for PUA icons (devicons, powerline).
+/// 3. System sans for proportional UI chrome.
 ///
-/// A bundled Nerd Font symbols-only font is always appended as the last
-/// fallback in the `Monospace` family, so PUA icon glyphs used by CLI dev
-/// tools resolve instead of rendering as tofu boxes, regardless of
-/// whether the system font found above (or egui's own bundled font)
-/// happens to include them.
+/// We deliberately do **not** prefer macOS SF Mono for the terminal: it is a
+/// multi-named / variable face that ab_glyph can resolve poorly, and it lacks
+/// the metrics Ghostty tunes around JetBrains Mono + Nerd symbols.
 fn setup_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
 
-    if let Some(bytes) = load_first_readable(MONOSPACE_FONT_CANDIDATES) {
-        fonts.font_data.insert(
-            "SystemMono".to_owned(),
-            std::sync::Arc::new(egui::FontData::from_owned(bytes)),
-        );
-        fonts
-            .families
-            .entry(egui::FontFamily::Monospace)
-            .or_default()
-            .insert(0, "SystemMono".to_owned());
+    fonts.font_data.insert(
+        "JetBrainsMono".to_owned(),
+        std::sync::Arc::new(egui::FontData::from_static(JETBRAINS_MONO_REGULAR)),
+    );
+    fonts.font_data.insert(
+        "JetBrainsMonoBold".to_owned(),
+        std::sync::Arc::new(egui::FontData::from_static(JETBRAINS_MONO_BOLD)),
+    );
+    fonts.font_data.insert(
+        "NerdFontSymbols".to_owned(),
+        std::sync::Arc::new(egui::FontData::from_static(NERD_FONT_SYMBOLS)),
+    );
+
+    // Monospace: JetBrains Mono first, then Nerd symbols for missing codepoints.
+    // Bold face is registered under its own family name for the renderer.
+    {
+        let mono = fonts.families.entry(egui::FontFamily::Monospace).or_default();
+        mono.clear();
+        mono.push("JetBrainsMono".to_owned());
+        mono.push("NerdFontSymbols".to_owned());
+        // Keep egui's built-in Hack as last resort for rare coverage gaps.
+        mono.push("Hack".to_owned());
     }
+    fonts.families.insert(
+        egui::FontFamily::Name("JetBrainsMonoBold".into()),
+        vec!["JetBrainsMonoBold".to_owned(), "NerdFontSymbols".to_owned()],
+    );
 
     if let Some(bytes) = load_first_readable(UI_SANS_FONT_CANDIDATES) {
         fonts.font_data.insert(
@@ -168,17 +184,12 @@ fn setup_fonts(ctx: &egui::Context) {
             .insert(0, "SystemSans".to_owned());
     }
 
-    fonts.font_data.insert(
-        "NerdFontSymbols".to_owned(),
-        std::sync::Arc::new(egui::FontData::from_static(NERD_FONT_SYMBOLS)),
-    );
-    // Appended as a last-resort fallback in BOTH families: Monospace for
-    // terminal content (CLI tool icons), Proportional for rmux's own UI
-    // chrome icons (e.g. the notification bell in top_bar.rs), which use
-    // `FontId::proportional` and would otherwise miss this fallback.
-    for family in [egui::FontFamily::Monospace, egui::FontFamily::Proportional] {
-        fonts.families.entry(family).or_default().push("NerdFontSymbols".to_owned());
-    }
+    // Nerd symbols also on Proportional so UI chrome icons resolve.
+    fonts
+        .families
+        .entry(egui::FontFamily::Proportional)
+        .or_default()
+        .push("NerdFontSymbols".to_owned());
 
     ctx.set_fonts(fonts);
 }

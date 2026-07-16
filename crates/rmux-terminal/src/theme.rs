@@ -32,7 +32,7 @@ impl NamedTheme {
     /// Human-readable name for UI display (e.g. the settings theme picker).
     pub fn label(&self) -> &'static str {
         match self {
-            NamedTheme::OneDark => "One Dark",
+            NamedTheme::OneDark => "Dark",
             NamedTheme::Dracula => "Dracula",
             NamedTheme::SolarizedDark => "Solarized Dark",
             NamedTheme::SolarizedLight => "Solarized Light",
@@ -80,28 +80,32 @@ impl TerminalTheme {
         }
     }
 
+    /// cmux / Ghostty-inspired deep black (app default).
+    ///
+    /// Near-black background with high-contrast text and saturated ANSI
+    /// colors so the shell and prompt read cleanly on pure dark chrome.
     pub fn one_dark() -> Self {
         Self {
-            black: rgb(0x28, 0x2c, 0x34),
-            red: rgb(0xE0, 0x6C, 0x75),
-            green: rgb(0x98, 0xC3, 0x79),
-            yellow: rgb(0xE5, 0xC0, 0x7B),
-            blue: rgb(0x61, 0xAF, 0xEF),
-            magenta: rgb(0xC6, 0x78, 0xDD),
-            cyan: rgb(0x56, 0xB6, 0xC2),
-            white: rgb(0xAB, 0xB2, 0xBF),
-            bright_black: rgb(0x5C, 0x63, 0x70),
-            bright_red: rgb(0xE0, 0x6C, 0x75),
-            bright_green: rgb(0x98, 0xC3, 0x79),
-            bright_yellow: rgb(0xE5, 0xC0, 0x7B),
-            bright_blue: rgb(0x61, 0xAF, 0xEF),
-            bright_magenta: rgb(0xC6, 0x78, 0xDD),
-            bright_cyan: rgb(0x56, 0xB6, 0xC2),
-            bright_white: rgb(0xFF, 0xFF, 0xFF),
-            foreground: rgb(0xAB, 0xB2, 0xBF),
-            background: rgb(0x28, 0x2C, 0x34),
-            cursor: rgb(0x61, 0xAF, 0xEF),
-            selection_bg: rgb(0x3E, 0x44, 0x51),
+            black: rgb(0x1c, 0x1c, 0x1e),
+            red: rgb(0xff, 0x6b, 0x6b),
+            green: rgb(0x6b, 0xc4, 0x6d),
+            yellow: rgb(0xe5, 0xc0, 0x7b),
+            blue: rgb(0x6c, 0xb3, 0xfa),
+            magenta: rgb(0xc6, 0x8a, 0xee),
+            cyan: rgb(0x56, 0xcd, 0xd8),
+            white: rgb(0xe0, 0xe0, 0xe0),
+            bright_black: rgb(0x5a, 0x5a, 0x5e),
+            bright_red: rgb(0xff, 0x8a, 0x8a),
+            bright_green: rgb(0x8a, 0xd8, 0x8c),
+            bright_yellow: rgb(0xf0, 0xd0, 0x90),
+            bright_blue: rgb(0x8c, 0xc4, 0xff),
+            bright_magenta: rgb(0xd8, 0xa8, 0xf5),
+            bright_cyan: rgb(0x7a, 0xe0, 0xe8),
+            bright_white: rgb(0xff, 0xff, 0xff),
+            foreground: rgb(0xe6, 0xe6, 0xe8),
+            background: rgb(0x0c, 0x0c, 0x0e),
+            cursor: rgb(0xe6, 0xe6, 0xe8),
+            selection_bg: rgb(0x2c, 0x2c, 0x32),
         }
     }
 
@@ -293,7 +297,8 @@ mod tests {
     #[test]
     fn test_one_dark_has_expected_bg() {
         let theme = TerminalTheme::one_dark();
-        assert_eq!(theme.background, rgb(0x28, 0x2C, 0x34));
+        // Deep black default (cmux-style), not the old One Dark slate.
+        assert_eq!(theme.background, rgb(0x0c, 0x0c, 0x0e));
     }
 
     #[test]

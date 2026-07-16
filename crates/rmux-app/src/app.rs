@@ -78,7 +78,7 @@ impl RmuxApp {
         };
 
         let pane_id = app.workspace_manager.active().active_pane;
-        attach_terminal(&mut app.workspace_manager, pane_id, font_size, app.terminal_theme);
+        attach_terminal(&mut app.workspace_manager, pane_id, font_size, app.terminal_theme, None);
         app.last_active_workspace = app.workspace_manager.active().id.0;
 
         tracing::info!(
@@ -95,14 +95,12 @@ impl eframe::App for RmuxApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Apply shadcn-inspired theme every frame
         crate::ui::theme::Theme::dark().apply(ctx);
-        // Process PTY output for all terminal panes; collect any OSC
-        // notifications raised by pane output.
-        let osc_notifications = self.workspace_manager.process_all_panes();
-        for (workspace_id, pane_id, notification) in osc_notifications {
-            self.add_pane_notification(workspace_id, pane_id, notification);
-        }
+        // Process PTY output for all terminal panes (exit detection, grid).
+        // OSC → notification generation is disabled for now.
+        self.workspace_manager.process_all_panes();
 
-        // Auto-close panes whose process has exited
+        // Auto-close tabs/panes whose process has exited; respawn the last
+        // shell of the last workspace so the window is never left dead.
         let cleanup = self.workspace_manager.close_exited_panes();
         for (workspace_id, pane_id) in cleanup.panes {
             self.publish_event(
@@ -112,6 +110,22 @@ impl eframe::App for RmuxApp {
         }
         for workspace_id in cleanup.workspaces {
             self.publish_event("workspace.closed", json!({ "id": workspace_id }));
+        }
+        for (workspace_id, pane_id) in cleanup.panes_needing_respawn {
+            // Switch to the workspace that owns the empty pane, then attach.
+            if let Some(idx) =
+                self.workspace_manager.workspaces().iter().position(|w| w.id.0 == workspace_id)
+            {
+                self.workspace_manager.switch_to(idx);
+            }
+            attach_terminal(
+                &mut self.workspace_manager,
+                crate::workspace::splits::PaneId(pane_id),
+                self.font_size,
+                self.terminal_theme,
+                None,
+            );
+            tracing::info!(workspace_id, pane_id, "Respawned terminal after shell exit");
         }
 
         // Handle any pending socket API requests on the main thread
@@ -141,8 +155,20 @@ impl eframe::App for RmuxApp {
         }
 
         // Render the sidebar (left panel). New workspaces are created from
-        // the top-bar `+` button (or Cmd/Ctrl+N).
-        self.sidebar.show(ctx, &mut self.workspace_manager, &self.notifications);
+        // the top-bar `+` button (or Cmd/Ctrl+N). Hover × closes a card.
+        if let Some(crate::ui::sidebar::SidebarAction::CloseWorkspace(id)) =
+            self.sidebar.show(ctx, &mut self.workspace_manager, &self.notifications)
+        {
+            match self.workspace_manager.close_workspace(id) {
+                Ok(()) => {
+                    self.publish_event("workspace.closed", json!({ "id": id.0 }));
+                    tracing::info!(workspace_id = id.0, "Closed workspace via sidebar ×");
+                }
+                Err(err) => {
+                    tracing::warn!(workspace_id = id.0, error = %err, "Could not close workspace");
+                }
+            }
+        }
 
         // Render the notification panel (right panel, before the central
         // panel). The panel is shown when EITHER `Cmd+Opt+B` (right
@@ -221,33 +247,6 @@ impl RmuxApp {
         let _ = self.api_event_tx.send(ApiEvent::new(event, data));
     }
 
-    /// Store a notification raised by a pane's OSC output and publish
-    /// the matching `notification` event.
-    fn add_pane_notification(
-        &mut self,
-        workspace_id: u64,
-        pane_id: u64,
-        notification: rmux_terminal::OscNotification,
-    ) {
-        let id = self.notifications.add(
-            notification.title.clone(),
-            notification.body.clone(),
-            Some(pane_id),
-            Some(workspace_id),
-        );
-        tracing::debug!(id, pane_id, workspace_id, "OSC notification added");
-        self.publish_event(
-            "notification",
-            json!({
-                "id": id,
-                "title": notification.title,
-                "body": notification.body,
-                "pane_id": pane_id,
-                "workspace_id": workspace_id,
-            }),
-        );
-    }
-
     /// Create a workspace with a live terminal in its initial pane.
     ///
     /// Shared by the Cmd/Ctrl+N shortcut and the `workspace.create` API
@@ -256,7 +255,13 @@ impl RmuxApp {
     pub(crate) fn create_workspace_with_terminal(&mut self, name: String) -> u64 {
         let ws = self.workspace_manager.create_workspace(name);
         let pane_id = self.workspace_manager.active().active_pane;
-        attach_terminal(&mut self.workspace_manager, pane_id, self.font_size, self.terminal_theme);
+        attach_terminal(
+            &mut self.workspace_manager,
+            pane_id,
+            self.font_size,
+            self.terminal_theme,
+            None,
+        );
         self.publish_event("workspace.created", json!({ "id": ws.0 }));
         self.publish_event("pane.created", json!({ "pane_id": pane_id.0, "workspace_id": ws.0 }));
         ws.0
@@ -275,11 +280,26 @@ impl RmuxApp {
         &mut self,
         direction: SplitDirection,
     ) -> Result<u64, PaneTreeError> {
+        // Capture the focused terminal's cwd *before* the split mutates the
+        // tree, so the new pane opens in the same directory (not $HOME).
+        let cwd = self
+            .workspace_manager
+            .active()
+            .root
+            .find_pane(self.workspace_manager.active().active_pane)
+            .and_then(|n| n.active_terminal())
+            .and_then(|t| t.working_directory());
         let new_id = match direction {
             SplitDirection::Horizontal => self.workspace_manager.split_active_right()?,
             SplitDirection::Vertical => self.workspace_manager.split_active_down()?,
         };
-        attach_terminal(&mut self.workspace_manager, new_id, self.font_size, self.terminal_theme);
+        attach_terminal(
+            &mut self.workspace_manager,
+            new_id,
+            self.font_size,
+            self.terminal_theme,
+            cwd.as_deref(),
+        );
         let workspace_id = self.workspace_manager.active().id.0;
         self.publish_event(
             "pane.created",
@@ -371,20 +391,17 @@ impl RmuxApp {
         self.font_size = new_size;
         tracing::debug!(font_size = self.font_size, "Font size changed");
 
-        // Propagate to every terminal pane across all workspaces
+        // Propagate to every terminal (legacy slots + multi-surface tabs).
+        let size = self.font_size;
         for workspace in self.workspace_manager.workspaces_mut() {
-            for (_, terminal) in workspace.root.leaf_panes_mut() {
-                if let Some(t) = terminal.as_mut() {
-                    t.set_font_size(self.font_size);
-                }
-            }
+            workspace.root.for_each_terminal_mut(&mut |t| t.set_font_size(size));
         }
     }
 
     /// Change the terminal color theme, propagating it to every pane
-    /// across all workspaces. New panes pick it up via `attach_terminal`.
-    /// Also updates the app-wide UI palette (sidebar, top bar, status bar,
-    /// panels) so the whole desktop recolors, not just the terminal grid.
+    /// across all workspaces (legacy leaf slots and Cmd+T surfaces).
+    /// New terminals pick it up via [`Self::new_surface_with_terminal`]
+    /// and `attach_terminal`. Also updates the app-wide UI palette.
     pub(crate) fn set_terminal_theme(&mut self, named: rmux_terminal::NamedTheme) {
         self.terminal_theme = named;
         crate::ui::theme::set_named_theme(named);
@@ -392,12 +409,33 @@ impl RmuxApp {
 
         let theme = rmux_terminal::TerminalTheme::default().named(named);
         for workspace in self.workspace_manager.workspaces_mut() {
-            for (_, terminal) in workspace.root.leaf_panes_mut() {
-                if let Some(t) = terminal.as_mut() {
-                    t.set_theme(theme);
-                }
-            }
+            workspace.root.for_each_terminal_mut(&mut |t| t.set_theme(theme));
         }
+    }
+
+    /// Create a new terminal tab (Cmd+T / tab-bar `+`) with the app's
+    /// current font size and color theme applied.
+    ///
+    /// `Workspace::new_surface` alone would spawn with defaults and leave
+    /// the tab on the default palette after a theme change.
+    pub(crate) fn new_surface_with_terminal(
+        &mut self,
+        title: Option<String>,
+    ) -> Result<u64, crate::workspace::model::WorkspaceError> {
+        let id = self.workspace_manager.new_surface_in_active(title)?;
+        let theme = rmux_terminal::TerminalTheme::default().named(self.terminal_theme);
+        let font_size = self.font_size;
+        if let Some(term) = self.workspace_manager.active_mut().active_terminal() {
+            term.set_font_size(font_size);
+            term.set_theme(theme);
+        }
+        let workspace_id = self.workspace_manager.active().id.0;
+        self.publish_event(
+            "pane.created",
+            json!({ "pane_id": id.0, "workspace_id": workspace_id, "kind": "surface" }),
+        );
+        tracing::info!(surface_id = id.0, "Created new surface with current theme");
+        Ok(id.0)
     }
 
     /// Get a mutable reference to the active terminal pane, if any.
@@ -418,28 +456,35 @@ impl RmuxApp {
 
     /// Render the workspace area in the central panel of the window.
     fn render_workspace(&mut self, ctx: &egui::Context) {
+        let mut new_tab = false;
         egui::CentralPanel::default().show(ctx, |ui| {
             // Snapshot the zoomed pane id with an immutable borrow, then
             // hand the manager (and the snapshot) to the renderer. The
             // renderer buffers tab-bar actions internally and replays
             // them after the tree-walk's `&mut Workspace` borrow ends.
             let zoomed = self.workspace_manager.active().zoomed_pane;
-            workspace_view::render_pane_tree(ui, &mut self.workspace_manager, zoomed);
+            new_tab = workspace_view::render_pane_tree(ui, &mut self.workspace_manager, zoomed);
         });
+        // Tab-bar "+" — same path as Cmd+T so theme/font match.
+        if new_tab && let Err(e) = self.new_surface_with_terminal(None) {
+            tracing::warn!(error = %e, "tab-bar new surface failed");
+        }
     }
 }
 
 /// Spawn a terminal and attach it to `pane_id` in the active workspace.
 ///
-/// Spawn failures are logged; the pane then shows the "Spawning
-/// terminal..." placeholder indefinitely.
+/// When `cwd` is `Some`, the shell starts in that directory (used to inherit
+/// the focused pane's path on split / new tab). Spawn failures are logged;
+/// the pane then shows the "Spawning terminal..." placeholder indefinitely.
 fn attach_terminal(
     manager: &mut WorkspaceManager,
     pane_id: PaneId,
     font_size: f32,
     named_theme: rmux_terminal::NamedTheme,
+    cwd: Option<&std::path::Path>,
 ) {
-    match TerminalPane::spawn(INITIAL_COLS, INITIAL_ROWS, font_size) {
+    match TerminalPane::spawn_with_cwd(INITIAL_COLS, INITIAL_ROWS, font_size, cwd) {
         Ok(mut terminal) => {
             terminal.set_theme(rmux_terminal::TerminalTheme::default().named(named_theme));
             manager.active_mut().set_terminal(pane_id, terminal);

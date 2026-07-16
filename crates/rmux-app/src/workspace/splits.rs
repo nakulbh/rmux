@@ -5,7 +5,6 @@
 
 #![allow(dead_code)]
 
-use rmux_terminal::OscNotification;
 use thiserror::Error;
 
 use super::surface::Surface;
@@ -265,20 +264,27 @@ impl PaneNode {
         }
     }
 
-    /// Process PTY output for every pane in this subtree, collecting any
-    /// OSC notifications (tagged with their pane id) into `notifications`.
-    pub fn process_pty_outputs(&mut self, notifications: &mut Vec<(PaneId, OscNotification)>) {
+    /// Process PTY output for every pane in this subtree.
+    ///
+    /// Walks both the legacy `terminal` slot and every multi-surface tab
+    /// so exit detection works for Cmd+T terminals too.
+    ///
+    /// OSC → notification generation is disabled (iTerm2 progress OSC 9;4
+    /// was mis-parsed as junk notifications).
+    pub fn process_pty_outputs(&mut self) {
         match self {
-            Self::Leaf { id, terminal, .. } => {
+            Self::Leaf { terminal, surfaces, .. } => {
                 if let Some(t) = terminal.as_mut() {
                     t.process_pty_output();
-                    notifications.extend(t.take_notifications().into_iter().map(|n| (*id, n)));
+                }
+                for surface in surfaces.iter_mut() {
+                    surface.terminal.process_pty_output();
                 }
             }
             Self::Browser { .. } => {}
             Self::Split { children, .. } => {
                 for child in children.iter_mut() {
-                    child.process_pty_outputs(notifications);
+                    child.process_pty_outputs();
                 }
             }
         }
@@ -526,6 +532,28 @@ impl PaneNode {
         }
     }
 
+    /// Visit every live terminal in this subtree (legacy leaf slot **and**
+    /// multi-surface tabs). Used to push theme / font size changes so
+    /// Cmd+T surfaces stay in sync with settings.
+    pub fn for_each_terminal_mut<F: FnMut(&mut TerminalPane)>(&mut self, f: &mut F) {
+        match self {
+            Self::Leaf { terminal, surfaces, .. } => {
+                if let Some(t) = terminal.as_mut() {
+                    f(t);
+                }
+                for surface in surfaces.iter_mut() {
+                    f(&mut surface.terminal);
+                }
+            }
+            Self::Browser { .. } => {}
+            Self::Split { children, .. } => {
+                for child in children.iter_mut() {
+                    child.for_each_terminal_mut(f);
+                }
+            }
+        }
+    }
+
     /// Recursively equalize all split ratios in the tree.
     ///
     /// For every `Split` node, each child gets an equal share of the
@@ -545,11 +573,18 @@ impl PaneNode {
         }
     }
 
-    /// Collect pane IDs whose terminal process has exited.
+    /// Collect pane IDs whose **entire** shell set has exited.
+    ///
+    /// A multi-surface leaf is only listed when *every* surface is dead
+    /// (individual dead tabs are removed first by
+    /// [`Self::close_exited_surfaces`]). A legacy-only leaf is listed when
+    /// its single terminal has exited.
     pub fn collect_exited_panes(&self) -> Vec<PaneId> {
         match self {
-            Self::Leaf { id, terminal, .. } => {
-                if terminal.as_ref().as_ref().is_some_and(|t| t.is_exited()) {
+            Self::Leaf { id, terminal, surfaces, .. } => {
+                if !surfaces.is_empty() {
+                    if surfaces.iter().all(|s| s.terminal.is_exited()) { vec![*id] } else { vec![] }
+                } else if terminal.as_ref().as_ref().is_some_and(|t| t.is_exited()) {
                     vec![*id]
                 } else {
                     vec![]
@@ -559,6 +594,58 @@ impl PaneNode {
             Self::Split { children, .. } => {
                 children.iter().flat_map(|c| c.collect_exited_panes()).collect()
             }
+        }
+    }
+
+    /// Drop individual dead surfaces when the leaf still has at least one
+    /// live tab left. Returns how many surfaces were removed.
+    ///
+    /// When *all* surfaces are dead the leaf is left alone so
+    /// [`Self::collect_exited_panes`] can close the whole pane.
+    pub fn close_exited_surfaces(&mut self) -> usize {
+        match self {
+            Self::Leaf { surfaces, active_surface, .. } => {
+                if surfaces.len() <= 1 {
+                    return 0;
+                }
+                // If every surface is dead, leave them for pane-level close.
+                if surfaces.iter().all(|s| s.terminal.is_exited()) {
+                    return 0;
+                }
+                let mut removed = 0_usize;
+                let mut i = surfaces.len();
+                while i > 0 {
+                    i -= 1;
+                    if surfaces[i].terminal.is_exited() {
+                        surfaces.remove(i);
+                        removed += 1;
+                        if *active_surface > i {
+                            *active_surface -= 1;
+                        } else if *active_surface == i {
+                            *active_surface =
+                                (*active_surface).min(surfaces.len().saturating_sub(1));
+                        }
+                        if *active_surface >= surfaces.len() {
+                            *active_surface = surfaces.len().saturating_sub(1);
+                        }
+                    }
+                }
+                removed
+            }
+            Self::Browser { .. } => 0,
+            Self::Split { children, .. } => {
+                children.iter_mut().map(|c| c.close_exited_surfaces()).sum()
+            }
+        }
+    }
+
+    /// Clear dead shells from a leaf so a fresh terminal can be attached
+    /// (last pane of the last workspace after `exit`).
+    pub fn clear_terminals(&mut self) {
+        if let Self::Leaf { terminal, surfaces, active_surface, .. } = self {
+            **terminal = None;
+            surfaces.clear();
+            *active_surface = 0;
         }
     }
 

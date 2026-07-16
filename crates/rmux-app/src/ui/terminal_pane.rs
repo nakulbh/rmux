@@ -6,9 +6,8 @@
 use anyhow::Result;
 use image::ImageEncoder;
 use image::codecs::png::PngEncoder;
-use rmux_terminal::{
-    InputMapper, OscNotification, OscScanner, PtyBackend, PtyError, TermState, TerminalRenderer,
-};
+use rmux_terminal::{InputMapper, PtyBackend, PtyError, TermState, TerminalRenderer};
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
 use crate::ui::theme;
@@ -46,10 +45,6 @@ pub struct TerminalPane {
     input_mapper: InputMapper,
     /// Channel receiver for PTY output from background thread.
     pty_rx: mpsc::Receiver<Vec<u8>>,
-    /// Scanner that detects notification OSC sequences in the PTY output.
-    osc_scanner: OscScanner,
-    /// Notifications parsed from the output, waiting to be collected.
-    pending_notifications: Vec<OscNotification>,
     /// Whether this pane currently has keyboard focus.
     has_focus: bool,
     /// Whether to show the blinking cursor.
@@ -62,6 +57,16 @@ pub struct TerminalPane {
     rows: u16,
     /// Whether the underlying process has exited.
     exited: bool,
+    /// Human-readable exit banner (set once when the process is reaped).
+    /// Kept separate from Debug so we never paint `ExitStatus { … }` tofu.
+    exit_message: Option<String>,
+    /// Whether the process exited successfully (code 0, no signal).
+    exit_success: bool,
+    /// Cached shell cwd for tab titles (refreshed periodically; avoids
+    /// calling `lsof` / reading `/proc` every frame).
+    last_cwd: Option<PathBuf>,
+    /// Frame counter used to throttle cwd refreshes.
+    cwd_tick: u16,
 
     // Find bar state
     /// Whether the find/search bar is currently visible.
@@ -95,24 +100,23 @@ pub struct TerminalPane {
 }
 
 impl TerminalPane {
-    /// Spawn a new terminal pane with a shell process.
-    ///
-    /// Creates a PTY, spawns the user's shell, starts a background
-    /// reader thread for PTY output, and initializes the terminal
-    /// emulator state and renderer.
-    ///
-    /// # Arguments
-    ///
-    /// * `cols` - Initial number of columns.
-    /// * `rows` - Initial number of rows.
-    /// * `font_size` - Font size for the terminal renderer.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the PTY could not be created or the shell
-    /// could not be spawned.
+    /// Spawn a new terminal pane with a shell process (default `$HOME` cwd).
+    #[allow(dead_code)] // convenience wrapper; call sites use `spawn_with_cwd`
     pub fn spawn(cols: u16, rows: u16, font_size: f32) -> Result<Self, PtyError> {
-        let mut backend = PtyBackend::spawn(cols, rows)?;
+        Self::spawn_with_cwd(cols, rows, font_size, None)
+    }
+
+    /// Spawn a terminal whose shell starts in `cwd` when provided.
+    ///
+    /// Used by splits and Cmd+T so new shells open in the same directory
+    /// the focused terminal is currently in.
+    pub fn spawn_with_cwd(
+        cols: u16,
+        rows: u16,
+        font_size: f32,
+        cwd: Option<&Path>,
+    ) -> Result<Self, PtyError> {
+        let mut backend = PtyBackend::spawn_with_cwd(cols, rows, cwd)?;
         let state = TermState::new(cols, rows, 10_000);
         let renderer = TerminalRenderer::new(font_size);
         let input_mapper = InputMapper::new();
@@ -157,14 +161,18 @@ impl TerminalPane {
             renderer,
             input_mapper,
             pty_rx: rx,
-            osc_scanner: OscScanner::new(),
-            pending_notifications: Vec::new(),
             has_focus: false,
             show_cursor: true,
             name,
             cols,
             rows,
             exited: false,
+            exit_message: None,
+            exit_success: false,
+            // Prefer the spawn cwd so tab labels are correct before the first
+            // process-query refresh.
+            last_cwd: cwd.map(Path::to_path_buf),
+            cwd_tick: 0,
             find_visible: false,
             find_query: String::new(),
             find_results: Vec::new(),
@@ -182,15 +190,63 @@ impl TerminalPane {
     /// Should be called once per frame before rendering.
     pub fn process_pty_output(&mut self) {
         while let Ok(data) = self.pty_rx.try_recv() {
-            self.pending_notifications.extend(self.osc_scanner.feed(&data));
+            // OSC notification scanning is intentionally disabled: OSC 9 is also
+            // used by iTerm2 progress bars (`OSC 9;4;…`), which produced junk
+            // entries like "4;0;" in the notification panel. Re-enable only with
+            // a tighter parser that rejects progress / non-notify sequences.
             self.state.feed_bytes(&data);
         }
 
-        // Check if the PTY process has exited
-        if !self.exited && self.backend.try_wait().is_some() {
+        // Check if the PTY process has exited; record a clean banner once.
+        if !self.exited
+            && let Some(status) = self.backend.try_wait()
+        {
             self.exited = true;
-            self.name.push_str(" [exited]");
+            self.exit_success = status.success();
+            self.exit_message = Some(if status.success() {
+                "Process exited".to_owned()
+            } else {
+                // portable_pty::ExitStatus Display: "Exited with code N"
+                // or "Terminated by SIGINT", etc.
+                format!("Process exited · {status}")
+            });
+            if !self.name.ends_with(" [exited]") {
+                self.name.push_str(" [exited]");
+            }
         }
+
+        // Refresh cwd cache ~every 45 frames (~0.7s at 60fps) for tab titles.
+        self.cwd_tick = self.cwd_tick.wrapping_add(1);
+        if self.cwd_tick.is_multiple_of(45)
+            && let Some(cwd) = self.backend.working_directory()
+        {
+            self.last_cwd = Some(cwd);
+        } else if self.last_cwd.is_none() {
+            // First chance: populate immediately so new tabs aren't "Terminal N".
+            self.last_cwd = self.backend.working_directory();
+        }
+    }
+
+    /// Best-effort current working directory of this pane's shell.
+    ///
+    /// Used when spawning a sibling tab/split so the new shell opens in
+    /// the same directory the user has already navigated to. Prefers the
+    /// cached value, falling back to a live query.
+    pub fn working_directory(&self) -> Option<PathBuf> {
+        self.last_cwd.clone().or_else(|| self.backend.working_directory())
+    }
+
+    /// Cached cwd (no live process query). For tab labels during paint.
+    pub fn cached_cwd(&self) -> Option<&Path> {
+        self.last_cwd.as_deref()
+    }
+
+    /// cmux-style tab label: short path (`~/…/project`) or `user@host` at `$HOME`.
+    pub fn tab_label(&self) -> String {
+        if let Some(cwd) = self.cached_cwd() {
+            return format_cwd_tab_title(cwd);
+        }
+        user_host_title()
     }
 
     /// Write raw text to the pane's PTY as if it had been typed.
@@ -201,13 +257,6 @@ impl TerminalPane {
         if let Err(err) = self.backend.write(text.as_bytes()) {
             tracing::warn!(error = %err, "failed to write text to PTY");
         }
-    }
-
-    /// Take all notifications parsed from the PTY output since the last call.
-    ///
-    /// Returns them in arrival order and leaves the internal queue empty.
-    pub fn take_notifications(&mut self) -> Vec<OscNotification> {
-        std::mem::take(&mut self.pending_notifications)
     }
 
     /// Render the terminal pane in the egui UI.
@@ -265,8 +314,11 @@ impl TerminalPane {
             }
         }
 
-        // Handle keyboard input when focused
-        if self.has_focus {
+        // Handle keyboard input when focused — but never while another egui
+        // widget owns the keyboard (sidebar rename TextEdit, find bar, URL
+        // bar, etc.). Without this gate, typed characters land in both the
+        // focused widget and the PTY simultaneously.
+        if self.has_focus && !ui.ctx().wants_keyboard_input() {
             self.handle_keyboard_input(ui);
         }
 
@@ -284,37 +336,25 @@ impl TerminalPane {
             self.highlight_matches(ui, rect, &snapshot);
         }
 
-        if self.has_focus {
-            let palette = theme::palette();
-            let painter = ui.painter();
-            let glow = [
-                (2.0_f32, palette.accent.gamma_multiply(0.4_f32)),
-                (1.5_f32, palette.accent.gamma_multiply(0.7_f32)),
-                (1.0_f32, palette.accent),
-            ];
-            for (width, color) in glow {
-                painter.rect_stroke(
-                    rect,
-                    egui::CornerRadius::ZERO,
-                    egui::Stroke::new(width, color),
-                    egui::StrokeKind::Inside,
-                );
-            }
-        }
+        // Focus is indicated by dimming *inactive* panes in the workspace
+        // view (cmux-style) — no accent glow border here.
 
         // Render find bar if visible
         if self.find_visible {
             self.show_find_bar(ui, rect.x_range().min, rect.bottom());
         }
 
-        // Show exit status
+        // Exit banner — short human text, never Debug of ExitStatus.
         if self.exited {
+            let palette = theme::palette();
+            let msg = self.exit_message.as_deref().unwrap_or("Process exited");
+            let color = if self.exit_success { palette.text_muted } else { palette.danger };
             ui.painter().text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
-                format!("Process exited (code: {:?})", self.backend.try_wait()),
-                egui::FontId::monospace(13.0_f32),
-                theme::palette().danger,
+                msg,
+                egui::FontId::proportional(13.0_f32),
+                color,
             );
         }
 
@@ -651,6 +691,103 @@ impl TerminalPane {
     /// Click-to-focus still applies afterward within the same `show()` call.
     pub fn set_focus(&mut self, focus: bool) {
         self.has_focus = focus;
+    }
+}
+
+// ─── Tab title helpers (cmux-style path / user@host) ─────────────────────────
+
+/// Format a cwd for the multi-terminal tab strip.
+///
+/// * Under `$HOME` → `~/…` relative path; at home itself → `user@host`
+/// * Deep paths keep the last two components with a `…/` prefix
+pub fn format_cwd_tab_title(cwd: &Path) -> String {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    if let Some(ref home) = home {
+        if cwd == home.as_path() {
+            return user_host_title();
+        }
+        if let Ok(rest) = cwd.strip_prefix(home) {
+            let rel = format!("~/{}", rest.display());
+            return shorten_path_title(&rel);
+        }
+    }
+    shorten_path_title(&cwd.display().to_string())
+}
+
+/// `user@hostname` for home-directory tabs (matches cmux default title).
+fn user_host_title() -> String {
+    let user = std::env::var("USER")
+        .or_else(|_| std::env::var("LOGNAME"))
+        .unwrap_or_else(|_| "user".to_owned());
+    let host = std::env::var("HOST").or_else(|_| std::env::var("HOSTNAME")).unwrap_or_else(|_| {
+        // Best-effort hostname without extra crates.
+        std::process::Command::new("hostname")
+            .output()
+            .ok()
+            .and_then(|o| {
+                let s = String::from_utf8_lossy(&o.stdout).trim().to_owned();
+                if s.is_empty() { None } else { Some(s) }
+            })
+            .unwrap_or_else(|| "localhost".to_owned())
+    });
+    // Drop domain suffix for compactness: MacBook.local → MacBook
+    let host = host.split('.').next().unwrap_or(&host);
+    format!("{user}@{host}")
+}
+
+/// Keep tab labels short: at most ~28 chars, prefer trailing path segments.
+fn shorten_path_title(path: &str) -> String {
+    const MAX: usize = 28;
+    if path.chars().count() <= MAX {
+        return path.to_owned();
+    }
+    // Prefer last two components: …/parent/name
+    let parts: Vec<&str> = path.split('/').filter(|p| !p.is_empty()).collect();
+    if parts.len() >= 2 {
+        let tail = format!("…/{}/{}", parts[parts.len() - 2], parts[parts.len() - 1]);
+        if tail.chars().count() <= MAX {
+            return tail;
+        }
+        let last = parts[parts.len() - 1];
+        if last.chars().count() <= MAX - 2 {
+            return format!("…/{last}");
+        }
+        return truncate_chars(last, MAX);
+    }
+    truncate_chars(path, MAX)
+}
+
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_owned();
+    }
+    let end = s.char_indices().nth(max.saturating_sub(1)).map(|(i, _)| i).unwrap_or(s.len());
+    format!("{}…", &s[..end])
+}
+
+#[cfg(test)]
+mod title_tests {
+    use super::*;
+
+    #[test]
+    fn test_shorten_keeps_short_paths() {
+        assert_eq!(shorten_path_title("~/proj"), "~/proj");
+    }
+
+    #[test]
+    fn test_shorten_deep_path_uses_ellipsis() {
+        let deep = "~/Developer/PersonalProjects/RustPersonalProjects/rmux-cmd-hints";
+        let short = shorten_path_title(deep);
+        assert!(short.contains("rmux-cmd-hints"), "got {short}");
+        assert!(short.chars().count() <= 28, "got {short}");
+    }
+
+    #[test]
+    fn test_format_cwd_home_is_user_host() {
+        if let Ok(home) = std::env::var("HOME") {
+            let title = format_cwd_tab_title(Path::new(&home));
+            assert!(title.contains('@'), "expected user@host, got {title}");
+        }
     }
 }
 

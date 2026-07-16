@@ -1,10 +1,9 @@
-//! Arbor/cmux-inspired theme system for rmux.
+//! Theme system for rmux.
 //!
-//! Implements the Arbor "One Dark" palette (see `docs/UI_REDESIGN.md`):
-//! a three-surface depth model (content / chrome / interaction) separated
-//! by 1px borders, one accent color for all "active" states, and status
-//! colors reserved strictly for semantics. Centralizes color tokens,
-//! metrics, and typography so UI modules don't hardcode magic numbers.
+//! Default palette matches **cmux's deep-black dark chrome**: near-black
+//! surfaces, subtle elevated cards, and a single bright accent for active
+//! states. Other named terminal themes derive the UI chrome from their
+//! terminal colors via [`Palette::from_terminal`].
 //!
 //! Apply once per frame at the top of `update()`:
 //! ```ignore
@@ -34,78 +33,78 @@ fn luminance(c: Color32) -> f32 {
     0.299_f32 * c.r() as f32 + 0.587_f32 * c.g() as f32 + 0.114_f32 * c.b() as f32
 }
 
-/// Semantic color tokens (Arbor One Dark).
+/// Semantic color tokens (cmux deep-black default).
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
 pub struct Palette {
     // --- Surfaces (darkest → lightest) ---
-    /// Window root and gaps between panes. `#282c33`
+    /// Window root and gaps between panes. `#0c0c0e`
     pub app_bg: Color32,
-    /// Center pane / terminal background. `#282c34`
+    /// Center pane / terminal background. `#0c0c0e`
     pub terminal_bg: Color32,
-    /// Left sidebar and right notification panel fill. `#2f343e`
+    /// Left sidebar and right notification panel fill. `#141416`
     pub sidebar_bg: Color32,
-    /// Cards, buttons, inputs, badges. `#2e343e`
+    /// Cards, buttons, inputs, badges. `#1a1a1c`
     pub panel_bg: Color32,
-    /// Hover + selected background everywhere. `#363c46`
+    /// Hover + selected background everywhere. `#252528`
     pub panel_active_bg: Color32,
-    /// Top bar, status bar, overlays. `#3b414d`
+    /// Top bar, status bar, overlays. `#0f0f11`
     pub chrome_bg: Color32,
-    /// Active tab fill (matches content bg). `#282c33`
+    /// Active tab fill (matches content bg). `#0c0c0e`
     pub tab_active_bg: Color32,
 
     // --- Lines ---
-    /// All standard 1px borders/separators/dividers. `#363c46`
+    /// All standard 1px borders/separators/dividers. `#2a2a2e`
     pub border: Color32,
-    /// Hairline under top bar and above status bar. `#464b57`
+    /// Hairline under top bar and above status bar. `#2a2a2e`
     pub chrome_border: Color32,
 
     // --- Text ---
-    /// Primary text, active labels. `#c8ccd4`
+    /// Primary text, active labels. `#e8e8ea`
     pub text_primary: Color32,
-    /// Secondary text, inactive labels, icons. `#838994`
+    /// Secondary text, inactive labels, icons. `#8b8b90`
     pub text_muted: Color32,
-    /// Timestamps, placeholders, hints. `#696b77`
+    /// Timestamps, placeholders, hints. `#5c5c62`
     pub text_disabled: Color32,
 
     // --- Accent + status ---
-    /// Selection borders, focus, caret, badges, progress. `#74ade8`
+    /// Selection, active cards, badges — macOS-style blue like cmux. `#0a84ff`
     pub accent: Color32,
-    /// Text on accent-filled elements. `#1d2127`
+    /// Text on accent-filled elements. `#ffffff`
     pub accent_fg: Color32,
-    /// Additions, success. `#72d69c`
+    /// Additions, success. `#6bc46d`
     pub success: Color32,
-    /// Deletions, errors, exited processes. `#eb6f92`
+    /// Deletions, errors, exited processes. `#ff6b6b`
     pub danger: Color32,
     /// "Working" status, pending. `#e5c07b`
     pub warning: Color32,
-    /// "Waiting"/attention ring blue. `#61afef`
+    /// "Waiting"/attention ring blue. `#6cb3fa`
     pub info: Color32,
 
     // --- Terminal ---
-    /// Terminal cursor overlay. `#ebdbb2`
+    /// Terminal cursor overlay.
     pub terminal_cursor: Color32,
-    /// Terminal selection background. `#3e4451`
+    /// Terminal selection background.
     pub terminal_selection_bg: Color32,
 }
 
 impl Palette {
-    /// Arbor One Dark (see `docs/UI_REDESIGN.md` for the token table).
+    /// cmux-style deep black chrome (default app look).
     pub fn dark() -> Self {
-        let app_bg = rgb(0x28, 0x2c, 0x33);
-        let terminal_bg = rgb(0x28, 0x2c, 0x34);
-        let sidebar_bg = rgb(0x2f, 0x34, 0x3e);
-        let panel_bg = rgb(0x2e, 0x34, 0x3e);
-        let panel_active_bg = rgb(0x36, 0x3c, 0x46);
-        let chrome_bg = rgb(0x3b, 0x41, 0x4d);
-        let chrome_border = rgb(0x46, 0x4b, 0x57);
-        let border = rgb(0x36, 0x3c, 0x46);
-        let text_primary = rgb(0xc8, 0xcc, 0xd4);
-        let text_muted = rgb(0x83, 0x89, 0x94);
-        let text_disabled = rgb(0x69, 0x6b, 0x77);
-        let accent = rgb(0x74, 0xad, 0xe8);
-        let accent_fg = rgb(0x1d, 0x21, 0x27);
-        let danger = rgb(0xeb, 0x6f, 0x92);
+        let app_bg = rgb(0x0c, 0x0c, 0x0e);
+        let terminal_bg = rgb(0x0c, 0x0c, 0x0e);
+        let sidebar_bg = rgb(0x14, 0x14, 0x16);
+        let panel_bg = rgb(0x1a, 0x1a, 0x1c);
+        let panel_active_bg = rgb(0x25, 0x25, 0x28);
+        let chrome_bg = rgb(0x0f, 0x0f, 0x11);
+        let chrome_border = rgb(0x2a, 0x2a, 0x2e);
+        let border = rgb(0x2a, 0x2a, 0x2e);
+        let text_primary = rgb(0xe8, 0xe8, 0xea);
+        let text_muted = rgb(0x8b, 0x8b, 0x90);
+        let text_disabled = rgb(0x5c, 0x5c, 0x62);
+        let accent = rgb(0x0a, 0x84, 0xff);
+        let accent_fg = rgb(0xff, 0xff, 0xff);
+        let danger = rgb(0xff, 0x6b, 0x6b);
 
         Self {
             app_bg,
@@ -122,12 +121,12 @@ impl Palette {
             text_disabled,
             accent,
             accent_fg,
-            success: rgb(0x72, 0xd6, 0x9c),
+            success: rgb(0x6b, 0xc4, 0x6d),
             danger,
             warning: rgb(0xe5, 0xc0, 0x7b),
-            info: rgb(0x61, 0xaf, 0xef),
-            terminal_cursor: rgb(0xeb, 0xdb, 0xb2),
-            terminal_selection_bg: rgb(0x3e, 0x44, 0x51),
+            info: rgb(0x6c, 0xb3, 0xfa),
+            terminal_cursor: rgb(0xe6, 0xe6, 0xe8),
+            terminal_selection_bg: rgb(0x2c, 0x2c, 0x32),
         }
     }
 
@@ -314,11 +313,10 @@ impl Theme {
     }
 }
 
-/// Convenience: get the palette for the currently selected theme. One Dark
-/// keeps the hand-tuned Arbor palette exactly; every other theme derives
-/// its UI palette from that theme's terminal colors (see
-/// [`Palette::from_terminal`]) so the whole app — not just the terminal
-/// grid — recolors when the user picks a theme in Settings.
+/// Convenience: get the palette for the currently selected theme. The
+/// default (`OneDark` / "Dark") uses the hand-tuned cmux deep-black
+/// chrome; every other theme derives UI colors from its terminal palette
+/// via [`Palette::from_terminal`].
 pub fn palette() -> Palette {
     match current_named_theme() {
         NamedTheme::OneDark => Palette::dark(),

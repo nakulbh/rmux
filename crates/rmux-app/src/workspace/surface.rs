@@ -48,22 +48,36 @@ impl Surface {
         Self { id, title: title.into(), terminal }
     }
 
-    /// Title for the tab bar, truncated to [`MAX_DISPLAY_TITLE_CHARS`]
-    /// characters without splitting a multi-byte codepoint.
+    /// Title for the tab bar (cmux-style).
     ///
-    /// Slicing on byte indices would panic on `&self.title[..n]` when `n`
-    /// lands inside a UTF-8 codepoint, so we use `char_indices()` to find
-    /// the safe byte boundary at the `n`-th char.
-    pub fn display_title(&self) -> &str {
-        if self.title.chars().count() <= MAX_DISPLAY_TITLE_CHARS {
-            return &self.title;
-        }
-        self.title
-            .char_indices()
-            .nth(MAX_DISPLAY_TITLE_CHARS)
-            .map(|(byte_idx, _)| &self.title[..byte_idx])
-            .unwrap_or(&self.title)
+    /// Prefers the shell's current path (`~/…/project` or `user@host` at
+    /// home). Custom renames (anything that is not the default
+    /// `"Terminal N"` placeholder) win over the auto path. Truncated to
+    /// [`MAX_DISPLAY_TITLE_CHARS`] without splitting a multi-byte codepoint.
+    pub fn display_title(&self) -> String {
+        let raw =
+            if self.is_default_title() { self.terminal.tab_label() } else { self.title.clone() };
+        truncate_title(&raw, MAX_DISPLAY_TITLE_CHARS)
     }
+
+    /// True when `title` is still the auto-generated `Terminal N` label
+    /// (or empty), so path-based labels should replace it.
+    fn is_default_title(&self) -> bool {
+        self.title.is_empty()
+            || self
+                .title
+                .strip_prefix("Terminal ")
+                .is_some_and(|rest| rest.chars().all(|c| c.is_ascii_digit()))
+    }
+}
+
+/// Truncate `s` to at most `max` characters on a char boundary.
+fn truncate_title(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_owned();
+    }
+    let end = s.char_indices().nth(max).map(|(i, _)| i).unwrap_or(s.len());
+    s[..end].to_owned()
 }
 
 #[cfg(test)]
@@ -83,7 +97,7 @@ mod tests {
     }
 
     #[test]
-    fn test_surface_display_title_truncates_long_titles() {
+    fn test_surface_display_title_truncates_long_custom_titles() {
         let long = "a".repeat(30);
         let s = make_surface(1, &long);
         let display = s.display_title();
@@ -92,9 +106,17 @@ mod tests {
     }
 
     #[test]
-    fn test_surface_display_title_returns_empty_for_empty_title() {
-        let s = make_surface(1, "");
-        assert_eq!(s.display_title(), "");
+    fn test_surface_default_title_uses_path_or_user_host() {
+        // Empty / "Terminal N" → auto label (path or user@host), not empty.
+        let s = make_surface(1, "Terminal 1");
+        let display = s.display_title();
+        assert!(!display.is_empty());
+    }
+
+    #[test]
+    fn test_truncate_title_on_char_boundary() {
+        assert_eq!(truncate_title("hello", 10), "hello");
+        assert_eq!(truncate_title("abcdefghij", 5).chars().count(), 5);
     }
 
     #[test]
