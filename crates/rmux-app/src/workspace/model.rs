@@ -376,13 +376,18 @@ impl Workspace {
         let id = SurfaceId(self.next_surface_id);
         self.next_surface_id += 1;
 
-        let terminal = TerminalPane::spawn_with_cwd(
+        let mut terminal = TerminalPane::spawn_with_cwd(
             INITIAL_COLS,
             INITIAL_ROWS,
             DEFAULT_FONT_SIZE,
             cwd.as_deref(),
         )
         .map_err(|e| WorkspaceError::SurfaceSpawnFailed(e.to_string()))?;
+        // Match the app-wide theme immediately so Cmd+T tabs don't flash
+        // (or stick on) the default palette after the user changed themes.
+        // Font size is refined by `RmuxApp::new_surface_with_terminal`.
+        let named = crate::ui::theme::current_named_theme();
+        terminal.set_theme(rmux_terminal::TerminalTheme::default().named(named));
         let surface = Surface::new(id, title, terminal);
 
         let leaf = self.active_leaf_mut()?;

@@ -41,15 +41,19 @@ enum TabAction {
 /// and to apply deferred tab-bar actions (after render). Actions emitted
 /// by the tab bar are buffered in a `Vec` and replayed against the
 /// manager once the tree-walk's mutable borrow has ended.
+///
+/// Returns whether the user requested a new terminal tab (`+` / deferred
+/// `TabAction::New`) so the app can spawn it with the current theme.
+#[must_use]
 pub fn render_pane_tree(
     ui: &mut egui::Ui,
     manager: &mut WorkspaceManager,
     zoomed_pane: Option<PaneId>,
-) {
+) -> bool {
     let available = ui.available_rect_before_wrap();
 
     if !ui.is_rect_visible(available) {
-        return;
+        return false;
     }
 
     let palette = theme::palette();
@@ -91,7 +95,9 @@ pub fn render_pane_tree(
     }
 
     // Replay buffered tab-bar actions now that the tree-walk's `&mut
-    // Workspace` borrow has ended.
+    // Workspace` borrow has ended. `New` is returned to the app so it
+    // can spawn with the current theme/font (not bare defaults).
+    let mut new_requested = false;
     for action in actions {
         match action {
             TabAction::Select(idx) => {
@@ -105,12 +111,11 @@ pub fn render_pane_tree(
                 }
             }
             TabAction::New => {
-                if let Err(e) = manager.new_surface_in_active(None) {
-                    tracing::warn!(error = %e, "new_surface_in_active failed");
-                }
+                new_requested = true;
             }
         }
     }
+    new_requested
 }
 
 fn render_node(

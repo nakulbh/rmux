@@ -285,9 +285,8 @@ impl RmuxApp {
 
             // --- cmux shortcuts (W4.1) ---
             ShortcutAction::NewSurface => {
-                match self.workspace_manager.new_surface_in_active(None) {
-                    Ok(id) => tracing::info!(surface_id = id.0, "Created new surface"),
-                    Err(e) => tracing::warn!("New surface failed: {e}"),
+                if let Err(e) = self.new_surface_with_terminal(None) {
+                    tracing::warn!("New surface failed: {e}");
                 }
             }
 

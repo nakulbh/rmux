@@ -404,20 +404,17 @@ impl RmuxApp {
         self.font_size = new_size;
         tracing::debug!(font_size = self.font_size, "Font size changed");
 
-        // Propagate to every terminal pane across all workspaces
+        // Propagate to every terminal (legacy slots + multi-surface tabs).
+        let size = self.font_size;
         for workspace in self.workspace_manager.workspaces_mut() {
-            for (_, terminal) in workspace.root.leaf_panes_mut() {
-                if let Some(t) = terminal.as_mut() {
-                    t.set_font_size(self.font_size);
-                }
-            }
+            workspace.root.for_each_terminal_mut(&mut |t| t.set_font_size(size));
         }
     }
 
     /// Change the terminal color theme, propagating it to every pane
-    /// across all workspaces. New panes pick it up via `attach_terminal`.
-    /// Also updates the app-wide UI palette (sidebar, top bar, status bar,
-    /// panels) so the whole desktop recolors, not just the terminal grid.
+    /// across all workspaces (legacy leaf slots and Cmd+T surfaces).
+    /// New terminals pick it up via [`Self::new_surface_with_terminal`]
+    /// and `attach_terminal`. Also updates the app-wide UI palette.
     pub(crate) fn set_terminal_theme(&mut self, named: rmux_terminal::NamedTheme) {
         self.terminal_theme = named;
         crate::ui::theme::set_named_theme(named);
@@ -425,12 +422,33 @@ impl RmuxApp {
 
         let theme = rmux_terminal::TerminalTheme::default().named(named);
         for workspace in self.workspace_manager.workspaces_mut() {
-            for (_, terminal) in workspace.root.leaf_panes_mut() {
-                if let Some(t) = terminal.as_mut() {
-                    t.set_theme(theme);
-                }
-            }
+            workspace.root.for_each_terminal_mut(&mut |t| t.set_theme(theme));
         }
+    }
+
+    /// Create a new terminal tab (Cmd+T / tab-bar `+`) with the app's
+    /// current font size and color theme applied.
+    ///
+    /// `Workspace::new_surface` alone would spawn with defaults and leave
+    /// the tab on the default palette after a theme change.
+    pub(crate) fn new_surface_with_terminal(
+        &mut self,
+        title: Option<String>,
+    ) -> Result<u64, crate::workspace::model::WorkspaceError> {
+        let id = self.workspace_manager.new_surface_in_active(title)?;
+        let theme = rmux_terminal::TerminalTheme::default().named(self.terminal_theme);
+        let font_size = self.font_size;
+        if let Some(term) = self.workspace_manager.active_mut().active_terminal() {
+            term.set_font_size(font_size);
+            term.set_theme(theme);
+        }
+        let workspace_id = self.workspace_manager.active().id.0;
+        self.publish_event(
+            "pane.created",
+            json!({ "pane_id": id.0, "workspace_id": workspace_id, "kind": "surface" }),
+        );
+        tracing::info!(surface_id = id.0, "Created new surface with current theme");
+        Ok(id.0)
     }
 
     /// Get a mutable reference to the active terminal pane, if any.
@@ -451,14 +469,21 @@ impl RmuxApp {
 
     /// Render the workspace area in the central panel of the window.
     fn render_workspace(&mut self, ctx: &egui::Context) {
+        let mut new_tab = false;
         egui::CentralPanel::default().show(ctx, |ui| {
             // Snapshot the zoomed pane id with an immutable borrow, then
             // hand the manager (and the snapshot) to the renderer. The
             // renderer buffers tab-bar actions internally and replays
             // them after the tree-walk's `&mut Workspace` borrow ends.
             let zoomed = self.workspace_manager.active().zoomed_pane;
-            workspace_view::render_pane_tree(ui, &mut self.workspace_manager, zoomed);
+            new_tab = workspace_view::render_pane_tree(ui, &mut self.workspace_manager, zoomed);
         });
+        // Tab-bar "+" — same path as Cmd+T so theme/font match.
+        if new_tab {
+            if let Err(e) = self.new_surface_with_terminal(None) {
+                tracing::warn!(error = %e, "tab-bar new surface failed");
+            }
+        }
     }
 }
 

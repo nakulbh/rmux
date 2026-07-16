@@ -526,6 +526,28 @@ impl PaneNode {
         }
     }
 
+    /// Visit every live terminal in this subtree (legacy leaf slot **and**
+    /// multi-surface tabs). Used to push theme / font size changes so
+    /// Cmd+T surfaces stay in sync with settings.
+    pub fn for_each_terminal_mut<F: FnMut(&mut TerminalPane)>(&mut self, f: &mut F) {
+        match self {
+            Self::Leaf { terminal, surfaces, .. } => {
+                if let Some(t) = terminal.as_mut() {
+                    f(t);
+                }
+                for surface in surfaces.iter_mut() {
+                    f(&mut surface.terminal);
+                }
+            }
+            Self::Browser { .. } => {}
+            Self::Split { children, .. } => {
+                for child in children.iter_mut() {
+                    child.for_each_terminal_mut(f);
+                }
+            }
+        }
+    }
+
     /// Recursively equalize all split ratios in the tree.
     ///
     /// For every `Split` node, each child gets an equal share of the
