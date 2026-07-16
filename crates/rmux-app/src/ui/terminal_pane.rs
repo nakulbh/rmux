@@ -9,6 +9,7 @@ use image::codecs::png::PngEncoder;
 use rmux_terminal::{
     InputMapper, OscNotification, OscScanner, PtyBackend, PtyError, TermState, TerminalRenderer,
 };
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
 use crate::ui::theme;
@@ -95,24 +96,23 @@ pub struct TerminalPane {
 }
 
 impl TerminalPane {
-    /// Spawn a new terminal pane with a shell process.
-    ///
-    /// Creates a PTY, spawns the user's shell, starts a background
-    /// reader thread for PTY output, and initializes the terminal
-    /// emulator state and renderer.
-    ///
-    /// # Arguments
-    ///
-    /// * `cols` - Initial number of columns.
-    /// * `rows` - Initial number of rows.
-    /// * `font_size` - Font size for the terminal renderer.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the PTY could not be created or the shell
-    /// could not be spawned.
+    /// Spawn a new terminal pane with a shell process (default `$HOME` cwd).
+    #[allow(dead_code)] // convenience wrapper; call sites use `spawn_with_cwd`
     pub fn spawn(cols: u16, rows: u16, font_size: f32) -> Result<Self, PtyError> {
-        let mut backend = PtyBackend::spawn(cols, rows)?;
+        Self::spawn_with_cwd(cols, rows, font_size, None)
+    }
+
+    /// Spawn a terminal whose shell starts in `cwd` when provided.
+    ///
+    /// Used by splits and Cmd+T so new shells open in the same directory
+    /// the focused terminal is currently in.
+    pub fn spawn_with_cwd(
+        cols: u16,
+        rows: u16,
+        font_size: f32,
+        cwd: Option<&Path>,
+    ) -> Result<Self, PtyError> {
+        let mut backend = PtyBackend::spawn_with_cwd(cols, rows, cwd)?;
         let state = TermState::new(cols, rows, 10_000);
         let renderer = TerminalRenderer::new(font_size);
         let input_mapper = InputMapper::new();
@@ -191,6 +191,14 @@ impl TerminalPane {
             self.exited = true;
             self.name.push_str(" [exited]");
         }
+    }
+
+    /// Best-effort current working directory of this pane's shell.
+    ///
+    /// Used when spawning a sibling tab/split so the new shell opens in
+    /// the same directory the user has already navigated to.
+    pub fn working_directory(&self) -> Option<PathBuf> {
+        self.backend.working_directory()
     }
 
     /// Write raw text to the pane's PTY as if it had been typed.

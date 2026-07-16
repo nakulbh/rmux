@@ -78,7 +78,7 @@ impl RmuxApp {
         };
 
         let pane_id = app.workspace_manager.active().active_pane;
-        attach_terminal(&mut app.workspace_manager, pane_id, font_size, app.terminal_theme);
+        attach_terminal(&mut app.workspace_manager, pane_id, font_size, app.terminal_theme, None);
         app.last_active_workspace = app.workspace_manager.active().id.0;
 
         tracing::info!(
@@ -268,7 +268,13 @@ impl RmuxApp {
     pub(crate) fn create_workspace_with_terminal(&mut self, name: String) -> u64 {
         let ws = self.workspace_manager.create_workspace(name);
         let pane_id = self.workspace_manager.active().active_pane;
-        attach_terminal(&mut self.workspace_manager, pane_id, self.font_size, self.terminal_theme);
+        attach_terminal(
+            &mut self.workspace_manager,
+            pane_id,
+            self.font_size,
+            self.terminal_theme,
+            None,
+        );
         self.publish_event("workspace.created", json!({ "id": ws.0 }));
         self.publish_event("pane.created", json!({ "pane_id": pane_id.0, "workspace_id": ws.0 }));
         ws.0
@@ -287,11 +293,26 @@ impl RmuxApp {
         &mut self,
         direction: SplitDirection,
     ) -> Result<u64, PaneTreeError> {
+        // Capture the focused terminal's cwd *before* the split mutates the
+        // tree, so the new pane opens in the same directory (not $HOME).
+        let cwd = self
+            .workspace_manager
+            .active()
+            .root
+            .find_pane(self.workspace_manager.active().active_pane)
+            .and_then(|n| n.active_terminal())
+            .and_then(|t| t.working_directory());
         let new_id = match direction {
             SplitDirection::Horizontal => self.workspace_manager.split_active_right()?,
             SplitDirection::Vertical => self.workspace_manager.split_active_down()?,
         };
-        attach_terminal(&mut self.workspace_manager, new_id, self.font_size, self.terminal_theme);
+        attach_terminal(
+            &mut self.workspace_manager,
+            new_id,
+            self.font_size,
+            self.terminal_theme,
+            cwd.as_deref(),
+        );
         let workspace_id = self.workspace_manager.active().id.0;
         self.publish_event(
             "pane.created",
@@ -443,15 +464,17 @@ impl RmuxApp {
 
 /// Spawn a terminal and attach it to `pane_id` in the active workspace.
 ///
-/// Spawn failures are logged; the pane then shows the "Spawning
-/// terminal..." placeholder indefinitely.
+/// When `cwd` is `Some`, the shell starts in that directory (used to inherit
+/// the focused pane's path on split / new tab). Spawn failures are logged;
+/// the pane then shows the "Spawning terminal..." placeholder indefinitely.
 fn attach_terminal(
     manager: &mut WorkspaceManager,
     pane_id: PaneId,
     font_size: f32,
     named_theme: rmux_terminal::NamedTheme,
+    cwd: Option<&std::path::Path>,
 ) {
-    match TerminalPane::spawn(INITIAL_COLS, INITIAL_ROWS, font_size) {
+    match TerminalPane::spawn_with_cwd(INITIAL_COLS, INITIAL_ROWS, font_size, cwd) {
         Ok(mut terminal) => {
             terminal.set_theme(rmux_terminal::TerminalTheme::default().named(named_theme));
             manager.active_mut().set_terminal(pane_id, terminal);

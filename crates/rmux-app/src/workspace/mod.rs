@@ -423,6 +423,9 @@ impl WorkspaceManager {
         &mut self,
         title: Option<String>,
     ) -> Result<SurfaceId, WorkspaceError> {
+        // Promote legacy terminal first so the numbering / tab list includes
+        // the shell the user already had open.
+        self.active_mut().ensure_surfaces_ready()?;
         let count = self.active_leaf_surface_count();
         let title = title.unwrap_or_else(|| format!("Terminal {}", count + 1));
         self.active_mut().new_surface(title)

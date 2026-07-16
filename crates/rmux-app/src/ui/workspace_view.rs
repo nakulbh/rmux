@@ -12,7 +12,12 @@ use crate::workspace::splits::{PaneId, PaneNode, SplitDirection, SplitId};
 use egui::{Rect, Vec2};
 
 const SPLIT_BORDER: f32 = 1.0;
-const TAB_BAR_HEIGHT: f32 = 24.0;
+/// Height of the multi-surface tab strip (cmux-style flat bar).
+const TAB_BAR_HEIGHT: f32 = 28.0;
+/// Max width of a single tab label before ellipsis.
+const TAB_MAX_WIDTH: f32 = 180.0;
+/// Hit size for the per-tab close (×) control.
+const TAB_CLOSE_SIZE: f32 = 16.0;
 
 /// Actions emitted by the tab bar during rendering. They are collected
 /// into a `Vec` and applied to the [`WorkspaceManager`] after the
@@ -206,15 +211,18 @@ fn render_tab_bar(
     actions: &mut Vec<TabAction>,
 ) {
     let palette = theme::palette();
-    ui.painter().rect_filled(rect, 0.0_f32, palette.panel_bg);
-    ui.painter().rect_stroke(
-        Rect::from_min_size(
-            rect.min + Vec2::new(0.0_f32, rect.height() - 1.0_f32),
-            Vec2::new(rect.width(), 1.0_f32),
-        ),
-        egui::CornerRadius::ZERO,
+    // Near-black strip matching cmux terminal chrome (slightly darker than panel).
+    let bar_bg = egui::Color32::from_rgb(
+        palette.app_bg.r().saturating_sub(6),
+        palette.app_bg.g().saturating_sub(6),
+        palette.app_bg.b().saturating_sub(6),
+    );
+    ui.painter().rect_filled(rect, 0.0_f32, bar_bg);
+    // Bottom hairline separating tabs from the terminal body.
+    ui.painter().hline(
+        rect.x_range(),
+        rect.bottom() - 0.5_f32,
         egui::Stroke::new(1.0_f32, palette.chrome_border),
-        egui::StrokeKind::Inside,
     );
 
     let active_idx = leaf.active_surface_index();
@@ -222,44 +230,139 @@ fn render_tab_bar(
     let titles: Vec<String> =
         leaf.leaf_surfaces().iter().map(|s| s.display_title().to_string()).collect();
 
-    let mut tab_ui = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(rect.shrink(2.0_f32).shrink2(Vec2::new(2.0_f32, 0.0_f32)))
-            .layout(egui::Layout::left_to_right(egui::Align::Center)),
-    );
+    let mut x = rect.left() + 4.0_f32;
+    let cy = rect.center().y;
 
-    tab_ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 2.0_f32;
-        for (idx, title) in titles.iter().enumerate() {
-            let is_current = idx == active_idx;
-            let (fill, stroke) = if is_current {
-                (palette.tab_active_bg, egui::Stroke::new(1.0_f32, palette.accent))
+    for (idx, title) in titles.iter().enumerate() {
+        let is_current = idx == active_idx;
+        let tab_w = measure_tab_width(ui, title);
+        let tab_rect =
+            Rect::from_min_size(egui::pos2(x, rect.top()), Vec2::new(tab_w, rect.height()));
+
+        let resp = ui
+            .interact(tab_rect, ui.id().with(("surf_tab", idx)), egui::Sense::click())
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+
+        // Active: slightly lifted fill + accent underline (cmux).
+        // Inactive: transparent; hover lifts text.
+        if is_current {
+            ui.painter().rect_filled(
+                tab_rect.shrink2(Vec2::new(0.0_f32, 1.0_f32)),
+                egui::CornerRadius::ZERO,
+                palette.panel_active_bg,
+            );
+            ui.painter().hline(
+                tab_rect.x_range(),
+                tab_rect.bottom() - 1.5_f32,
+                egui::Stroke::new(2.0_f32, palette.accent),
+            );
+        } else if resp.hovered() {
+            ui.painter().rect_filled(
+                tab_rect.shrink2(Vec2::new(0.0_f32, 1.0_f32)),
+                egui::CornerRadius::ZERO,
+                palette.panel_bg,
+            );
+        }
+
+        let title_color =
+            if is_current || resp.hovered() { palette.text_primary } else { palette.text_muted };
+
+        // Title (left-padded); reserve room for close ×.
+        let text_left = tab_rect.left() + 8.0_f32;
+        let text_right = tab_rect.right() - TAB_CLOSE_SIZE - 4.0_f32;
+        let mut job = egui::text::LayoutJob::simple_singleline(
+            title.clone(),
+            egui::FontId::proportional(11.5_f32),
+            title_color,
+        );
+        job.wrap =
+            egui::text::TextWrapping::truncate_at_width((text_right - text_left).max(0.0_f32));
+        let galley = ui.fonts(|f| f.layout_job(job));
+        ui.painter().galley(
+            egui::pos2(text_left, cy - galley.size().y / 2.0_f32),
+            galley,
+            title_color,
+        );
+
+        // Close × — always on active tab (cmux), or on hover for others.
+        let show_close = surface_count > 1 && (is_current || resp.hovered());
+        if show_close {
+            let close_center =
+                egui::pos2(tab_rect.right() - TAB_CLOSE_SIZE / 2.0_f32 - 2.0_f32, cy);
+            let close_rect = Rect::from_center_size(close_center, Vec2::splat(TAB_CLOSE_SIZE));
+            let close = ui
+                .interact(close_rect, ui.id().with(("surf_close", idx)), egui::Sense::click())
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text("Close terminal");
+            let x_color = if close.hovered() {
+                palette.danger
+            } else if is_current {
+                palette.text_muted
             } else {
-                (palette.panel_active_bg, egui::Stroke::new(1.0_f32, palette.chrome_border))
+                palette.text_disabled
             };
-            let button = egui::Button::new(egui::RichText::new(title).size(11.0_f32))
-                .min_size(egui::Vec2::new(0.0_f32, TAB_BAR_HEIGHT - 4.0_f32))
-                .fill(fill)
-                .stroke(stroke);
-            if ui.add(button).clicked() {
-                actions.push(TabAction::Select(idx));
+            if close.hovered() {
+                ui.painter().circle_filled(
+                    close_center,
+                    TAB_CLOSE_SIZE / 2.0_f32 - 1.0_f32,
+                    palette.danger.gamma_multiply(0.2_f32),
+                );
             }
-            if is_current && is_active && surface_count > 1 {
-                let close_btn = egui::Button::new(egui::RichText::new("\u{2715}").size(10.0_f32))
-                    .min_size(egui::Vec2::new(18.0_f32, TAB_BAR_HEIGHT - 4.0_f32))
-                    .fill(palette.danger.gamma_multiply(0.4_f32));
-                if ui.add(close_btn).clicked() {
-                    actions.push(TabAction::Close(idx));
-                }
+            ui.painter().text(
+                close_center,
+                egui::Align2::CENTER_CENTER,
+                "\u{00d7}",
+                egui::FontId::proportional(12.0_f32),
+                x_color,
+            );
+            if close.clicked() {
+                actions.push(TabAction::Close(idx));
             }
         }
-        let plus_btn = egui::Button::new(egui::RichText::new("+").size(13.0_f32))
-            .min_size(egui::Vec2::new(22.0_f32, TAB_BAR_HEIGHT - 4.0_f32))
-            .fill(palette.panel_active_bg);
-        if ui.add(plus_btn).clicked() {
-            actions.push(TabAction::New);
+
+        if resp.clicked() && !is_current {
+            actions.push(TabAction::Select(idx));
         }
-    });
+
+        x += tab_w;
+    }
+
+    // Subtle "+" to open another terminal tab (same as Cmd+T).
+    let plus_rect = Rect::from_center_size(
+        egui::pos2(x + 12.0_f32, cy),
+        Vec2::new(22.0_f32, TAB_BAR_HEIGHT - 6.0_f32),
+    );
+    let plus = ui
+        .interact(plus_rect, ui.id().with("surf_new"), egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text("New terminal (\u{2318}T)");
+    let plus_color = if plus.hovered() { palette.text_primary } else { palette.text_muted };
+    if plus.hovered() {
+        ui.painter().rect_filled(plus_rect, egui::CornerRadius::same(3), palette.panel_active_bg);
+    }
+    ui.painter().text(
+        plus_rect.center(),
+        egui::Align2::CENTER_CENTER,
+        "+",
+        egui::FontId::proportional(14.0_f32),
+        plus_color,
+    );
+    if plus.clicked() {
+        actions.push(TabAction::New);
+    }
+
+    let _ = is_active; // pane-level active styling lives on the tab underline
+}
+
+/// Width of a tab chip for `title` (clamped).
+fn measure_tab_width(ui: &egui::Ui, title: &str) -> f32 {
+    let galley = ui.painter().layout_no_wrap(
+        title.to_owned(),
+        egui::FontId::proportional(11.5_f32),
+        egui::Color32::WHITE,
+    );
+    // left pad + text + close slot + right pad
+    (8.0_f32 + galley.size().x + TAB_CLOSE_SIZE + 6.0_f32).clamp(72.0_f32, TAB_MAX_WIDTH)
 }
 
 fn render_browser(

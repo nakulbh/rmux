@@ -7,6 +7,7 @@
 use portable_pty::{Child, ChildKiller, CommandBuilder, ExitStatus, MasterPty, PtySize};
 use std::io::Read;
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 /// Errors that can occur during PTY operations.
@@ -67,21 +68,23 @@ pub struct PtyBackend {
 }
 
 impl PtyBackend {
-    /// Spawn a shell in a new PTY.
+    /// Spawn a shell in a new PTY (cwd defaults to `$HOME` on Unix).
     ///
-    /// If `$SHELL` is set in the environment, that shell is used.
-    /// Otherwise falls back to `/bin/sh` (Unix) or `cmd.exe` (Windows).
+    /// See [`Self::spawn_with_cwd`] to inherit a sibling pane's directory.
+    pub fn spawn(cols: u16, rows: u16) -> PtyResult<Self> {
+        Self::spawn_with_cwd(cols, rows, None)
+    }
+
+    /// Spawn a shell in a new PTY, starting in `cwd` when provided.
     ///
-    /// # Arguments
-    ///
-    /// * `cols` - Number of columns for the terminal.
-    /// * `rows` - Number of rows for the terminal.
+    /// When `cwd` is `None` (or not a directory), falls back to `$HOME`
+    /// on Unix, otherwise the process inherits the parent cwd.
     ///
     /// # Errors
     ///
     /// Returns [`PtyError::OpenPty`] if the PTY could not be created.
     /// Returns [`PtyError::SpawnProcess`] if the shell process could not be spawned.
-    pub fn spawn(cols: u16, rows: u16) -> PtyResult<Self> {
+    pub fn spawn_with_cwd(cols: u16, rows: u16, cwd: Option<&Path>) -> PtyResult<Self> {
         // Determine which shell to use
         let shell = std::env::var("SHELL").unwrap_or_else(|_| {
             #[cfg(unix)]
@@ -103,9 +106,11 @@ impl PtyBackend {
         let mut cmd = CommandBuilder::new(&shell);
         cmd.env("TERM", "xterm-256color");
 
-        #[cfg(unix)]
-        {
-            // Add home directory as cwd
+        // Prefer the caller's cwd (sibling terminal path); else $HOME on Unix.
+        if let Some(dir) = cwd.filter(|p| p.is_dir()) {
+            cmd.cwd(dir);
+        } else {
+            #[cfg(unix)]
             if let Ok(home) = std::env::var("HOME") {
                 cmd.cwd(home);
             }
@@ -127,6 +132,20 @@ impl PtyBackend {
             child_killer,
             exited: false,
         })
+    }
+
+    /// OS process id of the shell, if available.
+    pub fn process_id(&self) -> Option<u32> {
+        self.child.process_id()
+    }
+
+    /// Best-effort current working directory of the shell process.
+    ///
+    /// Used so new splits / tabs can open in the same directory the user
+    /// already `cd`'d into, instead of always `$HOME`.
+    pub fn working_directory(&self) -> Option<PathBuf> {
+        let pid = self.process_id()?;
+        cwd_of_process(pid)
     }
 
     /// Write input bytes to the PTY (keyboard input, paste, etc.).
@@ -208,6 +227,56 @@ impl std::fmt::Debug for PtyBackend {
     }
 }
 
+/// Resolve the current working directory of process `pid`.
+///
+/// * Linux: read `/proc/<pid>/cwd` symlink.
+/// * macOS: parse `lsof -a -d cwd -p <pid> -Fn` (no extra crates).
+/// * Other: `None`.
+fn cwd_of_process(pid: u32) -> Option<PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        cwd_of_process_macos(pid)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+/// macOS: ask `lsof` for the cwd file descriptor of `pid`.
+#[cfg(target_os = "macos")]
+fn cwd_of_process_macos(pid: u32) -> Option<PathBuf> {
+    let output = std::process::Command::new("lsof")
+        .args(["-a", "-d", "cwd", "-p", &pid.to_string(), "-Fn"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_lsof_cwd_output(&output.stdout)
+}
+
+/// Parse `lsof -Fn` stdout and return the first `n<path>` entry that is a dir.
+fn parse_lsof_cwd_output(stdout: &[u8]) -> Option<PathBuf> {
+    let text = String::from_utf8_lossy(stdout);
+    for line in text.lines() {
+        if let Some(path) = line.strip_prefix('n') {
+            // lsof can emit paths like `/path (deleted)` — take the path part.
+            let path = path.split(" (").next().unwrap_or(path);
+            let p = PathBuf::from(path);
+            if p.is_dir() {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -218,6 +287,31 @@ mod tests {
         assert!(backend.is_alive(), "Shell should be alive immediately after spawning");
         // Clean up
         backend.kill().ok();
+    }
+
+    #[test]
+    fn test_spawn_with_cwd_uses_directory() {
+        let tmp = std::env::temp_dir();
+        let mut backend =
+            PtyBackend::spawn_with_cwd(80, 24, Some(tmp.as_path())).expect("spawn with cwd");
+        assert!(backend.is_alive());
+        // Working directory query is best-effort; just ensure spawn succeeded.
+        backend.kill().ok();
+    }
+
+    #[test]
+    fn test_parse_lsof_cwd_output() {
+        let home = dirs_or_tmp();
+        let fake = format!("p12345\nfcwd\nn{}\n", home.display());
+        let parsed = parse_lsof_cwd_output(fake.as_bytes());
+        assert_eq!(parsed.as_ref(), Some(&home));
+    }
+
+    fn dirs_or_tmp() -> PathBuf {
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_dir())
+            .unwrap_or_else(std::env::temp_dir)
     }
 
     #[test]

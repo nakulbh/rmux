@@ -356,13 +356,33 @@ impl Workspace {
 
     /// Mint a fresh `SurfaceId`, spawn a backing `TerminalPane`, and append
     /// it to the active leaf's surface list. The new surface becomes focused.
+    ///
+    /// The new shell inherits the focused terminal's current working
+    /// directory when it can be resolved (so Cmd+T after `cd` stays put).
+    /// If the leaf still only has a legacy `set_terminal` slot, that
+    /// terminal is promoted into a surface first so Cmd+T does not orphan it.
     /// Returns the new id.
     pub fn new_surface(&mut self, title: String) -> Result<SurfaceId, WorkspaceError> {
+        self.promote_legacy_terminal_if_needed()?;
+
+        // Resolve cwd from the focused terminal *before* we mutably borrow
+        // the leaf for `add_surface`.
+        let cwd = self
+            .root
+            .find_pane(self.active_pane)
+            .and_then(PaneNode::active_terminal)
+            .and_then(TerminalPane::working_directory);
+
         let id = SurfaceId(self.next_surface_id);
         self.next_surface_id += 1;
 
-        let terminal = TerminalPane::spawn(INITIAL_COLS, INITIAL_ROWS, DEFAULT_FONT_SIZE)
-            .map_err(|e| WorkspaceError::SurfaceSpawnFailed(e.to_string()))?;
+        let terminal = TerminalPane::spawn_with_cwd(
+            INITIAL_COLS,
+            INITIAL_ROWS,
+            DEFAULT_FONT_SIZE,
+            cwd.as_deref(),
+        )
+        .map_err(|e| WorkspaceError::SurfaceSpawnFailed(e.to_string()))?;
         let surface = Surface::new(id, title, terminal);
 
         let leaf = self.active_leaf_mut()?;
@@ -371,6 +391,35 @@ impl Workspace {
         leaf.set_active_surface_index(new_idx);
 
         Ok(id)
+    }
+
+    /// Ensure the active leaf's shells live in `surfaces` (promote the
+    /// legacy `set_terminal` slot if present). Safe to call repeatedly.
+    pub(crate) fn ensure_surfaces_ready(&mut self) -> Result<(), WorkspaceError> {
+        self.promote_legacy_terminal_if_needed()
+    }
+
+    /// Move a legacy `terminal` slot into `surfaces` so multi-tab APIs
+    /// don't hide the original shell when the first Cmd+T is pressed.
+    fn promote_legacy_terminal_if_needed(&mut self) -> Result<(), WorkspaceError> {
+        let leaf = self.active_leaf_mut()?;
+        if !leaf.leaf_surfaces().is_empty() {
+            return Ok(());
+        }
+        let legacy = match leaf {
+            PaneNode::Leaf { terminal, .. } => terminal.take(),
+            _ => None,
+        };
+        let Some(term) = legacy else {
+            return Ok(());
+        };
+        let id = SurfaceId(self.next_surface_id);
+        self.next_surface_id += 1;
+        let surface = Surface::new(id, "Terminal 1".to_owned(), term);
+        let leaf = self.active_leaf_mut()?;
+        leaf.add_surface(surface);
+        leaf.set_active_surface_index(0);
+        Ok(())
     }
 
     /// Cycle to the next surface within the active leaf (wraps). No-op when
