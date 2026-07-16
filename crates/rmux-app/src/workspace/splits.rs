@@ -5,7 +5,6 @@
 
 #![allow(dead_code)]
 
-use rmux_terminal::OscNotification;
 use thiserror::Error;
 
 use super::surface::Surface;
@@ -265,29 +264,27 @@ impl PaneNode {
         }
     }
 
-    /// Process PTY output for every pane in this subtree, collecting any
-    /// OSC notifications (tagged with their pane id) into `notifications`.
+    /// Process PTY output for every pane in this subtree.
     ///
     /// Walks both the legacy `terminal` slot and every multi-surface tab
-    /// so exit detection and OSC work for Cmd+T terminals too.
-    pub fn process_pty_outputs(&mut self, notifications: &mut Vec<(PaneId, OscNotification)>) {
+    /// so exit detection works for Cmd+T terminals too.
+    ///
+    /// OSC → notification generation is disabled (iTerm2 progress OSC 9;4
+    /// was mis-parsed as junk notifications).
+    pub fn process_pty_outputs(&mut self) {
         match self {
-            Self::Leaf { id, terminal, surfaces, .. } => {
+            Self::Leaf { terminal, surfaces, .. } => {
                 if let Some(t) = terminal.as_mut() {
                     t.process_pty_output();
-                    notifications.extend(t.take_notifications().into_iter().map(|n| (*id, n)));
                 }
                 for surface in surfaces.iter_mut() {
                     surface.terminal.process_pty_output();
-                    notifications.extend(
-                        surface.terminal.take_notifications().into_iter().map(|n| (*id, n)),
-                    );
                 }
             }
             Self::Browser { .. } => {}
             Self::Split { children, .. } => {
                 for child in children.iter_mut() {
-                    child.process_pty_outputs(notifications);
+                    child.process_pty_outputs();
                 }
             }
         }

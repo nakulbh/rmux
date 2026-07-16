@@ -16,7 +16,6 @@ pub mod surface;
 use std::collections::VecDeque;
 
 use model::{Workspace, WorkspaceError, WorkspaceId};
-use rmux_terminal::OscNotification;
 use splits::PaneId;
 use surface::{Surface, SurfaceId};
 
@@ -295,19 +294,10 @@ impl WorkspaceManager {
     }
 
     /// Process PTY output for all panes across all workspaces.
-    ///
-    /// Returns any OSC notifications parsed from the output as
-    /// `(workspace_id, pane_id, notification)` triples, in arrival order.
-    pub fn process_all_panes(&mut self) -> Vec<(u64, u64, OscNotification)> {
-        let mut out = Vec::new();
-        let mut per_workspace = Vec::new();
+    pub fn process_all_panes(&mut self) {
         for workspace in &mut self.workspaces {
-            per_workspace.clear();
-            workspace.process_pty_outputs(&mut per_workspace);
-            let ws_id = workspace.id.0;
-            out.extend(per_workspace.drain(..).map(|(pane, n)| (ws_id, pane.0, n)));
+            workspace.process_pty_outputs();
         }
-        out
     }
 
     /// Close terminals whose process has exited.

@@ -6,9 +6,7 @@
 use anyhow::Result;
 use image::ImageEncoder;
 use image::codecs::png::PngEncoder;
-use rmux_terminal::{
-    InputMapper, OscNotification, OscScanner, PtyBackend, PtyError, TermState, TerminalRenderer,
-};
+use rmux_terminal::{InputMapper, PtyBackend, PtyError, TermState, TerminalRenderer};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
@@ -47,10 +45,6 @@ pub struct TerminalPane {
     input_mapper: InputMapper,
     /// Channel receiver for PTY output from background thread.
     pty_rx: mpsc::Receiver<Vec<u8>>,
-    /// Scanner that detects notification OSC sequences in the PTY output.
-    osc_scanner: OscScanner,
-    /// Notifications parsed from the output, waiting to be collected.
-    pending_notifications: Vec<OscNotification>,
     /// Whether this pane currently has keyboard focus.
     has_focus: bool,
     /// Whether to show the blinking cursor.
@@ -167,8 +161,6 @@ impl TerminalPane {
             renderer,
             input_mapper,
             pty_rx: rx,
-            osc_scanner: OscScanner::new(),
-            pending_notifications: Vec::new(),
             has_focus: false,
             show_cursor: true,
             name,
@@ -198,7 +190,10 @@ impl TerminalPane {
     /// Should be called once per frame before rendering.
     pub fn process_pty_output(&mut self) {
         while let Ok(data) = self.pty_rx.try_recv() {
-            self.pending_notifications.extend(self.osc_scanner.feed(&data));
+            // OSC notification scanning is intentionally disabled: OSC 9 is also
+            // used by iTerm2 progress bars (`OSC 9;4;…`), which produced junk
+            // entries like "4;0;" in the notification panel. Re-enable only with
+            // a tighter parser that rejects progress / non-notify sequences.
             self.state.feed_bytes(&data);
         }
 
@@ -262,13 +257,6 @@ impl TerminalPane {
         if let Err(err) = self.backend.write(text.as_bytes()) {
             tracing::warn!(error = %err, "failed to write text to PTY");
         }
-    }
-
-    /// Take all notifications parsed from the PTY output since the last call.
-    ///
-    /// Returns them in arrival order and leaves the internal queue empty.
-    pub fn take_notifications(&mut self) -> Vec<OscNotification> {
-        std::mem::take(&mut self.pending_notifications)
     }
 
     /// Render the terminal pane in the egui UI.

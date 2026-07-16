@@ -5,7 +5,6 @@
 
 #![allow(dead_code)]
 
-use rmux_terminal::OscNotification;
 use thiserror::Error;
 
 use super::splits::{
@@ -139,10 +138,9 @@ impl Workspace {
         self.root.replace_pane(pane_id, browser_node);
     }
 
-    /// Process PTY output for all panes in this workspace, collecting any
-    /// OSC notifications (tagged with their pane id) into `notifications`.
-    pub fn process_pty_outputs(&mut self, notifications: &mut Vec<(PaneId, OscNotification)>) {
-        self.root.process_pty_outputs(notifications);
+    /// Process PTY output for all panes in this workspace.
+    pub fn process_pty_outputs(&mut self) {
+        self.root.process_pty_outputs();
     }
 
     /// Split the specified pane to the right (horizontal split).

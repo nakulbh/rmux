@@ -95,12 +95,9 @@ impl eframe::App for RmuxApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Apply shadcn-inspired theme every frame
         crate::ui::theme::Theme::dark().apply(ctx);
-        // Process PTY output for all terminal panes; collect any OSC
-        // notifications raised by pane output.
-        let osc_notifications = self.workspace_manager.process_all_panes();
-        for (workspace_id, pane_id, notification) in osc_notifications {
-            self.add_pane_notification(workspace_id, pane_id, notification);
-        }
+        // Process PTY output for all terminal panes (exit detection, grid).
+        // OSC → notification generation is disabled for now.
+        self.workspace_manager.process_all_panes();
 
         // Auto-close tabs/panes whose process has exited; respawn the last
         // shell of the last workspace so the window is never left dead.
@@ -248,33 +245,6 @@ impl RmuxApp {
     /// send errors just mean nobody is listening).
     pub(crate) fn publish_event(&self, event: &str, data: serde_json::Value) {
         let _ = self.api_event_tx.send(ApiEvent::new(event, data));
-    }
-
-    /// Store a notification raised by a pane's OSC output and publish
-    /// the matching `notification` event.
-    fn add_pane_notification(
-        &mut self,
-        workspace_id: u64,
-        pane_id: u64,
-        notification: rmux_terminal::OscNotification,
-    ) {
-        let id = self.notifications.add(
-            notification.title.clone(),
-            notification.body.clone(),
-            Some(pane_id),
-            Some(workspace_id),
-        );
-        tracing::debug!(id, pane_id, workspace_id, "OSC notification added");
-        self.publish_event(
-            "notification",
-            json!({
-                "id": id,
-                "title": notification.title,
-                "body": notification.body,
-                "pane_id": pane_id,
-                "workspace_id": workspace_id,
-            }),
-        );
     }
 
     /// Create a workspace with a live terminal in its initial pane.
