@@ -20,8 +20,8 @@ Targets Linux, macOS, and Windows.
 ## Demo
 
 <div align="center">
-<img src="assets/videos/Cap 2026-07-16 at 18.22.03.gif" width="45%">
-<img src="assets/videos/Cap 2026-07-15 at 13.59.58.gif" width="45%">
+<img src="assets/videos/demo-shortcuts.gif" width="45%">
+<img src="assets/videos/demo-overview.gif" width="45%">
 </div>
 
 ## Features
