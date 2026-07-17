@@ -175,17 +175,12 @@ impl SidebarView {
         let mut action = None;
 
         // bottom_up so the help control stays pinned to the lower-left corner.
+        // No divider above the icon — matches cmux (quiet glyph in empty footer).
         ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-            ui.add_space(2.0_f32);
+            ui.add_space(4.0_f32);
             // Small circle-question — left corner of the sidebar footer.
             let help_resp = help.show_button(ui);
             *help_button_rect = Some(help_resp.rect);
-            ui.add_space(6.0_f32);
-            let (line_rect, _) = ui.allocate_exact_size(
-                egui::Vec2::new(ui.available_width(), 1.0_f32),
-                egui::Sense::hover(),
-            );
-            ui.painter().hline(line_rect.x_range(), line_rect.center().y, (1.0_f32, p().border));
             ui.add_space(4.0_f32);
 
             ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {

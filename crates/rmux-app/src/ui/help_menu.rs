@@ -17,10 +17,11 @@ const URL_FEEDBACK: &str = "https://github.com/nakulbh/rmux/issues/new";
 /// Community Discord is not published yet — open GitHub Discussions-style issues.
 const URL_DISCORD: &str = "https://github.com/nakulbh/rmux/issues";
 
-/// Hit target for the circle-question button.
-const BTN_SIZE: f32 = 22.0_f32;
-/// Icon stroke radius (Lucide-style 24×24 viewBox scaled down).
-const ICON_R: f32 = 8.0_f32;
+/// Hit target for the circle-question button (cmux-scale: compact footer glyph).
+const BTN_SIZE: f32 = 16.0_f32;
+/// Outer ring radius — slightly smaller than the hit target so it reads as a
+/// quiet chrome control, not a full toolbar button.
+const ICON_R: f32 = 6.0_f32;
 
 /// Result of a local "check for updates" pass.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,14 +129,13 @@ impl HelpMenu {
                 ui.painter().circle_filled(center, BTN_SIZE / 2.0_f32, fill);
             }
 
-            // Lucide-style circle-question: outer ring + curved "?" + bottom dot.
-            ui.painter().circle_stroke(center, ICON_R, egui::Stroke::new(1.5_f32, stroke_color));
-            // Question mark body (simple text glyph, sized to the icon).
+            // Lucide-style circle-question: thin outer ring + compact "?".
+            ui.painter().circle_stroke(center, ICON_R, egui::Stroke::new(1.25_f32, stroke_color));
             ui.painter().text(
-                egui::Pos2::new(center.x, center.y - 1.0_f32),
+                egui::Pos2::new(center.x, center.y - 0.5_f32),
                 egui::Align2::CENTER_CENTER,
                 "?",
-                egui::FontId::proportional(12.0_f32),
+                egui::FontId::proportional(9.0_f32),
                 stroke_color,
             );
         }
