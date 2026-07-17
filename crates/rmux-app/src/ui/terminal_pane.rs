@@ -296,12 +296,15 @@ impl TerminalPane {
             ui.allocate_exact_size(terminal_available, egui::Sense::click_and_drag());
 
         // Track focus from the terminal area response
-        if term_response.clicked() {
+        if term_response.clicked() || term_response.drag_started() {
             self.has_focus = true;
         }
         if term_response.clicked_elsewhere() {
             self.has_focus = false;
         }
+
+        // Mouse selection: drag selects cells; double-click word; triple line.
+        self.handle_mouse_selection(ui, rect, &term_response);
 
         // Handle scroll wheel for terminal scrollback
         if term_response.hovered() {
@@ -430,6 +433,25 @@ impl TerminalPane {
         let events: Vec<egui::Event> = ui.input(|i| i.events.clone());
 
         for event in &events {
+            // egui-winit intercepts ⌘/Ctrl+C/V and emits Copy/Paste events
+            // instead of Key events — handle those first.
+            match event {
+                egui::Event::Copy => {
+                    self.handle_copy_event(ui.ctx());
+                    continue;
+                }
+                egui::Event::Paste(text) => {
+                    self.paste_text(text);
+                    continue;
+                }
+                egui::Event::Cut => {
+                    // Terminals don't cut grid cells; treat as copy if selected.
+                    self.handle_copy_event(ui.ctx());
+                    continue;
+                }
+                _ => {}
+            }
+
             if let egui::Event::Key { key, pressed, modifiers, .. } = event {
                 if !pressed {
                     continue;
@@ -470,12 +492,16 @@ impl TerminalPane {
 
                 let bytes = self.map_key_to_terminal(key, modifiers);
                 if let Some(data) = bytes {
+                    // Typing clears the visual selection (standard terminal UX).
+                    self.state.clear_selection();
                     self.backend.write(&data).ok();
                 }
             }
 
-            // Handle text input (for actual character typing, paste, IME)
+            // Handle text input (for actual character typing, IME)
             if let egui::Event::Text(text) = event {
+                // Typing replaces the selection (clear highlight, then type).
+                self.state.clear_selection();
                 for c in text.chars() {
                     let bytes = self.input_mapper.map_char(c, false, false);
                     if !bytes.is_empty() {
@@ -484,6 +510,99 @@ impl TerminalPane {
                 }
             }
         }
+    }
+
+    /// Handle `egui::Event::Copy` (⌘/Ctrl+C from egui-winit).
+    ///
+    /// With a selection: put text on the system clipboard.
+    /// Without: forward SIGINT (`^C`) so shells still work on Linux/Windows
+    /// where Ctrl sets both `ctrl` and `command` and egui treats Ctrl+C as copy.
+    fn handle_copy_event(&mut self, ctx: &egui::Context) {
+        if let Some(text) = self.state.copy_selected_text() {
+            ctx.copy_text(text);
+            tracing::debug!("Copied terminal selection via Event::Copy");
+        } else {
+            // No selection → interrupt the foreground process.
+            let _ = self.backend.write(&[0x03]);
+            tracing::debug!("No selection; sent SIGINT (^C) to PTY");
+        }
+    }
+
+    /// Drag / multi-click mouse selection over the grid.
+    fn handle_mouse_selection(
+        &mut self,
+        ui: &egui::Ui,
+        rect: egui::Rect,
+        response: &egui::Response,
+    ) {
+        let cell = self.renderer.cell_size();
+        if cell.x <= 0.0 || cell.y <= 0.0 {
+            return;
+        }
+
+        let pointer_cell = |pos: egui::Pos2| -> (u16, u16) {
+            let local = pos - rect.min;
+            let col = (local.x / cell.x).floor().max(0.0) as u16;
+            let row = (local.y / cell.y).floor().max(0.0) as u16;
+            let col = col.min(self.cols.saturating_sub(1));
+            let row = row.min(self.rows.saturating_sub(1));
+            (col, row)
+        };
+
+        // Triple-click → full line; double-click → word; otherwise simple drag.
+        if response.triple_clicked() {
+            if let Some(pos) = response.interact_pointer_pos() {
+                let (col, row) = pointer_cell(pos);
+                self.state.select_line_at(col, row);
+            }
+            return;
+        }
+        if response.double_clicked() {
+            if let Some(pos) = response.interact_pointer_pos() {
+                let (col, row) = pointer_cell(pos);
+                self.state.select_word_at(col, row);
+            }
+            return;
+        }
+
+        if response.drag_started() {
+            if let Some(pos) = response.interact_pointer_pos() {
+                let (col, row) = pointer_cell(pos);
+                self.state.start_selection(col, row);
+            }
+        } else if response.dragged() {
+            if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                let (col, row) = pointer_cell(pos);
+                self.state.update_selection(col, row);
+            }
+        } else if response.clicked() && !response.dragged() {
+            // Single click without drag: clear selection (standard terminal).
+            // Only clear when it was a primary click and not a multi-click
+            // residual (handled above).
+            if !response.double_clicked() && !response.triple_clicked() {
+                self.state.clear_selection();
+            }
+        }
+    }
+
+    /// Paste clipboard text into the PTY, using bracketed paste when enabled.
+    pub fn paste_text(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        // Normalize Windows CRLF so shells don't see `\r` as Enter mid-line.
+        let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+        let bytes = self.input_mapper.wrap_paste(&normalized);
+        if let Err(err) = self.backend.write(&bytes) {
+            tracing::warn!(error = %err, "failed to paste into PTY");
+            return;
+        }
+        tracing::debug!(len = normalized.len(), "Pasted text into terminal");
+    }
+
+    /// Whether the terminal currently has a non-empty text selection.
+    pub fn has_selection(&self) -> bool {
+        self.state.has_selection()
     }
 
     /// Keys that pair with the logical `command` modifier for app shortcuts.
@@ -529,7 +648,9 @@ impl TerminalPane {
             | egui::Key::Num9 => true,
             // COMMAND+C only reserved when there is a selection to copy;
             // otherwise Linux still needs Ctrl+C → SIGINT for the shell.
-            egui::Key::C => self.state.copy_selected_text().is_some(),
+            egui::Key::C => self.state.has_selection(),
+            // COMMAND+V is always an app paste shortcut.
+            egui::Key::V => true,
             _ => false,
         }
     }
