@@ -78,6 +78,13 @@ enum UpdateToast {
     Done { result: ToastResult, since: Instant },
 }
 
+/// Modal shown after a successful install: ask the user to quit and reopen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RestartPrompt {
+    binary_path: String,
+    installed_ref: String,
+}
+
 /// Help / about menu state owned by the app, rendered from the sidebar footer.
 #[derive(Debug, Default)]
 pub struct HelpMenu {
@@ -89,6 +96,8 @@ pub struct HelpMenu {
     shortcuts_open: bool,
     /// Update-check toast, if any.
     toast: Option<UpdateToast>,
+    /// Post-install "quit and reopen?" dialog.
+    restart_prompt: Option<RestartPrompt>,
 }
 
 impl HelpMenu {
@@ -196,10 +205,15 @@ impl HelpMenu {
 
                 let elapsed = started.elapsed();
                 if let Some(outcome) = ready {
-                    Some(UpdateToast::Done {
-                        result: toast_result_from_apply(outcome),
-                        since: Instant::now(),
-                    })
+                    let result = toast_result_from_apply(outcome);
+                    // On success, open the quit-and-reopen dialog immediately.
+                    if let ToastResult::Installed { binary_path, installed_ref } = &result {
+                        self.restart_prompt = Some(RestartPrompt {
+                            binary_path: binary_path.clone(),
+                            installed_ref: installed_ref.clone(),
+                        });
+                    }
+                    Some(UpdateToast::Done { result, since: Instant::now() })
                 } else if elapsed >= INSTALL_TIMEOUT {
                     Some(UpdateToast::Done {
                         result: ToastResult::Failed {
@@ -285,6 +299,10 @@ impl HelpMenu {
 
         if self.shortcuts_open {
             self.show_shortcuts(ctx);
+        }
+
+        if self.restart_prompt.is_some() {
+            self.show_restart_prompt(ctx);
         }
 
         self.show_toast(ctx);
@@ -547,15 +565,19 @@ impl HelpMenu {
         // Interaction payloads (clone so we can mutate self after the paint).
         enum ClickAction {
             Install { source: UpdateSource, label: String },
-            Restart { binary_path: String },
+            Restart { binary_path: String, installed_ref: String },
         }
         let click = match toast {
             UpdateToast::Done { result: ToastResult::Available { label, source, .. }, .. } => {
                 Some(ClickAction::Install { source: *source, label: label.clone() })
             }
-            UpdateToast::Done { result: ToastResult::Installed { binary_path, .. }, .. } => {
-                Some(ClickAction::Restart { binary_path: binary_path.clone() })
-            }
+            UpdateToast::Done {
+                result: ToastResult::Installed { binary_path, installed_ref },
+                ..
+            } => Some(ClickAction::Restart {
+                binary_path: binary_path.clone(),
+                installed_ref: installed_ref.clone(),
+            }),
             _ => None,
         };
 
@@ -593,10 +615,10 @@ impl HelpMenu {
                         ),
                         ToastResult::Installed { installed_ref, .. } => (
                             p.success,
-                            format!("Updated to {installed_ref}  ·  Click to restart"),
+                            format!("Updated to {installed_ref}  ·  Restart required"),
                             egui::Stroke::NONE,
                             p.accent_fg,
-                            Some("Relaunch the new binary and close this window"),
+                            Some("Open the restart dialog to quit and reopen rmux"),
                         ),
                         ToastResult::Failed { message } => (
                             p.panel_bg,
@@ -640,19 +662,100 @@ impl HelpMenu {
             Some(ClickAction::Install { source, label }) => {
                 self.start_apply_update(source, label);
             }
-            Some(ClickAction::Restart { binary_path }) => {
-                if let Err(err) = update::relaunch(&binary_path) {
-                    tracing::error!(%err, "relaunch failed");
-                    self.toast = Some(UpdateToast::Done {
-                        result: ToastResult::Failed { message: err },
-                        since: Instant::now(),
-                    });
-                } else {
-                    // Close this instance so the new process is the only one.
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
+            Some(ClickAction::Restart { binary_path, installed_ref }) => {
+                // Re-open the quit-and-reopen dialog if the user dismissed it.
+                self.restart_prompt = Some(RestartPrompt { binary_path, installed_ref });
             }
             None => {}
+        }
+    }
+
+    /// Modal: update finished — ask the user to quit and reopen.
+    fn show_restart_prompt(&mut self, ctx: &egui::Context) {
+        let Some(prompt) = self.restart_prompt.clone() else {
+            return;
+        };
+        let p = theme::palette();
+        let mut open = true;
+        let mut do_restart = false;
+        let mut do_later = false;
+
+        egui::Window::new("Restart to finish update")
+            .id(egui::Id::new("rmux_restart_prompt"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .default_width(380.0_f32)
+            .frame(
+                egui::Frame::window(&ctx.style())
+                    .fill(p.panel_bg)
+                    .stroke(egui::Stroke::new(1.0_f32, p.border)),
+            )
+            .show(ctx, |ui| {
+                ui.label(
+                    egui::RichText::new(format!("rmux was updated to {}.", prompt.installed_ref))
+                        .size(14.0_f32)
+                        .color(p.text_primary)
+                        .strong(),
+                );
+                ui.add_space(8.0_f32);
+                ui.label(
+                    egui::RichText::new(
+                        "Quit and reopen rmux to use the new version. Unsaved terminal \
+                         sessions will be closed.",
+                    )
+                    .size(12.0_f32)
+                    .color(p.text_muted),
+                );
+                ui.add_space(16.0_f32);
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let restart = ui.add(
+                            egui::Button::new(
+                                egui::RichText::new("Quit & Reopen").color(p.accent_fg).strong(),
+                            )
+                            .fill(p.accent)
+                            .corner_radius(egui::CornerRadius::same(6))
+                            .min_size(egui::Vec2::new(120.0_f32, 28.0_f32)),
+                        );
+                        if restart.clicked() {
+                            do_restart = true;
+                        }
+                        ui.add_space(8.0_f32);
+                        if ui.button("Later").clicked() {
+                            do_later = true;
+                        }
+                    });
+                });
+            });
+
+        if do_restart {
+            self.perform_restart(ctx, &prompt.binary_path);
+            return;
+        }
+        if do_later || !open {
+            // Keep the toast so they can reopen this dialog later by clicking it.
+            self.restart_prompt = None;
+        }
+    }
+
+    /// Spawn the newly installed binary, then close this window.
+    fn perform_restart(&mut self, ctx: &egui::Context, binary_path: &str) {
+        match update::relaunch(binary_path) {
+            Ok(()) => {
+                self.restart_prompt = None;
+                self.toast = None;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            Err(err) => {
+                tracing::error!(%err, "relaunch failed");
+                self.restart_prompt = None;
+                self.toast = Some(UpdateToast::Done {
+                    result: ToastResult::Failed { message: err },
+                    since: Instant::now(),
+                });
+            }
         }
     }
 }
@@ -920,6 +1023,33 @@ mod tests {
             r,
             ToastResult::Installed { installed_ref, .. } if installed_ref == "main"
         ));
+    }
+
+    #[test]
+    fn test_install_success_opens_restart_prompt() {
+        let (_tx, rx) = mpsc::channel();
+        let mut help = HelpMenu::new();
+        help.toast = Some(UpdateToast::Installing {
+            started: Instant::now() - Duration::from_secs(1),
+            label: "main".into(),
+            rx,
+            ready: Some(ApplyUpdateOutcome::Success {
+                binary_path: "/tmp/rmux".into(),
+                installed_ref: "abc1234".into(),
+            }),
+        });
+        help.tick_toast();
+        assert!(matches!(
+            help.toast,
+            Some(UpdateToast::Done { result: ToastResult::Installed { .. }, .. })
+        ));
+        assert_eq!(
+            help.restart_prompt,
+            Some(RestartPrompt {
+                binary_path: "/tmp/rmux".into(),
+                installed_ref: "abc1234".into(),
+            })
+        );
     }
 
     #[test]
