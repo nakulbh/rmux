@@ -288,7 +288,7 @@ pub enum ApplyUpdateOutcome {
     /// Binary (and optional desktop integration) installed successfully.
     ///
     /// Constructed by the Unix installer path. Matched on all platforms (and
-    /// in tests); on Windows `apply_update` currently only returns [`Failed`].
+    /// in tests); on Windows `apply_update` currently only returns `Failed`.
     #[allow(dead_code)]
     Success {
         /// Path we expect the user to relaunch (`~/.local/bin/rmux` or current exe).
