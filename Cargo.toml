@@ -1,6 +1,7 @@
 [workspace]
 members = ["crates/*"]
 default-members = ["crates/rmux-app"]
+exclude = ["benches/shell_eval/fixtures/tiny-crate"]
 resolver = "2"
 
 [workspace.package]

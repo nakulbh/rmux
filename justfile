@@ -38,3 +38,7 @@ release:
 # Clean build artifacts
 clean:
     cargo clean
+
+# Compare shells on compilation + file search (see docs/BENCHMARKS.md)
+bench-shells:
+    ./scripts/bench-shells.sh

@@ -1,0 +1,9 @@
+[package]
+name = "rmux-bench-tiny"
+version = "0.1.0"
+edition = "2021"
+
+# Standalone fixture — not part of the rmux workspace.
+[workspace]
+
+[dependencies]
