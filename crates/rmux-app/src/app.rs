@@ -53,8 +53,8 @@ pub struct RmuxApp {
     /// detect switches (keyboard, sidebar, or API) and publish
     /// `workspace.changed` exactly once per switch.
     last_active_workspace: u64,
-    /// Global shortcut registry built once at startup.
-    pub(crate) shortcut_registry: crate::shortcuts::ShortcutRegistry,
+    /// Cross-platform shortcut manager (`KeyboardShortcut` → `AppCommand`).
+    pub(crate) shortcut_manager: crate::shortcut_manager::ShortcutManager,
 }
 
 impl RmuxApp {
@@ -74,7 +74,7 @@ impl RmuxApp {
             api_request_rx: channels.request_rx,
             api_event_tx: channels.event_tx,
             last_active_workspace: 0,
-            shortcut_registry: crate::shortcuts::ShortcutRegistry::default(),
+            shortcut_manager: crate::shortcut_manager::ShortcutManager::with_defaults(),
         };
 
         let pane_id = app.workspace_manager.active().active_pane;
@@ -98,6 +98,12 @@ impl eframe::App for RmuxApp {
         // Process PTY output for all terminal panes (exit detection, grid).
         // OSC → notification generation is disabled for now.
         self.workspace_manager.process_all_panes();
+
+        // Consume app shortcuts BEFORE UI so reserved chords never reach the
+        // terminal PTY. On Linux egui sets both `ctrl` and `command` for Ctrl;
+        // if the terminal reads the key first, the shortcut appears to need a
+        // double-press. Dispatch runs immediately; commands only touch app state.
+        self.handle_keyboard_shortcuts(ctx);
 
         // Auto-close tabs/panes whose process has exited; respawn the last
         // shell of the last workspace so the window is never left dead.
@@ -187,9 +193,6 @@ impl eframe::App for RmuxApp {
 
         // Render the workspace view (central panel)
         self.render_workspace(ctx);
-
-        // Process keyboard shortcuts AFTER UI render so ctx.wants_keyboard_input() works
-        self.handle_keyboard_shortcuts(ctx);
 
         // Publish workspace.changed if the active workspace switched this
         // frame (keyboard, sidebar click, or API request).

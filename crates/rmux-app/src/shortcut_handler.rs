@@ -1,119 +1,57 @@
-//! Keyboard shortcut dispatch — translates ShortcutAction into workspace operations.
+//! Dispatch layer: [`AppCommand`] → workspace / terminal operations.
+//!
+//! This module never inspects keyboard state. The
+//! [`crate::shortcut_manager::ShortcutManager`] is solely responsible for
+//! turning input into commands.
 
 use crate::app::RmuxApp;
-use crate::shortcuts::ShortcutAction;
+use crate::shortcut_manager::{AppCommand, PollOptions, ShortcutManager};
 use crate::workspace::splits::SplitDirection;
 
-/// Whether a [`ShortcutAction`] should still be dispatched when a text widget
-/// has keyboard focus (e.g. the terminal or its find bar).
-///
-/// These actions are "always-active" and must fire even while the user is
-/// typing into the terminal. All other actions (split, focus, rename, etc.)
-/// are skipped when text input is focused so we don't steal keystrokes
-/// from the terminal — in particular bare `Escape` and `Enter`, which are
-/// bound to `Find` / `FindNext` with `Modifiers::NONE`.
-fn should_dispatch_when_text_focused(action: ShortcutAction) -> bool {
-    matches!(
-        action,
-        ShortcutAction::Quit
-            | ShortcutAction::Copy
-            | ShortcutAction::FontSizeUp
-            | ShortcutAction::FontSizeDown
-            | ShortcutAction::FontSizeReset
-            | ShortcutAction::ClearScreen
-            | ShortcutAction::ClearScrollback
-            | ShortcutAction::PasteImage
-    )
-}
-
-/// Normalize raw egui modifiers into the canonical form used for
-/// [`crate::shortcuts::ShortcutRegistry`] lookups.
-///
-/// - Always clears `mac_cmd`: egui-winit sets `mac_cmd` alongside `command`
-///   for every physical Cmd press on macOS, but registry entries built from
-///   `Modifiers::COMMAND` never set it — left alone, the `HashMap`'s derived
-///   `Eq`/`Hash` would miss on every Cmd chord even though `command` matches.
-/// - Leaves `ctrl` untouched on macOS. Bare `Ctrl` chords (`⌃1..9 →
-///   SelectSurface`, registered via `ctrl_only()`) and combined `Ctrl+Cmd`
-///   bracket chords (registered via `Modifiers::CTRL | Modifiers::COMMAND`)
-///   both need the physical Ctrl bit to reach the registry unchanged.
-/// - On Linux/Windows, collapses `command` into `ctrl` since the registry's
-///   `cmd_ctrl()`-family helpers store `Modifiers::CTRL` as the canonical
-///   app-shortcut modifier there.
-fn normalize_lookup_mods(mut modifiers: egui::Modifiers) -> egui::Modifiers {
-    modifiers.mac_cmd = false;
-    if !cfg!(target_os = "macos") && modifiers.command {
-        modifiers.command = false;
-        modifiers.ctrl = true;
-    }
-    modifiers
-}
-
 impl RmuxApp {
-    /// Handle global keyboard shortcuts for workspace/pane operations.
+    /// Poll the shortcut manager and dispatch any fired commands.
+    ///
+    /// Must run **before** the terminal UI so `consume_shortcut` removes
+    /// reserved chords from the input stream — otherwise on Linux (where
+    /// Ctrl sets both `ctrl` and `command`) the PTY steals the keystroke
+    /// and the user has to press twice.
     pub(crate) fn handle_keyboard_shortcuts(&mut self, ctx: &egui::Context) {
-        let input = ctx.input(|i| i.clone());
+        let find_visible = {
+            let ws = self.workspace_manager.active();
+            ws.root
+                .find_pane(ws.active_pane)
+                .and_then(|n| n.active_terminal())
+                .map(|t| t.is_find_visible())
+                .unwrap_or(false)
+        };
+        // Previous-frame text focus is fine for gating bare Escape/Enter.
+        let text_focused = ctx.wants_keyboard_input();
 
-        for event in &input.events {
-            let egui::Event::Key { key, pressed: true, modifiers, .. } = event else {
-                continue;
-            };
+        let commands = self.shortcut_manager.poll(ctx, PollOptions { text_focused, find_visible });
 
-            // On macOS, Cmd is for app shortcuts, Ctrl is for terminal control characters.
-            // On Linux/Windows, both are used for app shortcuts.
-            let mod_active = if cfg!(target_os = "macos") {
-                modifiers.command && !modifiers.ctrl
-            } else {
-                modifiers.command || modifiers.ctrl
-            };
-
-            let lookup_mods = normalize_lookup_mods(*modifiers);
-
-            let Some(action) = self.shortcut_registry.lookup(lookup_mods, *key) else {
-                continue;
-            };
-
-            // Skip focus-dependent actions when a text widget is focused so we
-            // don't steal keystrokes (especially bare Escape/Enter) from the
-            // terminal. Always-active actions fall through.
-            if ctx.wants_keyboard_input() && !should_dispatch_when_text_focused(action) {
-                continue;
-            }
-
-            if self.dispatch_shortcut_action(ctx, action, mod_active) {
-                return; // Quit shortcut stops processing
+        for command in commands {
+            if self.dispatch_command(ctx, command) {
+                break; // Quit
             }
         }
     }
 
-    /// Dispatch a [`ShortcutAction`] to the appropriate handler.
+    /// Dispatch a high-level [`AppCommand`].
     ///
-    /// Returns `true` if the action was a Quit request (which stops further
-    /// shortcut processing).
-    fn dispatch_shortcut_action(
-        &mut self,
-        ctx: &egui::Context,
-        action: ShortcutAction,
-        mod_active: bool,
-    ) -> bool {
-        match action {
-            ShortcutAction::Quit => {
+    /// Returns `true` if the command was Quit (stop further processing).
+    pub(crate) fn dispatch_command(&mut self, ctx: &egui::Context, command: AppCommand) -> bool {
+        match command {
+            AppCommand::Quit => {
                 tracing::info!("Quit shortcut pressed, closing window");
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 return true;
             }
 
-            ShortcutAction::FontSizeUp => {
-                self.set_font_size(1.0);
-            }
-            ShortcutAction::FontSizeDown => {
-                self.set_font_size(-1.0);
-            }
-            ShortcutAction::FontSizeReset => {
-                self.set_font_size(0.0);
-            }
+            AppCommand::FontSizeUp => self.set_font_size(1.0),
+            AppCommand::FontSizeDown => self.set_font_size(-1.0),
+            AppCommand::FontSizeReset => self.set_font_size(0.0),
 
-            ShortcutAction::Copy => {
+            AppCommand::Copy => {
                 if let Some(terminal) = self.active_terminal_mut()
                     && let Some(text) = terminal.copy_selection()
                 {
@@ -123,37 +61,26 @@ impl RmuxApp {
                 }
             }
 
-            ShortcutAction::Find => {
+            AppCommand::Find => {
+                // COMMAND+F toggles; bare Escape (only when find is open) closes.
                 if let Some(term) = self.active_terminal_mut() {
-                    if !mod_active {
-                        // Escape pressed without modifier: close find bar if visible
-                        if term.is_find_visible() {
-                            term.close_find_bar();
-                        }
+                    if term.is_find_visible() {
+                        term.close_find_bar();
                     } else {
-                        // Cmd/Ctrl+F: toggle find bar
                         term.toggle_find();
                     }
                 }
             }
 
-            ShortcutAction::FindNext => {
-                if let Some(term) = self.active_terminal_mut() {
-                    if !mod_active {
-                        // Enter pressed without modifier: find next if find visible
-                        if term.is_find_visible() {
-                            term.find_next_match();
-                        }
-                    } else {
-                        // Cmd/Ctrl+G: find next if find visible
-                        if term.is_find_visible() {
-                            term.find_next_match();
-                        }
-                    }
+            AppCommand::FindNext => {
+                if let Some(term) = self.active_terminal_mut()
+                    && term.is_find_visible()
+                {
+                    term.find_next_match();
                 }
             }
 
-            ShortcutAction::FindPrev => {
+            AppCommand::FindPrev => {
                 if let Some(term) = self.active_terminal_mut()
                     && term.is_find_visible()
                 {
@@ -161,7 +88,7 @@ impl RmuxApp {
                 }
             }
 
-            ShortcutAction::UseSelectionForFind => {
+            AppCommand::UseSelectionForFind => {
                 if let Some(term) = self.active_terminal_mut() {
                     if !term.is_find_visible() {
                         term.toggle_find();
@@ -170,191 +97,180 @@ impl RmuxApp {
                 }
             }
 
-            ShortcutAction::ClearScrollback => {
+            AppCommand::ClearScrollback => {
                 if let Some(term) = self.active_terminal_mut() {
                     term.clear_scrollback();
                     tracing::debug!("Terminal scrollback cleared via shortcut");
                 }
             }
 
-            ShortcutAction::ClearScreen => {
+            AppCommand::ClearScreen => {
                 if let Some(term) = self.active_terminal_mut() {
                     term.send_text("\x0c");
                     tracing::debug!("Terminal screen cleared via shortcut");
                 }
             }
 
-            ShortcutAction::ToggleSidebar => {
+            AppCommand::ToggleSidebar => {
                 self.sidebar.toggle();
                 tracing::debug!("Sidebar toggled via keyboard shortcut");
             }
 
-            ShortcutAction::ToggleNotifications => {
+            AppCommand::ToggleNotifications => {
                 self.notification_panel.toggle();
             }
 
-            ShortcutAction::NewWorkspace => {
+            AppCommand::NewWorkspace => {
                 let count = self.workspace_manager.workspace_count() + 1;
                 let ws = self.create_workspace_with_terminal(format!("Workspace {count}"));
                 tracing::info!(workspace_id = ws, "Created workspace");
             }
 
-            ShortcutAction::SplitRight => {
+            AppCommand::SplitRight => {
                 match self.split_active_with_terminal(SplitDirection::Horizontal) {
                     Ok(pane_id) => tracing::info!(pane_id, "Split right"),
                     Err(e) => tracing::warn!("Split right failed: {e}"),
                 }
             }
 
-            ShortcutAction::SplitDown => {
+            AppCommand::SplitDown => {
                 match self.split_active_with_terminal(SplitDirection::Vertical) {
                     Ok(pane_id) => tracing::info!(pane_id, "Split down"),
                     Err(e) => tracing::warn!("Split down failed: {e}"),
                 }
             }
 
-            ShortcutAction::ClosePane => match self.close_active_pane_with_event() {
+            AppCommand::ClosePane => match self.close_active_pane_with_event() {
                 Ok(()) => tracing::info!("Closed active pane"),
                 Err(e) => tracing::warn!("Close pane failed: {e}"),
             },
 
-            ShortcutAction::OpenBrowserSplit => match self.open_browser_split(None) {
+            AppCommand::OpenBrowserSplit => match self.open_browser_split(None) {
                 Ok(pane_id) => tracing::info!(pane_id, "Opened browser split"),
                 Err(e) => tracing::warn!("Open browser split failed: {e}"),
             },
 
-            ShortcutAction::FocusBrowserUrlBar => {
+            AppCommand::FocusBrowserUrlBar => {
                 if let Some(browser) = self.active_browser_mut() {
                     browser.focus_url_bar = true;
                 }
             }
 
-            ShortcutAction::ReloadBrowser => {
+            AppCommand::ReloadBrowser => {
                 if let Some(browser) = self.active_browser_mut() {
                     let _ = browser.reload();
                     tracing::debug!("Browser reload via shortcut");
                 }
             }
 
-            ShortcutAction::SwitchWorkspace(index) => {
+            AppCommand::SwitchWorkspace(index) => {
                 self.workspace_manager.switch_to(index);
                 tracing::info!(index, "Switched to workspace");
             }
 
-            ShortcutAction::CloseWorkspace => match self.close_active_workspace_with_event() {
+            AppCommand::CloseWorkspace => match self.close_active_workspace_with_event() {
                 Ok(id) => tracing::info!(id, "Closed workspace via shortcut"),
                 Err(e) => tracing::warn!("Close workspace failed: {e}"),
             },
 
-            ShortcutAction::RenameWorkspace => {
+            AppCommand::RenameWorkspace => {
                 self.start_workspace_rename();
             }
 
-            ShortcutAction::ToggleZoom => {
+            AppCommand::ToggleZoom => {
                 self.workspace_manager.toggle_zoom();
             }
 
-            ShortcutAction::EqualizeSplits => {
+            AppCommand::EqualizeSplits | AppCommand::EqualizeSplitsAlt => {
                 self.workspace_manager.equalize_splits();
                 tracing::debug!("Equalized split sizes via shortcut");
             }
 
-            ShortcutAction::PrevWorkspace => {
+            AppCommand::PrevWorkspace | AppCommand::PrevWorkspaceAlt => {
                 self.workspace_manager.switch_prev();
             }
 
-            ShortcutAction::NextWorkspace => {
+            AppCommand::NextWorkspace | AppCommand::NextWorkspaceAlt => {
                 self.workspace_manager.switch_next();
             }
 
-            ShortcutAction::FocusLeft => {
+            AppCommand::FocusLeft => {
                 self.workspace_manager.active_mut().focus_left();
             }
-
-            ShortcutAction::FocusRight => {
+            AppCommand::FocusRight => {
                 self.workspace_manager.active_mut().focus_right();
             }
-
-            ShortcutAction::FocusUp => {
+            AppCommand::FocusUp => {
                 self.workspace_manager.active_mut().focus_up();
             }
-
-            ShortcutAction::FocusDown => {
+            AppCommand::FocusDown => {
                 self.workspace_manager.active_mut().focus_down();
             }
 
-            // --- cmux shortcuts (W4.1) ---
-            ShortcutAction::NewSurface => {
+            AppCommand::NewSurface => {
                 if let Err(e) = self.new_surface_with_terminal(None) {
                     tracing::warn!("New surface failed: {e}");
                 }
             }
 
-            ShortcutAction::NextSurface => {
+            AppCommand::NextSurface => {
                 if let Err(e) = self.workspace_manager.next_surface_in_active() {
                     tracing::warn!("Next surface failed: {e}");
                 }
             }
 
-            ShortcutAction::PreviousSurface => {
+            AppCommand::PreviousSurface => {
                 if let Err(e) = self.workspace_manager.previous_surface_in_active() {
                     tracing::warn!("Previous surface failed: {e}");
                 }
             }
 
-            ShortcutAction::SelectSurface(idx) => {
+            AppCommand::SelectSurface(idx) => {
                 if let Err(e) = self.workspace_manager.select_surface_in_active(idx) {
                     tracing::warn!("Select surface {idx} failed: {e}");
                 }
             }
 
-            ShortcutAction::RenameTab => {
-                // UI for inline tab-rename is not yet wired (see W3.2 follow-up
-                // in worker-notes.md). The Cmd+R chord is currently bound to
-                // ReloadBrowser, so this arm is only reachable when the
-                // dispatcher manually routes here.
+            AppCommand::RenameTab => {
                 tracing::info!("Rename tab requested (UI not yet wired)");
             }
 
-            ShortcutAction::CloseTab => {
+            AppCommand::CloseTab => {
                 if self.workspace_manager.terminal_count() > 1 {
                     match self.workspace_manager.close_surface_in_active_with_capture(None) {
                         Ok(_) => tracing::debug!("Closed active surface"),
                         Err(e) => tracing::warn!("Close tab failed: {e}"),
                     }
                 } else {
-                    // Fall through to close pane when only one surface is open.
                     match self.close_active_pane_with_event() {
-                        Ok(()) => tracing::info!("Closed active pane (via Cmd+W fallback)"),
+                        Ok(()) => tracing::info!("Closed active pane (via CloseTab fallback)"),
                         Err(e) => tracing::warn!("Close pane failed: {e}"),
                     }
                 }
             }
 
-            ShortcutAction::CloseOtherTabs => {
+            AppCommand::CloseOtherTabs => {
                 if let Err(e) = self.workspace_manager.close_other_surfaces_in_active() {
                     tracing::warn!("Close other tabs failed: {e}");
                 }
             }
 
-            ShortcutAction::ReopenLastClosed => {
-                match self.workspace_manager.reopen_last_closed_tab() {
-                    Ok(()) => tracing::info!("Reopened last closed tab"),
-                    Err(crate::workspace::model::WorkspaceError::NoClosedTabs) => {
-                        tracing::warn!("Reopen last closed: no closed tabs to restore");
-                    }
-                    Err(e) => tracing::warn!("Reopen last closed failed: {e}"),
+            AppCommand::ReopenLastClosed => match self.workspace_manager.reopen_last_closed_tab() {
+                Ok(()) => tracing::info!("Reopened last closed tab"),
+                Err(crate::workspace::model::WorkspaceError::NoClosedTabs) => {
+                    tracing::warn!("Reopen last closed: no closed tabs to restore");
                 }
-            }
+                Err(e) => tracing::warn!("Reopen last closed failed: {e}"),
+            },
 
-            ShortcutAction::ToggleCopyMode => {
+            AppCommand::ToggleCopyMode => {
                 if let Some(t) = self.active_terminal_mut() {
                     let now = t.toggle_copy_mode();
                     tracing::debug!(copy_mode = now, "Toggled copy mode");
                 }
             }
 
-            ShortcutAction::PasteImage => {
+            AppCommand::PasteImage => {
                 if let Some(t) = self.active_terminal_mut() {
                     if t.try_paste_image() {
                         tracing::info!("Pasted clipboard image to terminal");
@@ -364,37 +280,22 @@ impl RmuxApp {
                 }
             }
 
-            ShortcutAction::SplitBrowserRight => {
+            AppCommand::SplitBrowserRight => {
+                tracing::warn!("Browser split not yet implemented");
+            }
+            AppCommand::SplitBrowserDown => {
                 tracing::warn!("Browser split not yet implemented");
             }
 
-            ShortcutAction::SplitBrowserDown => {
-                tracing::warn!("Browser split not yet implemented");
-            }
-
-            ShortcutAction::ToggleRightSidebar => {
+            AppCommand::ToggleRightSidebar => {
                 self.sidebar.toggle_right();
             }
 
-            ShortcutAction::NewWindow => {
+            AppCommand::NewWindow => {
                 tracing::warn!("New window not yet implemented (multi-window support planned)");
             }
-
-            ShortcutAction::CloseWindow => {
+            AppCommand::CloseWindow => {
                 tracing::warn!("Close window not yet implemented (multi-window support planned)");
-            }
-
-            ShortcutAction::EqualizeSplitsAlt => {
-                self.workspace_manager.equalize_splits();
-                tracing::debug!("Equalized split sizes via shortcut (alt binding)");
-            }
-
-            ShortcutAction::PrevWorkspaceAlt => {
-                self.workspace_manager.switch_prev();
-            }
-
-            ShortcutAction::NextWorkspaceAlt => {
-                self.workspace_manager.switch_next();
             }
         }
 
@@ -402,132 +303,38 @@ impl RmuxApp {
     }
 }
 
+/// Access to the manager type for docs / external wiring.
+#[allow(dead_code)]
+pub type Manager = ShortcutManager;
+
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    // --- Always-active actions (must dispatch even when text is focused) ---
+    use crate::shortcut_manager::{AppCommand, PollOptions, ShortcutManager, primary_mod_pressed};
+    use egui::Key;
 
     #[test]
-    fn quit_dispatches_when_text_focused() {
-        assert!(should_dispatch_when_text_focused(ShortcutAction::Quit));
+    fn manager_resolves_core_chords() {
+        let m = ShortcutManager::with_defaults();
+        let p = primary_mod_pressed();
+        assert_eq!(m.resolve(p, Key::T), Some(AppCommand::NewSurface));
+        assert_eq!(m.resolve(p, Key::D), Some(AppCommand::SplitRight));
+        assert_eq!(m.resolve(p, Key::B), Some(AppCommand::ToggleSidebar));
     }
 
     #[test]
-    fn copy_dispatches_when_text_focused() {
-        assert!(should_dispatch_when_text_focused(ShortcutAction::Copy));
-    }
-
-    #[test]
-    fn font_size_up_dispatches_when_text_focused() {
-        assert!(should_dispatch_when_text_focused(ShortcutAction::FontSizeUp));
-    }
-
-    #[test]
-    fn font_size_down_dispatches_when_text_focused() {
-        assert!(should_dispatch_when_text_focused(ShortcutAction::FontSizeDown));
-    }
-
-    #[test]
-    fn font_size_reset_dispatches_when_text_focused() {
-        assert!(should_dispatch_when_text_focused(ShortcutAction::FontSizeReset));
-    }
-
-    #[test]
-    fn clear_screen_dispatches_when_text_focused() {
-        assert!(should_dispatch_when_text_focused(ShortcutAction::ClearScreen));
-    }
-
-    #[test]
-    fn clear_scrollback_dispatches_when_text_focused() {
-        assert!(should_dispatch_when_text_focused(ShortcutAction::ClearScrollback));
-    }
-
-    #[test]
-    fn paste_image_dispatches_when_text_focused() {
-        assert!(should_dispatch_when_text_focused(ShortcutAction::PasteImage));
-    }
-
-    // --- Focus-dependent actions (must be skipped when text is focused) ---
-
-    #[test]
-    fn find_skipped_when_text_focused() {
-        assert!(!should_dispatch_when_text_focused(ShortcutAction::Find));
-    }
-
-    #[test]
-    fn find_next_skipped_when_text_focused() {
-        assert!(!should_dispatch_when_text_focused(ShortcutAction::FindNext));
-    }
-
-    #[test]
-    fn switch_workspace_skipped_when_text_focused() {
-        assert!(!should_dispatch_when_text_focused(ShortcutAction::SwitchWorkspace(0)));
-    }
-
-    #[test]
-    fn split_right_skipped_when_text_focused() {
-        assert!(!should_dispatch_when_text_focused(ShortcutAction::SplitRight));
-    }
-
-    #[test]
-    fn split_down_skipped_when_text_focused() {
-        assert!(!should_dispatch_when_text_focused(ShortcutAction::SplitDown));
-    }
-
-    #[test]
-    fn focus_left_skipped_when_text_focused() {
-        assert!(!should_dispatch_when_text_focused(ShortcutAction::FocusLeft));
-    }
-
-    #[test]
-    fn toggle_sidebar_skipped_when_text_focused() {
-        assert!(!should_dispatch_when_text_focused(ShortcutAction::ToggleSidebar));
-    }
-
-    #[test]
-    fn rename_workspace_skipped_when_text_focused() {
-        assert!(!should_dispatch_when_text_focused(ShortcutAction::RenameWorkspace));
-    }
-
-    // --- normalize_lookup_mods (macOS) ---
-    //
-    // These assert against `cfg!(target_os = "macos")` behavior, matching
-    // the dev/CI environment this crate targets.
-
-    #[test]
-    fn bare_ctrl_survives_normalization_for_select_surface() {
-        // ⌃1 (SelectSurface) must reach the registry as plain Ctrl, matching
-        // `ctrl_only()`. Regression test: a prior version unconditionally
-        // zeroed `ctrl` on macOS, which made `⌃1..9` unreachable.
-        let raw = egui::Modifiers { ctrl: true, ..Default::default() };
-        let normalized = normalize_lookup_mods(raw);
-        assert_eq!(normalized, egui::Modifiers::CTRL);
-    }
-
-    #[test]
-    fn bare_cmd_normalizes_to_command_only() {
-        // Physical Cmd sets both `command` and `mac_cmd` on macOS; only
-        // `command` should survive, matching `cmd_ctrl()`'s registry entries.
-        let raw = egui::Modifiers { command: true, mac_cmd: true, ..Default::default() };
-        let normalized = normalize_lookup_mods(raw);
-        assert_eq!(normalized, egui::Modifiers::COMMAND);
-    }
-
-    #[test]
-    fn ctrl_cmd_bracket_chord_keeps_both_bits() {
-        // ⌃⌘[ / ⌃⌘] (PrevWorkspace/NextWorkspace) are registered as
-        // `Modifiers::CTRL | Modifiers::COMMAND`; both bits must survive.
-        let raw =
-            egui::Modifiers { ctrl: true, command: true, mac_cmd: true, ..Default::default() };
-        let normalized = normalize_lookup_mods(raw);
-        assert_eq!(normalized, egui::Modifiers::CTRL | egui::Modifiers::COMMAND);
-    }
-
-    #[test]
-    fn cmd_alt_arrow_keeps_alt_and_command_without_ctrl() {
-        let raw = egui::Modifiers { command: true, mac_cmd: true, alt: true, ..Default::default() };
-        let normalized = normalize_lookup_mods(raw);
-        assert_eq!(normalized, egui::Modifiers::COMMAND | egui::Modifiers::ALT);
+    fn find_escape_gated() {
+        let m = ShortcutManager::with_defaults();
+        assert!(
+            m.resolve_with_options(egui::Modifiers::NONE, Key::Escape, PollOptions::default())
+                .is_none()
+        );
+        assert_eq!(
+            m.resolve_with_options(
+                egui::Modifiers::NONE,
+                Key::Escape,
+                PollOptions { find_visible: true, text_focused: false },
+            ),
+            Some(AppCommand::Find)
+        );
     }
 }

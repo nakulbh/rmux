@@ -18,14 +18,9 @@ use crate::ui::theme;
 pub fn primary_mod_held(ctx: &egui::Context) -> bool {
     ctx.input(|i| {
         let m = i.modifiers;
-        let primary = if cfg!(target_os = "macos") {
-            // egui-winit sets both `command` and `mac_cmd` for the physical
-            // Command key; either bit means the key is down.
-            m.command || m.mac_cmd
-        } else {
-            m.ctrl
-        };
-        primary && !m.shift && !m.alt
+        // egui's logical `command` is ⌘ on macOS and Ctrl on Linux/Windows.
+        // Prefer it over platform-specific `ctrl` / `mac_cmd` checks.
+        m.command && !m.shift && !m.alt
     })
 }
 
