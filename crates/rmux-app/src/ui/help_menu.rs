@@ -454,10 +454,10 @@ impl HelpMenu {
                             .inner_margin(egui::Margin::symmetric(14, 8))
                             .show(ui, |ui| {
                                 ui.horizontal(|ui| {
-                                    // Info circle glyph
-                                    ui.label(
-                                        egui::RichText::new("ⓘ").size(14.0_f32).color(p.accent_fg),
-                                    );
+                                    // Lucide info icon as geometry — fonts often lack ⓘ
+                                    // and render it as a hollow box (□).
+                                    paint_info_icon(ui, p.accent_fg, 14.0_f32);
+                                    ui.add_space(4.0_f32);
                                     ui.label(
                                         egui::RichText::new(label)
                                             .size(13.0_f32)
@@ -486,6 +486,33 @@ enum HelpAction {
 enum MenuTrailing {
     Label(&'static str),
     External,
+}
+
+/// Paint a Lucide-style info icon (circle + stem + top dot) without relying
+/// on a font glyph. Matches:
+/// `<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>`
+fn paint_info_icon(ui: &mut egui::Ui, color: egui::Color32, size: f32) {
+    let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(size), egui::Sense::hover());
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    let c = rect.center();
+    // Scale from Lucide's 24×24 viewBox (r=10 → ~41.7% of half-size).
+    let r = size * 0.42_f32;
+    let stroke = egui::Stroke::new((size * 0.085_f32).clamp(1.25_f32, 2.0_f32), color);
+    let painter = ui.painter();
+
+    painter.circle_stroke(c, r, stroke);
+
+    // Stem: M12 16v-4 → from ~2/3 down to center.
+    let stem_top = egui::Pos2::new(c.x, c.y - r * 0.05_f32);
+    let stem_bot = egui::Pos2::new(c.x, c.y + r * 0.45_f32);
+    painter.line_segment([stem_top, stem_bot], stroke);
+
+    // Top dot: M12 8h.01 — small filled circle near the top of the ring.
+    let dot_y = c.y - r * 0.42_f32;
+    let dot_r = (size * 0.07_f32).max(1.1_f32);
+    painter.circle_filled(egui::Pos2::new(c.x, dot_y), dot_r, color);
 }
 
 fn menu_item(ui: &mut egui::Ui, label: &str, trailing: Option<MenuTrailing>) -> egui::Response {
