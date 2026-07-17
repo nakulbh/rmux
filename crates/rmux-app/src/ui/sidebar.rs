@@ -7,6 +7,7 @@
 //! switch shortcuts on each card.
 
 use crate::notifications::NotificationManager;
+use crate::ui::help_menu::HelpMenu;
 use crate::workspace::WorkspaceManager;
 use crate::workspace::model::WorkspaceId;
 
@@ -111,11 +112,17 @@ impl SidebarView {
     }
 
     /// Render the sidebar. Returns a close action if the user clicked ×.
+    ///
+    /// `help` owns the cmux-style circle-question control in the footer
+    /// (bottom-left). Its screen rect is returned via `help_button_rect`
+    /// so the popup can anchor above the button.
     pub fn show(
         &mut self,
         ctx: &egui::Context,
         manager: &mut WorkspaceManager,
         notifications: &NotificationManager,
+        help: &mut HelpMenu,
+        help_button_rect: &mut Option<egui::Rect>,
     ) -> Option<SidebarAction> {
         if !self.visible {
             return None;
@@ -131,19 +138,28 @@ impl SidebarView {
             .default_width(crate::ui::theme::metrics::SIDEBAR_DEFAULT_WIDTH)
             .resizable(true)
             .show(ctx, |ui| {
-                action = self.render_sidebar(ui, manager, notifications, show_hints);
+                action = self.render_sidebar(
+                    ui,
+                    manager,
+                    notifications,
+                    show_hints,
+                    help,
+                    help_button_rect,
+                );
             });
 
         action
     }
 
-    /// Render header, cards, footer. Returns close action if any.
+    /// Render header, cards, footer (help button). Returns close action if any.
     fn render_sidebar(
         &mut self,
         ui: &mut egui::Ui,
         manager: &mut WorkspaceManager,
         notifications: &NotificationManager,
         show_hints: bool,
+        help: &mut HelpMenu,
+        help_button_rect: &mut Option<egui::Rect>,
     ) -> Option<SidebarAction> {
         let workspaces: Vec<TabData> = manager
             .workspaces()
@@ -158,17 +174,13 @@ impl SidebarView {
         let can_close = workspaces.len() > 1;
         let mut action = None;
 
+        // bottom_up so the help control stays pinned to the lower-left corner.
+        // No divider above the icon — matches cmux (quiet glyph in empty footer).
         ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-            ui.add_space(2.0_f32);
-            let toggle_hint =
-                if cfg!(target_os = "macos") { "\u{2318}B to toggle" } else { "Ctrl+B to toggle" };
-            ui.label(egui::RichText::new(toggle_hint).size(10.0_f32).color(p().text_disabled));
             ui.add_space(4.0_f32);
-            let (line_rect, _) = ui.allocate_exact_size(
-                egui::Vec2::new(ui.available_width(), 1.0_f32),
-                egui::Sense::hover(),
-            );
-            ui.painter().hline(line_rect.x_range(), line_rect.center().y, (1.0_f32, p().border));
+            // Small circle-question — left corner of the sidebar footer.
+            let help_resp = help.show_button(ui);
+            *help_button_rect = Some(help_resp.rect);
             ui.add_space(4.0_f32);
 
             ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {

@@ -4,12 +4,14 @@
 //!
 //! - `top_bar` — cmux-style top chrome (left toolbar + workspace tabs)
 //! - `sidebar` — cmux-style workspace cards (name, hover ×, rename)
+//! - `help_menu` — circle-question help control (sidebar bottom-left)
 //! - `workspace_view` — Pane tree renderer for split layouts
 //! - `terminal_pane` — Terminal pane widget (PTY + rendering + input)
 //! - `notification_panel` — Right-side notification list panel
 //! - `status_bar` — Bottom status bar (workspace context, counts)
 //! - `shortcut_hints` — hold-⌘ / hold-Ctrl chord overlays (cmux style)
 
+pub mod help_menu;
 pub mod notification_panel;
 pub mod settings_panel;
 pub mod shortcut_hints;
@@ -20,6 +22,7 @@ pub mod theme;
 pub mod top_bar;
 pub mod workspace_view;
 
+pub use help_menu::HelpMenu;
 pub use notification_panel::NotificationPanel;
 pub use settings_panel::SettingsPanel;
 pub use terminal_pane::{DEFAULT_FONT_SIZE, TerminalPane};

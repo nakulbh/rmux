@@ -435,28 +435,16 @@ impl TerminalPane {
                     continue;
                 }
 
-                // Cmd-only chords (macOS) are reserved for app-level shortcuts
-                // (split, close, new workspace, etc.) — never forward to the shell.
-                // Physical Ctrl is still forwarded so Ctrl+C/Ctrl+D keep working.
+                // App shortcuts use egui's logical `command` modifier (⌘ on
+                // macOS, Ctrl on Linux/Windows). The ShortcutManager consumes
+                // those chords before this UI runs; any remaining `command`
+                // events that still match reserved app keys must not reach
+                // the PTY (Linux previously failed here because it required
+                // `ctrl && !command`, but egui sets BOTH bits for Ctrl).
                 //
-                // Note: Cmd+V specifically can never reach this branch as a key
-                // press — egui-winit intercepts it at the windowing layer as a
-                // paste command and swallows the event entirely when the OS
-                // clipboard doesn't hold text (see ShortcutAction::PasteImage's
-                // doc comment in shortcuts.rs for why image paste uses Cmd+Shift+I
-                // instead, dispatched through the global shortcut registry).
-                if modifiers.command && !modifiers.ctrl {
-                    continue;
-                }
-
-                // On non-macOS, specific Ctrl chords are reserved for app shortcuts.
-                // On macOS, Ctrl is for terminal control characters (Ctrl+C=SIGINT,
-                // Ctrl+D=EOF, etc.) and must always be forwarded to the shell.
-                if !cfg!(target_os = "macos")
-                    && modifiers.ctrl
-                    && !modifiers.command
-                    && self.is_reserved_app_key(key)
-                {
+                // Physical Ctrl without `command` only exists on macOS and is
+                // forwarded for terminal control characters (SIGINT, EOF, …).
+                if modifiers.command && self.is_reserved_app_key(key) {
                     continue;
                 }
 
@@ -498,12 +486,11 @@ impl TerminalPane {
         }
     }
 
-    /// Check if a key is claimed by an app-level shortcut.
+    /// Keys that pair with the logical `command` modifier for app shortcuts.
     ///
-    /// On non-macOS platforms, specific Ctrl chords are reserved for app
-    /// shortcuts (split, close, new workspace, etc.) and should not be
-    /// forwarded to the terminal shell. On macOS, Ctrl is always forwarded
-    /// (the terminal uses Ctrl for control characters, app shortcuts use Cmd).
+    /// Defense-in-depth: the ShortcutManager normally consumes these before
+    /// the terminal runs. Kept in sync with default bindings in
+    /// `shortcut_manager.rs`.
     fn is_reserved_app_key(&self, key: &egui::Key) -> bool {
         match key {
             egui::Key::B
@@ -511,13 +498,25 @@ impl TerminalPane {
             | egui::Key::E
             | egui::Key::F
             | egui::Key::G
+            | egui::Key::I
             | egui::Key::K
+            | egui::Key::L
+            | egui::Key::M
             | egui::Key::N
             | egui::Key::Q
+            | egui::Key::R
+            | egui::Key::T
             | egui::Key::W
             | egui::Key::Plus
             | egui::Key::Equals
             | egui::Key::Minus
+            | egui::Key::OpenBracket
+            | egui::Key::CloseBracket
+            | egui::Key::Enter
+            | egui::Key::ArrowLeft
+            | egui::Key::ArrowRight
+            | egui::Key::ArrowUp
+            | egui::Key::ArrowDown
             | egui::Key::Num0
             | egui::Key::Num1
             | egui::Key::Num2
@@ -528,7 +527,8 @@ impl TerminalPane {
             | egui::Key::Num7
             | egui::Key::Num8
             | egui::Key::Num9 => true,
-            // Ctrl+C is only reserved when there's a text selection to copy
+            // COMMAND+C only reserved when there is a selection to copy;
+            // otherwise Linux still needs Ctrl+C → SIGINT for the shell.
             egui::Key::C => self.state.copy_selected_text().is_some(),
             _ => false,
         }

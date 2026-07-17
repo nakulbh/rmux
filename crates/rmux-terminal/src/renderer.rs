@@ -270,7 +270,7 @@ fn paint_special_shape(painter: &egui::Painter, cell: Rect, c: char, fg: Color32
                 Pos2::new(left + w * 0.15, top + h * 0.15),
                 Pos2::new(left + w * 0.85, top + h * 0.85),
             );
-            painter.rect_stroke(inset, 0.0, Stroke::new(1.5, fg), egui::StrokeKind::Inside);
+            painter.rect_stroke(inset, 0.0, Stroke::new(1.5_f32, fg), egui::StrokeKind::Inside);
         }
         '\u{25AA}' => fill(0.30, 0.30, 0.70, 0.70), // ▪
         '\u{25AB}' => {
@@ -278,21 +278,21 @@ fn paint_special_shape(painter: &egui::Painter, cell: Rect, c: char, fg: Color32
                 Pos2::new(left + w * 0.30, top + h * 0.30),
                 Pos2::new(left + w * 0.70, top + h * 0.70),
             );
-            painter.rect_stroke(inset, 0.0, Stroke::new(1.2, fg), egui::StrokeKind::Inside);
+            painter.rect_stroke(inset, 0.0, Stroke::new(1.2_f32, fg), egui::StrokeKind::Inside);
         }
 
         // Circles / diamonds
         '\u{25CF}' => fill_circle(painter, cell, fg, 0.62), // ●
-        '\u{25CB}' => stroke_circle(painter, cell, fg, 0.62, 1.5), // ○
+        '\u{25CB}' => stroke_circle(painter, cell, fg, 0.62, 1.5_f32), // ○
         '\u{25C9}' => {
             // ◉ fisheye
-            stroke_circle(painter, cell, fg, 0.70, 1.5);
+            stroke_circle(painter, cell, fg, 0.70, 1.5_f32);
             fill_circle(painter, cell, fg, 0.35);
         }
         '\u{25CE}' => {
             // ◎ bullseye
-            stroke_circle(painter, cell, fg, 0.70, 1.4);
-            stroke_circle(painter, cell, fg, 0.40, 1.2);
+            stroke_circle(painter, cell, fg, 0.70, 1.4_f32);
+            stroke_circle(painter, cell, fg, 0.40, 1.2_f32);
         }
         '\u{25C6}' => {
             // ◆ diamond
@@ -324,7 +324,7 @@ fn paint_special_shape(painter: &egui::Painter, cell: Rect, c: char, fg: Color32
                     Pos2::new(cx, cy + ry),
                     Pos2::new(cx - rx, cy),
                 ],
-                Stroke::new(1.4, fg),
+                Stroke::new(1.4_f32, fg),
             ));
         }
         '\u{25C8}' => {
@@ -340,7 +340,7 @@ fn paint_special_shape(painter: &egui::Painter, cell: Rect, c: char, fg: Color32
                     Pos2::new(cx, cy + ry),
                     Pos2::new(cx - rx, cy),
                 ],
-                Stroke::new(1.3, fg),
+                Stroke::new(1.3_f32, fg),
             ));
             fill_circle(painter, cell, fg, 0.22);
         }

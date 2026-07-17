@@ -25,6 +25,7 @@ mod app;
 mod browser;
 mod notifications;
 mod shortcut_handler;
+mod shortcut_manager;
 mod shortcuts;
 mod ui;
 mod workspace;
