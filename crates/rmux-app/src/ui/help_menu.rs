@@ -8,7 +8,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use crate::ui::theme;
-use crate::update::{self, UpdateCheckOutcome, UpdateStatus};
+use crate::update::{self, ApplyUpdateOutcome, UpdateCheckOutcome, UpdateSource, UpdateStatus};
 
 /// Official project URLs (open in the system browser).
 const URL_GITHUB: &str = "https://github.com/nakulbh/rmux";
@@ -27,30 +27,54 @@ const ICON_R: f32 = 6.0_f32;
 
 /// Minimum time to show the spinner so it doesn't flash.
 const CHECK_MIN_DISPLAY: Duration = Duration::from_millis(600);
-/// Max wait for the background thread before reporting a timeout error.
+/// Max wait for the background check before reporting a timeout error.
 const CHECK_TIMEOUT: Duration = Duration::from_secs(20);
-/// How long a finished toast stays on screen.
-const TOAST_HOLD: Duration = Duration::from_secs(5);
+/// Install can compile from source — allow a long window.
+const INSTALL_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// How long passive result toasts stay on screen.
+const TOAST_HOLD: Duration = Duration::from_secs(6);
+/// Keep "Update Available" visible long enough to click and install.
+const AVAILABLE_HOLD: Duration = Duration::from_secs(60);
+/// Keep "Updated · click to restart" until the user acts (or times out).
+const RESTART_HOLD: Duration = Duration::from_secs(120);
 
-/// Finished toast kind shown after a GitHub check.
+/// Finished toast kind after a check or install.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ToastResult {
     NoUpdates,
-    Available { label: String, url: String },
-    Failed { message: String },
+    /// Click starts a system install of the remote build.
+    Available {
+        label: String,
+        url: String,
+        source: UpdateSource,
+    },
+    Failed {
+        message: String,
+    },
+    /// Install succeeded — click relaunches the new binary and quits.
+    Installed {
+        binary_path: String,
+        installed_ref: String,
+    },
 }
 
-/// In-progress or finished update-check toast state.
+/// In-progress or finished update toast state.
 #[derive(Debug)]
 enum UpdateToast {
-    /// Spinner toast; result arrives on `rx` from a background thread.
+    /// Spinner while querying GitHub.
     Checking {
         started: Instant,
         rx: mpsc::Receiver<UpdateCheckOutcome>,
-        /// Cached outcome if the thread finished before the min display time.
         ready: Option<UpdateCheckOutcome>,
     },
-    /// Result pill; auto-dismisses after a few seconds.
+    /// Spinner while `install.sh` builds/installs (can take minutes).
+    Installing {
+        started: Instant,
+        label: String,
+        rx: mpsc::Receiver<ApplyUpdateOutcome>,
+        ready: Option<ApplyUpdateOutcome>,
+    },
+    /// Result pill.
     Done { result: ToastResult, since: Instant },
 }
 
@@ -93,8 +117,9 @@ impl HelpMenu {
 
     /// Start a background GitHub update check and show the spinner toast.
     pub fn start_update_check(&mut self) {
-        // Don't stack concurrent checks.
-        if matches!(self.toast, Some(UpdateToast::Checking { .. })) {
+        // Don't stack concurrent checks / installs.
+        if matches!(self.toast, Some(UpdateToast::Checking { .. } | UpdateToast::Installing { .. }))
+        {
             return;
         }
         let rx = update::spawn_check();
@@ -102,16 +127,25 @@ impl HelpMenu {
         tracing::info!("Update check started (GitHub Releases + main commit)");
     }
 
-    /// Advance toast timers and poll the background check. Call once per frame.
+    /// Start installing the available update into the system (background).
+    fn start_apply_update(&mut self, source: UpdateSource, label: String) {
+        if matches!(self.toast, Some(UpdateToast::Installing { .. })) {
+            return;
+        }
+        let rx = update::spawn_apply_update(source, label.clone());
+        self.toast =
+            Some(UpdateToast::Installing { started: Instant::now(), label, rx, ready: None });
+        tracing::info!(?source, "system update install started");
+    }
+
+    /// Advance toast timers and poll background work. Call once per frame.
     fn tick_toast(&mut self) {
-        // Split borrow: take toast, mutate, put back.
         let Some(toast) = self.toast.take() else {
             return;
         };
 
         let next = match toast {
             UpdateToast::Checking { started, rx, mut ready } => {
-                // Non-blocking poll for the background result.
                 if ready.is_none() {
                     match rx.try_recv() {
                         Ok(outcome) => ready = Some(outcome),
@@ -134,7 +168,6 @@ impl HelpMenu {
                             since: Instant::now(),
                         })
                     } else {
-                        // Keep spinner until min display time.
                         Some(UpdateToast::Checking { started, rx, ready: Some(outcome) })
                     }
                 } else if elapsed >= CHECK_TIMEOUT {
@@ -148,8 +181,43 @@ impl HelpMenu {
                     Some(UpdateToast::Checking { started, rx, ready: None })
                 }
             }
+            UpdateToast::Installing { started, label, rx, mut ready } => {
+                if ready.is_none() {
+                    match rx.try_recv() {
+                        Ok(outcome) => ready = Some(outcome),
+                        Err(mpsc::TryRecvError::Empty) => {}
+                        Err(mpsc::TryRecvError::Disconnected) => {
+                            ready = Some(ApplyUpdateOutcome::Failed {
+                                message: "install thread ended unexpectedly".into(),
+                            });
+                        }
+                    }
+                }
+
+                let elapsed = started.elapsed();
+                if let Some(outcome) = ready {
+                    Some(UpdateToast::Done {
+                        result: toast_result_from_apply(outcome),
+                        since: Instant::now(),
+                    })
+                } else if elapsed >= INSTALL_TIMEOUT {
+                    Some(UpdateToast::Done {
+                        result: ToastResult::Failed {
+                            message: "install timed out (still building?)".into(),
+                        },
+                        since: Instant::now(),
+                    })
+                } else {
+                    Some(UpdateToast::Installing { started, label, rx, ready: None })
+                }
+            }
             UpdateToast::Done { result, since } => {
-                if since.elapsed() >= TOAST_HOLD {
+                let hold = match &result {
+                    ToastResult::Available { .. } => AVAILABLE_HOLD,
+                    ToastResult::Installed { .. } => RESTART_HOLD,
+                    _ => TOAST_HOLD,
+                };
+                if since.elapsed() >= hold {
                     None
                 } else {
                     Some(UpdateToast::Done { result, since })
@@ -476,10 +544,17 @@ impl HelpMenu {
         };
         let p = theme::palette();
 
-        // Clone data needed for interaction (toast stays owned by self).
-        let click_url = match toast {
-            UpdateToast::Done { result: ToastResult::Available { url, .. }, .. } => {
-                Some(url.clone())
+        // Interaction payloads (clone so we can mutate self after the paint).
+        enum ClickAction {
+            Install { source: UpdateSource, label: String },
+            Restart { binary_path: String },
+        }
+        let click = match toast {
+            UpdateToast::Done { result: ToastResult::Available { label, source, .. }, .. } => {
+                Some(ClickAction::Install { source: *source, label: label.clone() })
+            }
+            UpdateToast::Done { result: ToastResult::Installed { binary_path, .. }, .. } => {
+                Some(ClickAction::Restart { binary_path: binary_path.clone() })
             }
             _ => None,
         };
@@ -489,43 +564,48 @@ impl HelpMenu {
             .anchor(egui::Align2::CENTER_BOTTOM, egui::Vec2::new(0.0_f32, -48.0_f32))
             .show(ctx, |ui| match toast {
                 UpdateToast::Checking { .. } => {
-                    egui::Frame::NONE
-                        .fill(p.panel_bg)
-                        .stroke(egui::Stroke::new(1.0_f32, p.border))
-                        .corner_radius(egui::CornerRadius::same(20))
-                        .inner_margin(egui::Margin::symmetric(14, 8))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.spinner();
-                                ui.label(
-                                    egui::RichText::new("Checking for Updates…")
-                                        .size(13.0_f32)
-                                        .color(p.text_primary),
-                                );
-                            });
-                        });
+                    spinner_toast(ui, &p, "Checking for Updates…");
+                }
+                UpdateToast::Installing { label, started, .. } => {
+                    let mins = started.elapsed().as_secs() / 60;
+                    let text = if mins == 0 {
+                        format!("Updating rmux · {label}…")
+                    } else {
+                        format!("Updating rmux · {label}… ({mins}m)")
+                    };
+                    spinner_toast(ui, &p, &text);
                 }
                 UpdateToast::Done { result, .. } => {
-                    let (fill, label) = match result {
-                        ToastResult::NoUpdates => (p.accent, "No Updates Available".to_string()),
-                        ToastResult::Available { label, .. } => {
-                            (p.success, format!("Update Available · {label}"))
-                        }
-                        ToastResult::Failed { message } => {
-                            (p.panel_bg, format!("Update check failed · {message}"))
-                        }
+                    let (fill, label, stroke, text_color, hover) = match result {
+                        ToastResult::NoUpdates => (
+                            p.accent,
+                            "No Updates Available".to_string(),
+                            egui::Stroke::NONE,
+                            p.accent_fg,
+                            None,
+                        ),
+                        ToastResult::Available { label, .. } => (
+                            p.success,
+                            format!("Update Available · {label}  ·  Click to install"),
+                            egui::Stroke::NONE,
+                            p.accent_fg,
+                            Some("Download, build, and install into ~/.local/bin"),
+                        ),
+                        ToastResult::Installed { installed_ref, .. } => (
+                            p.success,
+                            format!("Updated to {installed_ref}  ·  Click to restart"),
+                            egui::Stroke::NONE,
+                            p.accent_fg,
+                            Some("Relaunch the new binary and close this window"),
+                        ),
+                        ToastResult::Failed { message } => (
+                            p.panel_bg,
+                            format!("Update failed · {message}"),
+                            egui::Stroke::new(1.0_f32, p.border),
+                            p.text_primary,
+                            None,
+                        ),
                     };
-                    let stroke = if matches!(result, ToastResult::Failed { .. }) {
-                        egui::Stroke::new(1.0_f32, p.border)
-                    } else {
-                        egui::Stroke::NONE
-                    };
-                    let text_color = if matches!(result, ToastResult::Failed { .. }) {
-                        p.text_primary
-                    } else {
-                        p.accent_fg
-                    };
-                    let icon_color = text_color;
 
                     let frame_resp = egui::Frame::NONE
                         .fill(fill)
@@ -534,7 +614,7 @@ impl HelpMenu {
                         .inner_margin(egui::Margin::symmetric(14, 8))
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
-                                paint_info_icon(ui, icon_color, 14.0_f32);
+                                paint_info_icon(ui, text_color, 14.0_f32);
                                 ui.add_space(4.0_f32);
                                 ui.label(
                                     egui::RichText::new(label)
@@ -544,31 +624,69 @@ impl HelpMenu {
                                 );
                             });
                         });
-                    if click_url.is_some() {
+                    if let Some(tip) = hover {
                         frame_resp
                             .response
                             .on_hover_cursor(egui::CursorIcon::PointingHand)
-                            .on_hover_text("Open on GitHub");
+                            .on_hover_text(tip);
                     }
                 }
             });
 
-        // Click available toast → open release/commit page.
-        if let Some(url) = click_url
-            && response.response.clicked()
-        {
-            open_url(&url);
+        if !response.response.clicked() {
+            return;
+        }
+        match click {
+            Some(ClickAction::Install { source, label }) => {
+                self.start_apply_update(source, label);
+            }
+            Some(ClickAction::Restart { binary_path }) => {
+                if let Err(err) = update::relaunch(&binary_path) {
+                    tracing::error!(%err, "relaunch failed");
+                    self.toast = Some(UpdateToast::Done {
+                        result: ToastResult::Failed { message: err },
+                        since: Instant::now(),
+                    });
+                } else {
+                    // Close this instance so the new process is the only one.
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+            None => {}
         }
     }
+}
+
+fn spinner_toast(ui: &mut egui::Ui, p: &theme::Palette, text: &str) {
+    egui::Frame::NONE
+        .fill(p.panel_bg)
+        .stroke(egui::Stroke::new(1.0_f32, p.border))
+        .corner_radius(egui::CornerRadius::same(20))
+        .inner_margin(egui::Margin::symmetric(14, 8))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(egui::RichText::new(text).size(13.0_f32).color(p.text_primary));
+            });
+        });
 }
 
 fn toast_result_from_outcome(outcome: UpdateCheckOutcome) -> ToastResult {
     match outcome.status {
         UpdateStatus::UpToDate => ToastResult::NoUpdates,
-        UpdateStatus::Available { remote_label, url, .. } => {
-            ToastResult::Available { label: remote_label, url }
+        UpdateStatus::Available { remote_label, url, source } => {
+            ToastResult::Available { label: remote_label, url, source }
         }
         UpdateStatus::Error(message) => ToastResult::Failed { message },
+    }
+}
+
+fn toast_result_from_apply(outcome: ApplyUpdateOutcome) -> ToastResult {
+    match outcome {
+        ApplyUpdateOutcome::Success { binary_path, installed_ref } => {
+            ToastResult::Installed { binary_path, installed_ref }
+        }
+        ApplyUpdateOutcome::Failed { message } => ToastResult::Failed { message },
     }
 }
 
@@ -782,10 +900,26 @@ mod tests {
             status: UpdateStatus::Available {
                 remote_label: "v9.9.9".into(),
                 url: "https://example.com".into(),
-                source: crate::update::UpdateSource::Release,
+                source: UpdateSource::Release,
             },
         });
-        assert!(matches!(r, ToastResult::Available { label, .. } if label == "v9.9.9"));
+        assert!(matches!(
+            r,
+            ToastResult::Available { label, source: UpdateSource::Release, .. }
+                if label == "v9.9.9"
+        ));
+    }
+
+    #[test]
+    fn test_toast_result_from_apply_success() {
+        let r = toast_result_from_apply(ApplyUpdateOutcome::Success {
+            binary_path: "/tmp/rmux".into(),
+            installed_ref: "main".into(),
+        });
+        assert!(matches!(
+            r,
+            ToastResult::Installed { installed_ref, .. } if installed_ref == "main"
+        ));
     }
 
     #[test]
