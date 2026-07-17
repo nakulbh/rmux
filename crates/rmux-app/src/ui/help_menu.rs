@@ -2,11 +2,13 @@
 //! bottom-left corner.
 //!
 //! Opens a compact popup with product links, keyboard shortcuts, and a
-//! lightweight update check toast (Checking… / No Updates Available).
+//! GitHub-backed update check toast (Checking… / No Updates / Update Available).
 
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use crate::ui::theme;
+use crate::update::{self, UpdateCheckOutcome, UpdateStatus};
 
 /// Official project URLs (open in the system browser).
 const URL_GITHUB: &str = "https://github.com/nakulbh/rmux";
@@ -23,23 +25,33 @@ const BTN_SIZE: f32 = 16.0_f32;
 /// quiet chrome control, not a full toolbar button.
 const ICON_R: f32 = 6.0_f32;
 
-/// Result of a local "check for updates" pass.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UpdateCheckResult {
-    /// No newer release known (default outcome without a remote checker).
+/// Minimum time to show the spinner so it doesn't flash.
+const CHECK_MIN_DISPLAY: Duration = Duration::from_millis(600);
+/// Max wait for the background thread before reporting a timeout error.
+const CHECK_TIMEOUT: Duration = Duration::from_secs(20);
+/// How long a finished toast stays on screen.
+const TOAST_HOLD: Duration = Duration::from_secs(5);
+
+/// Finished toast kind shown after a GitHub check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ToastResult {
     NoUpdates,
-    /// A newer release may exist — user is pointed at the releases page.
-    #[allow(dead_code)]
-    Available,
+    Available { label: String, url: String },
+    Failed { message: String },
 }
 
 /// In-progress or finished update-check toast state.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 enum UpdateToast {
-    /// Spinner toast.
-    Checking { started: Instant },
+    /// Spinner toast; result arrives on `rx` from a background thread.
+    Checking {
+        started: Instant,
+        rx: mpsc::Receiver<UpdateCheckOutcome>,
+        /// Cached outcome if the thread finished before the min display time.
+        ready: Option<UpdateCheckOutcome>,
+    },
     /// Result pill; auto-dismisses after a few seconds.
-    Done { result: UpdateCheckResult, since: Instant },
+    Done { result: ToastResult, since: Instant },
 }
 
 /// Help / about menu state owned by the app, rendered from the sidebar footer.
@@ -79,32 +91,73 @@ impl HelpMenu {
         self.menu_open
     }
 
-    /// Start an update check (for tests / callers).
+    /// Start a background GitHub update check and show the spinner toast.
     pub fn start_update_check(&mut self) {
-        self.toast = Some(UpdateToast::Checking { started: Instant::now() });
-        tracing::info!("Update check started");
+        // Don't stack concurrent checks.
+        if matches!(self.toast, Some(UpdateToast::Checking { .. })) {
+            return;
+        }
+        let rx = update::spawn_check();
+        self.toast = Some(UpdateToast::Checking { started: Instant::now(), rx, ready: None });
+        tracing::info!("Update check started (GitHub Releases + main commit)");
     }
 
-    /// Advance toast timers. Call once per frame from overlays.
+    /// Advance toast timers and poll the background check. Call once per frame.
     fn tick_toast(&mut self) {
-        let Some(toast) = self.toast.as_ref() else {
+        // Split borrow: take toast, mutate, put back.
+        let Some(toast) = self.toast.take() else {
             return;
         };
-        match toast {
-            UpdateToast::Checking { started }
-                if started.elapsed() >= Duration::from_millis(900) =>
-            {
-                // No remote release API yet — report current build as up to date.
-                self.toast = Some(UpdateToast::Done {
-                    result: UpdateCheckResult::NoUpdates,
-                    since: Instant::now(),
-                });
+
+        let next = match toast {
+            UpdateToast::Checking { started, rx, mut ready } => {
+                // Non-blocking poll for the background result.
+                if ready.is_none() {
+                    match rx.try_recv() {
+                        Ok(outcome) => ready = Some(outcome),
+                        Err(mpsc::TryRecvError::Empty) => {}
+                        Err(mpsc::TryRecvError::Disconnected) => {
+                            ready = Some(UpdateCheckOutcome {
+                                status: UpdateStatus::Error(
+                                    "update check thread ended unexpectedly".into(),
+                                ),
+                            });
+                        }
+                    }
+                }
+
+                let elapsed = started.elapsed();
+                if let Some(outcome) = ready {
+                    if elapsed >= CHECK_MIN_DISPLAY {
+                        Some(UpdateToast::Done {
+                            result: toast_result_from_outcome(outcome),
+                            since: Instant::now(),
+                        })
+                    } else {
+                        // Keep spinner until min display time.
+                        Some(UpdateToast::Checking { started, rx, ready: Some(outcome) })
+                    }
+                } else if elapsed >= CHECK_TIMEOUT {
+                    Some(UpdateToast::Done {
+                        result: ToastResult::Failed {
+                            message: "timed out contacting GitHub".into(),
+                        },
+                        since: Instant::now(),
+                    })
+                } else {
+                    Some(UpdateToast::Checking { started, rx, ready: None })
+                }
             }
-            UpdateToast::Done { since, .. } if since.elapsed() >= Duration::from_secs(4) => {
-                self.toast = None;
+            UpdateToast::Done { result, since } => {
+                if since.elapsed() >= TOAST_HOLD {
+                    None
+                } else {
+                    Some(UpdateToast::Done { result, since })
+                }
             }
-            _ => {}
-        }
+        };
+
+        self.toast = next;
     }
 
     /// Draw the small circle-question control (left-aligned). Returns click response.
@@ -311,11 +364,13 @@ impl HelpMenu {
                     .stroke(egui::Stroke::new(1.0_f32, p.border)),
             )
             .show(ctx, |ui| {
-                ui.label(
-                    egui::RichText::new(format!("rmux v{}", env!("CARGO_PKG_VERSION")))
-                        .size(14.0_f32)
-                        .color(p.text_primary),
-                );
+                let sha = update::local_git_sha();
+                let version_line = if sha.is_empty() {
+                    format!("rmux v{}", update::local_version())
+                } else {
+                    format!("rmux v{} ({sha})", update::local_version())
+                };
+                ui.label(egui::RichText::new(version_line).size(14.0_f32).color(p.text_primary));
                 ui.add_space(8.0_f32);
                 ui.label(
                     egui::RichText::new(
@@ -415,60 +470,105 @@ impl HelpMenu {
         self.shortcuts_open = open;
     }
 
-    fn show_toast(&self, ctx: &egui::Context) {
+    fn show_toast(&mut self, ctx: &egui::Context) {
         let Some(toast) = self.toast.as_ref() else {
             return;
         };
         let p = theme::palette();
 
-        egui::Area::new(egui::Id::new("rmux_update_toast"))
+        // Clone data needed for interaction (toast stays owned by self).
+        let click_url = match toast {
+            UpdateToast::Done { result: ToastResult::Available { url, .. }, .. } => {
+                Some(url.clone())
+            }
+            _ => None,
+        };
+
+        let response = egui::Area::new(egui::Id::new("rmux_update_toast"))
             .order(egui::Order::Foreground)
             .anchor(egui::Align2::CENTER_BOTTOM, egui::Vec2::new(0.0_f32, -48.0_f32))
-            .show(ctx, |ui| {
-                match toast {
-                    UpdateToast::Checking { .. } => {
-                        egui::Frame::NONE
-                            .fill(p.panel_bg)
-                            .stroke(egui::Stroke::new(1.0_f32, p.border))
-                            .corner_radius(egui::CornerRadius::same(20))
-                            .inner_margin(egui::Margin::symmetric(14, 8))
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.spinner();
-                                    ui.label(
-                                        egui::RichText::new("Checking for Updates…")
-                                            .size(13.0_f32)
-                                            .color(p.text_primary),
-                                    );
-                                });
+            .show(ctx, |ui| match toast {
+                UpdateToast::Checking { .. } => {
+                    egui::Frame::NONE
+                        .fill(p.panel_bg)
+                        .stroke(egui::Stroke::new(1.0_f32, p.border))
+                        .corner_radius(egui::CornerRadius::same(20))
+                        .inner_margin(egui::Margin::symmetric(14, 8))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label(
+                                    egui::RichText::new("Checking for Updates…")
+                                        .size(13.0_f32)
+                                        .color(p.text_primary),
+                                );
                             });
-                    }
-                    UpdateToast::Done { result, .. } => {
-                        let (fill, label) = match result {
-                            UpdateCheckResult::NoUpdates => (p.accent, "No Updates Available"),
-                            UpdateCheckResult::Available => (p.success, "Update Available"),
-                        };
-                        egui::Frame::NONE
-                            .fill(fill)
-                            .corner_radius(egui::CornerRadius::same(20))
-                            .inner_margin(egui::Margin::symmetric(14, 8))
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    // Lucide info icon as geometry — fonts often lack ⓘ
-                                    // and render it as a hollow box (□).
-                                    paint_info_icon(ui, p.accent_fg, 14.0_f32);
-                                    ui.add_space(4.0_f32);
-                                    ui.label(
-                                        egui::RichText::new(label)
-                                            .size(13.0_f32)
-                                            .color(p.accent_fg)
-                                            .strong(),
-                                    );
-                                });
+                        });
+                }
+                UpdateToast::Done { result, .. } => {
+                    let (fill, label) = match result {
+                        ToastResult::NoUpdates => (p.accent, "No Updates Available".to_string()),
+                        ToastResult::Available { label, .. } => {
+                            (p.success, format!("Update Available · {label}"))
+                        }
+                        ToastResult::Failed { message } => {
+                            (p.panel_bg, format!("Update check failed · {message}"))
+                        }
+                    };
+                    let stroke = if matches!(result, ToastResult::Failed { .. }) {
+                        egui::Stroke::new(1.0_f32, p.border)
+                    } else {
+                        egui::Stroke::NONE
+                    };
+                    let text_color = if matches!(result, ToastResult::Failed { .. }) {
+                        p.text_primary
+                    } else {
+                        p.accent_fg
+                    };
+                    let icon_color = text_color;
+
+                    let frame_resp = egui::Frame::NONE
+                        .fill(fill)
+                        .stroke(stroke)
+                        .corner_radius(egui::CornerRadius::same(20))
+                        .inner_margin(egui::Margin::symmetric(14, 8))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                paint_info_icon(ui, icon_color, 14.0_f32);
+                                ui.add_space(4.0_f32);
+                                ui.label(
+                                    egui::RichText::new(label)
+                                        .size(13.0_f32)
+                                        .color(text_color)
+                                        .strong(),
+                                );
                             });
+                        });
+                    if click_url.is_some() {
+                        frame_resp
+                            .response
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .on_hover_text("Open on GitHub");
                     }
                 }
             });
+
+        // Click available toast → open release/commit page.
+        if let Some(url) = click_url
+            && response.response.clicked()
+        {
+            open_url(&url);
+        }
+    }
+}
+
+fn toast_result_from_outcome(outcome: UpdateCheckOutcome) -> ToastResult {
+    match outcome.status {
+        UpdateStatus::UpToDate => ToastResult::NoUpdates,
+        UpdateStatus::Available { remote_label, url, .. } => {
+            ToastResult::Available { label: remote_label, url }
+        }
+        UpdateStatus::Error(message) => ToastResult::Failed { message },
     }
 }
 
@@ -650,14 +750,18 @@ mod tests {
     }
 
     #[test]
-    fn test_tick_toast_promotes_checking_to_no_updates() {
+    fn test_tick_toast_promotes_ready_outcome_after_min_display() {
+        let (_tx, rx) = mpsc::channel();
         let mut help = HelpMenu::new();
-        help.toast =
-            Some(UpdateToast::Checking { started: Instant::now() - Duration::from_secs(2) });
+        help.toast = Some(UpdateToast::Checking {
+            started: Instant::now() - Duration::from_secs(2),
+            rx,
+            ready: Some(UpdateCheckOutcome { status: UpdateStatus::UpToDate }),
+        });
         help.tick_toast();
         assert!(matches!(
             help.toast,
-            Some(UpdateToast::Done { result: UpdateCheckResult::NoUpdates, .. })
+            Some(UpdateToast::Done { result: ToastResult::NoUpdates, .. })
         ));
     }
 
@@ -665,11 +769,23 @@ mod tests {
     fn test_tick_toast_dismisses_done_after_timeout() {
         let mut help = HelpMenu::new();
         help.toast = Some(UpdateToast::Done {
-            result: UpdateCheckResult::NoUpdates,
+            result: ToastResult::NoUpdates,
             since: Instant::now() - Duration::from_secs(10),
         });
         help.tick_toast();
         assert!(help.toast.is_none());
+    }
+
+    #[test]
+    fn test_toast_result_from_available() {
+        let r = toast_result_from_outcome(UpdateCheckOutcome {
+            status: UpdateStatus::Available {
+                remote_label: "v9.9.9".into(),
+                url: "https://example.com".into(),
+                source: crate::update::UpdateSource::Release,
+            },
+        });
+        assert!(matches!(r, ToastResult::Available { label, .. } if label == "v9.9.9"));
     }
 
     #[test]
