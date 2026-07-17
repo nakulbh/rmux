@@ -19,10 +19,9 @@ pub const GITHUB_OWNER: &str = "nakulbh";
 pub const GITHUB_REPO: &str = "rmux";
 /// Human-facing releases page.
 pub const RELEASES_URL: &str = "https://github.com/nakulbh/rmux/releases";
-/// Install one-liner shown when an update is available.
-#[allow(dead_code)] // reserved for future "Update" dialog copy
-pub const INSTALL_HINT: &str =
-    "curl -fsSL https://raw.githubusercontent.com/nakulbh/rmux/main/scripts/install.sh | bash";
+/// Install script URL (always from `main` so the installer itself is current).
+pub const INSTALL_SCRIPT_URL: &str =
+    "https://raw.githubusercontent.com/nakulbh/rmux/main/scripts/install.sh";
 
 /// Local package version compiled into the binary.
 pub fn local_version() -> &'static str {
@@ -278,6 +277,216 @@ pub fn spawn_check() -> std::sync::mpsc::Receiver<UpdateCheckOutcome> {
     rx
 }
 
+// ─── Apply update (install into the system) ─────────────────────────────────
+
+/// Result of running the official installer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApplyUpdateOutcome {
+    /// Binary (and optional desktop integration) installed successfully.
+    Success {
+        /// Path we expect the user to relaunch (`~/.local/bin/rmux` or current exe).
+        binary_path: String,
+        /// Git ref that was installed (`main` or a release tag).
+        installed_ref: String,
+    },
+    /// Installer failed (network, build, missing tools, …).
+    Failed { message: String },
+}
+
+/// Map an update signal to the git ref `install.sh` should clone (`RMUX_VERSION`).
+pub fn install_ref_for(source: UpdateSource, remote_label: &str) -> String {
+    match source {
+        // Tags are `v0.2.0`; install.sh accepts branch or tag names.
+        UpdateSource::Release => remote_label.to_string(),
+        UpdateSource::MainCommit => "main".to_string(),
+    }
+}
+
+/// Default install location used by `scripts/install.sh`.
+pub fn default_install_dir() -> std::path::PathBuf {
+    dirs_home()
+        .map(|h| h.join(".local").join("bin"))
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+}
+
+fn dirs_home() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| {
+            #[cfg(windows)]
+            {
+                std::env::var_os("USERPROFILE")
+            }
+            #[cfg(not(windows))]
+            {
+                None
+            }
+        })
+        .map(std::path::PathBuf::from)
+}
+
+/// Expected path of the installed binary after a successful update.
+pub fn installed_binary_path() -> std::path::PathBuf {
+    let mut p = default_install_dir();
+    #[cfg(windows)]
+    p.push("rmux.exe");
+    #[cfg(not(windows))]
+    p.push("rmux");
+    p
+}
+
+/// Run the official install script (blocking). Intended for a background thread.
+///
+/// Uses `curl | bash` with `RMUX_VERSION` set so the same path as a manual
+/// reinstall is used. Requires network + a Rust toolchain (install.sh can
+/// bootstrap rustup).
+pub fn apply_update(source: UpdateSource, remote_label: &str) -> ApplyUpdateOutcome {
+    let installed_ref = install_ref_for(source, remote_label);
+    tracing::info!(%installed_ref, "applying update via install.sh");
+
+    #[cfg(windows)]
+    {
+        // install.sh is bash/curl oriented; Windows users should use the
+        // documented one-liner from a Git Bash / WSL environment for now.
+        return ApplyUpdateOutcome::Failed {
+            message: "in-app update is not supported on Windows yet — run the install script from Git Bash or WSL".into(),
+        };
+    }
+
+    #[cfg(not(windows))]
+    {
+        apply_update_unix(&installed_ref)
+    }
+}
+
+#[cfg(not(windows))]
+fn apply_update_unix(installed_ref: &str) -> ApplyUpdateOutcome {
+    use std::process::Command;
+
+    // Prefer curl, fall back to wget (same as install.sh).
+    let fetch = if command_exists("curl") {
+        format!("curl -fsSL '{INSTALL_SCRIPT_URL}'")
+    } else if command_exists("wget") {
+        format!("wget -qO- '{INSTALL_SCRIPT_URL}'")
+    } else {
+        return ApplyUpdateOutcome::Failed {
+            message: "need curl or wget to download the installer".into(),
+        };
+    };
+
+    if !command_exists("bash") {
+        return ApplyUpdateOutcome::Failed {
+            message: "bash is required to run the installer".into(),
+        };
+    }
+
+    let pipeline = format!("{fetch} | bash");
+    let output = Command::new("bash")
+        .arg("-lc")
+        .arg(&pipeline)
+        .env("RMUX_VERSION", installed_ref)
+        .env("RMUX_REPO", format!("https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}.git"))
+        // Keep desktop integration so Dock / .desktop stay in sync.
+        .env("RMUX_SKIP_DESKTOP", "0")
+        .output();
+
+    match output {
+        Ok(out) if out.status.success() => {
+            let binary = installed_binary_path();
+            if !binary.is_file() {
+                // Installer reported success but binary missing — still surface a soft error.
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                return ApplyUpdateOutcome::Failed {
+                    message: format!(
+                        "installer finished but binary not found at {} ({})",
+                        binary.display(),
+                        truncate_msg(&stderr, 200)
+                    ),
+                };
+            }
+            tracing::info!(path = %binary.display(), %installed_ref, "update installed");
+            ApplyUpdateOutcome::Success {
+                binary_path: binary.display().to_string(),
+                installed_ref: installed_ref.to_string(),
+            }
+        }
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let detail = if !stderr.trim().is_empty() { stderr } else { stdout };
+            ApplyUpdateOutcome::Failed {
+                message: format!(
+                    "installer exited with {}: {}",
+                    out.status,
+                    truncate_msg(&detail, 280)
+                ),
+            }
+        }
+        Err(err) => {
+            ApplyUpdateOutcome::Failed { message: format!("failed to spawn installer: {err}") }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn command_exists(name: &str) -> bool {
+    std::process::Command::new("sh")
+        .args(["-c", &format!("command -v {name} >/dev/null 2>&1")])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+fn truncate_msg(s: &str, max: usize) -> String {
+    let t = s.trim();
+    if t.chars().count() <= max {
+        t.to_string()
+    } else {
+        let head: String = t.chars().take(max.saturating_sub(1)).collect();
+        format!("{head}…")
+    }
+}
+
+/// Spawn a background install; result is sent on the returned receiver.
+pub fn spawn_apply_update(
+    source: UpdateSource,
+    remote_label: String,
+) -> std::sync::mpsc::Receiver<ApplyUpdateOutcome> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("rmux-apply-update".into())
+        .spawn(move || {
+            let outcome = apply_update(source, &remote_label);
+            tracing::info!(?outcome, "apply update finished");
+            let _ = tx.send(outcome);
+        })
+        .ok();
+    rx
+}
+
+/// Relaunch the installed binary and request the current window to close.
+///
+/// Prefer `binary_path` from a successful install; fall back to `current_exe`.
+pub fn relaunch(binary_path: &str) -> Result<(), String> {
+    use std::process::Command;
+
+    let path = if std::path::Path::new(binary_path).is_file() {
+        binary_path.to_string()
+    } else {
+        std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?.display().to_string()
+    };
+
+    // Detach so the new process survives when we exit.
+    Command::new(&path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("failed to relaunch {path}: {e}"))?;
+
+    tracing::info!(%path, "relaunched updated binary");
+    Ok(())
+}
+
 // ─── tests (no network) ─────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -375,5 +584,27 @@ mod tests {
             UpdateStatus::Available { source: UpdateSource::MainCommit, .. }
                 | UpdateStatus::Error(_)
         ));
+    }
+
+    #[test]
+    fn install_ref_for_release_uses_tag() {
+        assert_eq!(install_ref_for(UpdateSource::Release, "v0.2.0"), "v0.2.0");
+    }
+
+    #[test]
+    fn install_ref_for_main_commit_is_main() {
+        assert_eq!(install_ref_for(UpdateSource::MainCommit, "abc1234"), "main");
+    }
+
+    #[test]
+    fn truncate_msg_short_unchanged() {
+        assert_eq!(truncate_msg("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_msg_long_ellipsis() {
+        let s = truncate_msg("abcdefghijklmnopqrstuvwxyz", 10);
+        assert!(s.ends_with('…'));
+        assert!(s.chars().count() <= 10);
     }
 }
