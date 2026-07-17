@@ -14,7 +14,7 @@ use crate::browser::BrowserPane;
 use crate::notifications::NotificationManager;
 use crate::ui::DEFAULT_FONT_SIZE;
 use crate::ui::sidebar::SidebarView;
-use crate::ui::{NotificationPanel, SettingsPanel, TerminalPane, workspace_view};
+use crate::ui::{HelpMenu, NotificationPanel, SettingsPanel, TerminalPane, workspace_view};
 use crate::workspace::WorkspaceManager;
 use crate::workspace::splits::{PaneId, PaneTreeError, SplitDirection};
 
@@ -39,6 +39,8 @@ pub struct RmuxApp {
     pub(crate) notification_panel: NotificationPanel,
     /// The floating settings panel (terminal theme picker, etc).
     pub(crate) settings_panel: SettingsPanel,
+    /// cmux-style help menu (circle-question in sidebar bottom-left).
+    pub(crate) help_menu: HelpMenu,
     /// The current terminal font size (shared by all panes).
     pub(crate) font_size: f32,
     /// The current terminal color theme (shared by all panes).
@@ -68,6 +70,7 @@ impl RmuxApp {
             notifications: NotificationManager::with_system_notifier(),
             notification_panel: NotificationPanel::new(),
             settings_panel: SettingsPanel::new(),
+            help_menu: HelpMenu::new(),
             font_size,
             terminal_theme: rmux_terminal::NamedTheme::default(),
             last_copied_text: None,
@@ -162,9 +165,15 @@ impl eframe::App for RmuxApp {
 
         // Render the sidebar (left panel). New workspaces are created from
         // the top-bar `+` button (or Cmd/Ctrl+N). Hover × closes a card.
-        if let Some(crate::ui::sidebar::SidebarAction::CloseWorkspace(id)) =
-            self.sidebar.show(ctx, &mut self.workspace_manager, &self.notifications)
-        {
+        // Help circle-question sits in the footer bottom-left.
+        let mut help_button_rect = None;
+        if let Some(crate::ui::sidebar::SidebarAction::CloseWorkspace(id)) = self.sidebar.show(
+            ctx,
+            &mut self.workspace_manager,
+            &self.notifications,
+            &mut self.help_menu,
+            &mut help_button_rect,
+        ) {
             match self.workspace_manager.close_workspace(id) {
                 Ok(()) => {
                     self.publish_event("workspace.closed", json!({ "id": id.0 }));
@@ -175,6 +184,9 @@ impl eframe::App for RmuxApp {
                 }
             }
         }
+
+        // Help popup, welcome dialog, shortcuts window, update toast.
+        self.help_menu.show_overlays(ctx, help_button_rect);
 
         // Render the notification panel (right panel, before the central
         // panel). The panel is shown when EITHER `Cmd+Opt+B` (right
