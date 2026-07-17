@@ -10,7 +10,7 @@
 //! crisp at any DPI and match cmux's thin SF-Symbols aesthetic.
 
 use egui::{
-    Color32, CornerRadius, CursorIcon, FontId, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Vec2,
+    Color32, CornerRadius, CursorIcon, FontId, Pos2, Rect, Sense, Shape, Stroke, StrokeKind,
     pos2, vec2,
 };
 
@@ -212,8 +212,7 @@ pub fn show(
                 x += tab_w + 4.0_f32;
             }
 
-            // --- Settings gear (far right, muted — keeps settings reachable
-            // without cluttering the cmux-style left cluster) ---
+            // --- Settings (far right, Lucide-style gear next to the panel) ---
             let settings_center = pos2(rect.right() - 18.0_f32, cy);
             if icon_button(
                 ui,
@@ -223,7 +222,7 @@ pub fn show(
                 true,
                 "Settings",
                 &p,
-                draw_gear_icon,
+                draw_settings_icon,
             ) {
                 action = Some(TopBarAction::ToggleSettings);
             }
@@ -444,16 +443,45 @@ fn draw_folder_icon(painter: &egui::Painter, c: Pos2, color: Color32, filled: bo
     }
 }
 
-fn draw_gear_icon(painter: &egui::Painter, c: Pos2, color: Color32) {
-    // Simple gear: outer circle + inner hole + 4 spokes (reads as settings).
-    let stroke = Stroke::new(1.2_f32, color);
-    painter.circle_stroke(c, 5.0_f32, stroke);
-    painter.circle_stroke(c, 2.0_f32, stroke);
-    for angle in [0.0_f32, 45.0, 90.0, 135.0] {
-        let rad = angle.to_radians();
-        let dir = Vec2::new(rad.cos(), rad.sin());
-        painter.line_segment([c + dir * 5.0_f32, c + dir * 7.0_f32], stroke);
+/// Lucide-style settings gear (circle + toothed rim).
+///
+/// Mirrors the Lucide `settings` SVG (24×24 viewBox: outer gear path +
+/// `circle cx="12" cy="12" r="3"`), scaled to the toolbar icon size.
+fn draw_settings_icon(painter: &egui::Painter, c: Pos2, color: Color32) {
+    // Icon lives in a ~14px optical box inside the 28px hit target.
+    let scale = 14.0_f32 / 24.0_f32;
+    let stroke = Stroke::new(1.5_f32, color);
+
+    // Inner hole — Lucide r=3 → ~1.75 CSS-px, slightly larger for clarity.
+    let hole_r = 3.0_f32 * scale + 0.4_f32;
+    painter.circle_stroke(c, hole_r, stroke);
+
+    // Gear body radius (between hole and tooth tips).
+    let body_r = 7.2_f32 * scale;
+    // Tooth tip radius.
+    let tip_r = 10.0_f32 * scale;
+
+    // 8 teeth, aligned like Lucide (teeth at 0°/45°/…).
+    const TEETH: usize = 8;
+    let mut outline: Vec<Pos2> = Vec::with_capacity(TEETH * 4);
+    for i in 0..TEETH {
+        let base =
+            (i as f32) * (std::f32::consts::TAU / TEETH as f32) - std::f32::consts::FRAC_PI_8;
+        // Each tooth: outer arc points, then valley on the body.
+        let tooth_half = std::f32::consts::TAU / (TEETH as f32 * 2.0_f32) * 0.55_f32;
+        let valley_half = std::f32::consts::TAU / (TEETH as f32 * 2.0_f32) * 0.45_f32;
+
+        let a0 = base - tooth_half;
+        let a1 = base + tooth_half;
+        let a2 = base + tooth_half + valley_half;
+        let a3 = base + std::f32::consts::TAU / TEETH as f32 - tooth_half;
+
+        for (ang, r) in [(a0, tip_r), (a1, tip_r), (a2, body_r), (a3, body_r)] {
+            outline.push(pos2(c.x + ang.cos() * r, c.y + ang.sin() * r));
+        }
     }
+
+    painter.add(Shape::closed_line(outline, stroke));
 }
 
 #[cfg(test)]
