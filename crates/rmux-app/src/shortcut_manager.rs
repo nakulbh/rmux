@@ -43,7 +43,10 @@ pub enum AppCommand {
     FontSizeUp,
     FontSizeDown,
     FontSizeReset,
+    /// Copy the active terminal selection to the system clipboard.
     Copy,
+    /// Paste system clipboard text into the active terminal.
+    Paste,
     /// Open / toggle find, or close find when fired as bare Escape.
     Find,
     FindNext,
@@ -98,6 +101,8 @@ pub struct PollOptions {
     pub text_focused: bool,
     /// Terminal find bar is open — bare Escape/Enter act as find controls.
     pub find_visible: bool,
+    /// Active terminal has a non-empty text selection (gates Copy vs SIGINT).
+    pub has_selection: bool,
 }
 
 /// One binding: logical shortcut → command.
@@ -110,16 +115,30 @@ pub struct ShortcutBinding {
     /// When true, the binding is suppressed while a text widget has focus
     /// (bare Escape/Enter so TextEdit keeps those keys).
     pub suppress_when_text_focused: bool,
+    /// When true, only fire if [`PollOptions::has_selection`] (e.g. Copy).
+    pub requires_selection: bool,
 }
 
 impl ShortcutBinding {
     pub const fn new(shortcut: KeyboardShortcut, command: AppCommand) -> Self {
-        Self { shortcut, command, requires_find: false, suppress_when_text_focused: false }
+        Self {
+            shortcut,
+            command,
+            requires_find: false,
+            suppress_when_text_focused: false,
+            requires_selection: false,
+        }
     }
 
     pub const fn find_only(mut self) -> Self {
         self.requires_find = true;
         self.suppress_when_text_focused = true;
+        self
+    }
+
+    /// Only fire when the terminal has an active selection.
+    pub const fn selection_only(mut self) -> Self {
+        self.requires_selection = true;
         self
     }
 }
@@ -173,10 +192,17 @@ impl ShortcutManager {
     /// Pure lookup: given pressed modifiers + key, return the first matching
     /// command. Uses the same logical matching as `consume_shortcut`.
     ///
-    /// Suitable for unit tests without an egui context.
+    /// Does **not** apply find/selection/text-focus gates — use
+    /// [`Self::resolve_with_options`] for those. Suitable for unit tests
+    /// without an egui context.
     #[allow(dead_code)]
     pub fn resolve(&self, pressed: Modifiers, key: Key) -> Option<AppCommand> {
         for b in &self.bindings {
+            // Skip gated bindings so a bare resolve doesn't claim Copy without
+            // selection context (callers should use resolve_with_options).
+            if b.requires_find || b.requires_selection {
+                continue;
+            }
             if b.shortcut.logical_key == key && pressed.matches_logically(b.shortcut.modifiers) {
                 return Some(b.command);
             }
@@ -200,6 +226,9 @@ impl ShortcutManager {
             if b.suppress_when_text_focused && opts.text_focused {
                 continue;
             }
+            if b.requires_selection && !opts.has_selection {
+                continue;
+            }
             if b.shortcut.logical_key == key && pressed.matches_logically(b.shortcut.modifiers) {
                 return Some(b.command);
             }
@@ -221,6 +250,9 @@ impl ShortcutManager {
                     continue;
                 }
                 if b.suppress_when_text_focused && opts.text_focused {
+                    continue;
+                }
+                if b.requires_selection && !opts.has_selection {
                     continue;
                 }
                 if input.consume_shortcut(&b.shortcut) {
@@ -352,7 +384,16 @@ impl ShortcutManager {
         }
 
         self.bind_chord(Modifiers::COMMAND, Key::Q, AppCommand::Quit);
-        self.bind_chord(Modifiers::COMMAND, Key::C, AppCommand::Copy);
+        // Copy only when a selection exists — otherwise Ctrl+C must reach the
+        // PTY as SIGINT (Linux/Windows set both ctrl+command for Ctrl).
+        self.bind(
+            ShortcutBinding::new(
+                KeyboardShortcut::new(Modifiers::COMMAND, Key::C),
+                AppCommand::Copy,
+            )
+            .selection_only(),
+        );
+        self.bind_chord(Modifiers::COMMAND, Key::V, AppCommand::Paste);
 
         // Bare Escape / Enter — only when find bar is open, never steal from TextEdit.
         self.bind(
@@ -430,7 +471,7 @@ pub fn action_target(command: AppCommand) -> ActionTarget {
     match command {
         NewSurface | NextSurface | PreviousSurface | SelectSurface(_) | CloseTab
         | CloseOtherTabs | ReopenLastClosed | EqualizeSplitsAlt | PrevWorkspaceAlt
-        | NextWorkspaceAlt | Quit | Copy | Find | FindNext | FindPrev | UseSelectionForFind
+        | NextWorkspaceAlt | Quit | Find | FindNext | FindPrev | UseSelectionForFind
         | ClearScrollback | ClearScreen | FontSizeUp | FontSizeDown | FontSizeReset
         | NewWorkspace | SplitRight | SplitDown | ClosePane | OpenBrowserSplit
         | FocusBrowserUrlBar | ReloadBrowser | SwitchWorkspace(_) | CloseWorkspace
@@ -438,7 +479,7 @@ pub fn action_target(command: AppCommand) -> ActionTarget {
         | FocusLeft | FocusRight | FocusUp | FocusDown | ToggleNotifications => {
             ActionTarget::Workspace
         }
-        ToggleCopyMode | PasteImage => ActionTarget::Terminal,
+        Copy | Paste | ToggleCopyMode | PasteImage => ActionTarget::Terminal,
         ToggleRightSidebar | ToggleSidebar => ActionTarget::Sidebar,
         SplitBrowserRight | SplitBrowserDown => ActionTarget::Browser,
         NewWindow | CloseWindow => ActionTarget::Window,
@@ -541,7 +582,7 @@ mod tests {
             m.resolve_with_options(
                 Modifiers::NONE,
                 Key::Escape,
-                PollOptions { find_visible: true, text_focused: false },
+                PollOptions { find_visible: true, text_focused: false, has_selection: false },
             ),
             Some(AppCommand::Find)
         );
@@ -554,7 +595,7 @@ mod tests {
             m.resolve_with_options(
                 Modifiers::NONE,
                 Key::Escape,
-                PollOptions { find_visible: true, text_focused: true },
+                PollOptions { find_visible: true, text_focused: true, has_selection: false },
             ),
             None
         );
@@ -567,7 +608,7 @@ mod tests {
             m.resolve_with_options(
                 cmd(),
                 Key::F,
-                PollOptions { find_visible: false, text_focused: true },
+                PollOptions { find_visible: false, text_focused: true, has_selection: false },
             ),
             Some(AppCommand::Find)
         );
@@ -576,6 +617,33 @@ mod tests {
     #[test]
     fn unknown_chord_returns_none() {
         assert_eq!(mgr().resolve(Modifiers::NONE, Key::A), None);
+    }
+
+    #[test]
+    fn copy_only_when_selection_exists() {
+        let m = mgr();
+        // No selection → Ctrl/⌘+C is not an app shortcut (SIGINT goes to PTY).
+        assert_eq!(
+            m.resolve_with_options(
+                cmd(),
+                Key::C,
+                PollOptions { has_selection: false, ..Default::default() }
+            ),
+            None
+        );
+        assert_eq!(
+            m.resolve_with_options(
+                cmd(),
+                Key::C,
+                PollOptions { has_selection: true, ..Default::default() }
+            ),
+            Some(AppCommand::Copy)
+        );
+    }
+
+    #[test]
+    fn paste_is_always_command_v() {
+        assert_eq!(mgr().resolve(cmd(), Key::V), Some(AppCommand::Paste));
     }
 
     #[test]

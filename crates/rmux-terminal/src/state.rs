@@ -6,6 +6,8 @@
 use crate::theme::TerminalTheme;
 use alacritty_terminal::event::VoidListener;
 use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::index::{Column, Point, Side};
+use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::Config;
 use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::term::color::Colors;
@@ -120,6 +122,8 @@ pub struct GridCell {
     /// painting that column separately, so its background fill doesn't
     /// clip the right half of the glyph.
     pub wide: bool,
+    /// Whether this cell is inside the active mouse/keyboard selection.
+    pub selected: bool,
 }
 
 impl TermState {
@@ -181,6 +185,8 @@ impl TermState {
         let terminal_bg = resolve_color(Color::Named(NamedColor::Background), colors, &self.theme);
         let terminal_fg = resolve_color(Color::Named(NamedColor::Foreground), colors, &self.theme);
         let cursor_color = resolve_color(Color::Named(NamedColor::Cursor), colors, &self.theme);
+        let selection_bg = self.theme.selection_bg;
+        let selection_range = renderable.selection;
 
         // Iterate over renderable cells and populate the grid
         for indexed_cell in renderable.display_iter {
@@ -195,7 +201,15 @@ impl TermState {
                 let col = view_point.column;
 
                 if row < rows as usize && col.0 < cols as usize {
-                    let (fg, bg) = cell_colors(cell, colors, &self.theme);
+                    let (mut fg, mut bg) = cell_colors(cell, colors, &self.theme);
+                    let selected = selection_range.is_some_and(|r| r.contains(point));
+                    if selected {
+                        // Invert toward selection highlight so text stays readable.
+                        bg = selection_bg;
+                        if fg == bg {
+                            fg = terminal_fg;
+                        }
+                    }
                     cells[row][col.0] = GridCell {
                         c: cell.c,
                         fg,
@@ -205,6 +219,7 @@ impl TermState {
                         underline: cell.flags.intersects(Flags::ALL_UNDERLINES),
                         is_cursor: false,
                         wide: cell.flags.contains(Flags::WIDE_CHAR),
+                        selected,
                     };
                 }
             }
@@ -281,7 +296,64 @@ impl TermState {
     /// Returns `None` if there is no active selection. Trailing whitespace is
     /// stripped from each line. Lines are joined with `\n`.
     pub fn copy_selected_text(&self) -> Option<String> {
-        self.term.selection_to_string()
+        self.term.selection_to_string().filter(|s| !s.is_empty())
+    }
+
+    /// Whether a non-empty selection currently exists.
+    pub fn has_selection(&self) -> bool {
+        self.copy_selected_text().is_some()
+    }
+
+    /// Begin a simple cell selection at the given **viewport** cell.
+    ///
+    /// `col` / `row` are relative to the visible grid (0,0 = top-left of the
+    /// viewport), not absolute scrollback coordinates.
+    pub fn start_selection(&mut self, col: u16, row: u16) {
+        let point = self.viewport_point(col, row);
+        self.term.selection = Some(Selection::new(SelectionType::Simple, point, Side::Left));
+    }
+
+    /// Extend the active selection to the given **viewport** cell.
+    ///
+    /// No-op if there is no active selection (call [`Self::start_selection`] first).
+    pub fn update_selection(&mut self, col: u16, row: u16) {
+        let point = self.viewport_point(col, row);
+        if let Some(selection) = self.term.selection.as_mut() {
+            selection.update(point, Side::Right);
+        }
+    }
+
+    /// Clear any active selection.
+    pub fn clear_selection(&mut self) {
+        self.term.selection = None;
+    }
+
+    /// Expand selection to a semantic word around the viewport cell (double-click).
+    pub fn select_word_at(&mut self, col: u16, row: u16) {
+        let point = self.viewport_point(col, row);
+        self.term.selection = Some(Selection::new(SelectionType::Semantic, point, Side::Left));
+        if let Some(selection) = self.term.selection.as_mut() {
+            selection.update(point, Side::Right);
+        }
+    }
+
+    /// Expand selection to the full line at the viewport cell (triple-click).
+    pub fn select_line_at(&mut self, col: u16, row: u16) {
+        let point = self.viewport_point(col, row);
+        self.term.selection = Some(Selection::new(SelectionType::Lines, point, Side::Left));
+        if let Some(selection) = self.term.selection.as_mut() {
+            selection.update(point, Side::Right);
+        }
+    }
+
+    /// Convert a viewport cell to an alacritty grid [`Point`].
+    fn viewport_point(&self, col: u16, row: u16) -> Point {
+        let cols = self.term.columns().max(1);
+        let rows = self.term.screen_lines().max(1);
+        let col = (col as usize).min(cols - 1);
+        let row = (row as usize).min(rows - 1);
+        let display_offset = self.term.grid().display_offset();
+        alacritty_terminal::term::viewport_to_point(display_offset, Point::new(row, Column(col)))
     }
 
     /// Clear the terminal scrollback buffer.
@@ -415,6 +487,7 @@ impl Default for GridCell {
             underline: false,
             is_cursor: false,
             wide: false,
+            selected: false,
         }
     }
 }
@@ -465,6 +538,38 @@ mod tests {
         assert!(!cell.underline);
         assert!(!cell.is_cursor);
         assert!(!cell.wide);
+        assert!(!cell.selected);
+    }
+
+    #[test]
+    fn test_selection_start_and_copy() {
+        let mut state = TermState::new(80, 24, 1000);
+        state.feed_bytes(b"Hello, World!");
+        assert!(!state.has_selection());
+
+        // Select columns 0..=4 → "Hello"
+        state.start_selection(0, 0);
+        state.update_selection(4, 0);
+        assert!(state.has_selection());
+        let text = state.copy_selected_text().expect("selection text");
+        assert!(text.starts_with("Hello"), "got {text:?}");
+
+        state.clear_selection();
+        assert!(!state.has_selection());
+    }
+
+    #[test]
+    fn test_selection_marks_snapshot_cells() {
+        let mut state = TermState::new(80, 24, 1000);
+        state.feed_bytes(b"abcdef");
+        state.start_selection(1, 0);
+        state.update_selection(3, 0);
+        let snap = state.snapshot();
+        assert!(!snap.cells[0][0].selected);
+        assert!(snap.cells[0][1].selected);
+        assert!(snap.cells[0][2].selected);
+        assert!(snap.cells[0][3].selected);
+        assert!(!snap.cells[0][4].selected);
     }
 
     #[test]

@@ -16,18 +16,19 @@ impl RmuxApp {
     /// Ctrl sets both `ctrl` and `command`) the PTY steals the keystroke
     /// and the user has to press twice.
     pub(crate) fn handle_keyboard_shortcuts(&mut self, ctx: &egui::Context) {
-        let find_visible = {
+        let (find_visible, has_selection) = {
             let ws = self.workspace_manager.active();
-            ws.root
-                .find_pane(ws.active_pane)
-                .and_then(|n| n.active_terminal())
-                .map(|t| t.is_find_visible())
-                .unwrap_or(false)
+            let term = ws.root.find_pane(ws.active_pane).and_then(|n| n.active_terminal());
+            let find_visible = term.map(|t| t.is_find_visible()).unwrap_or(false);
+            let has_selection = term.map(|t| t.has_selection()).unwrap_or(false);
+            (find_visible, has_selection)
         };
         // Previous-frame text focus is fine for gating bare Escape/Enter.
         let text_focused = ctx.wants_keyboard_input();
 
-        let commands = self.shortcut_manager.poll(ctx, PollOptions { text_focused, find_visible });
+        let commands = self
+            .shortcut_manager
+            .poll(ctx, PollOptions { text_focused, find_visible, has_selection });
 
         for command in commands {
             if self.dispatch_command(ctx, command) {
@@ -55,9 +56,23 @@ impl RmuxApp {
                 if let Some(terminal) = self.active_terminal_mut()
                     && let Some(text) = terminal.copy_selection()
                 {
+                    tracing::debug!(len = text.len(), "Copied terminal selection to clipboard");
                     ctx.copy_text(text.clone());
                     self.last_copied_text = Some(text);
-                    tracing::debug!("Copied terminal selection to clipboard");
+                }
+            }
+
+            AppCommand::Paste => {
+                // Backup path when Event::Paste is not delivered (rare).
+                // Primary paste path is Event::Paste in terminal_pane.
+                let text = arboard::Clipboard::new()
+                    .ok()
+                    .and_then(|mut c| c.get_text().ok())
+                    .unwrap_or_default();
+                if !text.is_empty()
+                    && let Some(terminal) = self.active_terminal_mut()
+                {
+                    terminal.paste_text(&text);
                 }
             }
 
@@ -332,7 +347,7 @@ mod tests {
             m.resolve_with_options(
                 egui::Modifiers::NONE,
                 Key::Escape,
-                PollOptions { find_visible: true, text_focused: false },
+                PollOptions { find_visible: true, text_focused: false, has_selection: false },
             ),
             Some(AppCommand::Find)
         );
