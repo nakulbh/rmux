@@ -48,3 +48,6 @@ wry = "0.50"
 # Error handling
 thiserror = "2"
 anyhow = "1"
+
+# HTTP (update check against GitHub Releases / commits API)
+ureq = { version = "2", default-features = true, features = ["json"] }

@@ -1,0 +1,117 @@
+# Build release binaries and attach them to a GitHub Release when a version
+# tag (v*) is pushed. Enables install-from-asset and in-app update checks
+# against /repos/nakulbh/rmux/releases/latest.
+#
+# Usage:
+#   1. Bump workspace.package.version in Cargo.toml
+#   2. git tag v0.2.0 && git push origin v0.2.0
+#   3. This workflow creates (or updates) the release and uploads assets.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset: rmux-x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            asset: rmux-aarch64-apple-darwin
+          - os: macos-13
+            target: x86_64-apple-darwin
+            asset: rmux-x86_64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: rmux-x86_64-pc-windows-msvc.exe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Linux GUI deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libxkbcommon-dev libssl-dev libgtk-3-dev libglib2.0-dev \
+            libatk1.0-dev libcairo2-dev libpango1.0-dev \
+            libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev libgdk-pixbuf-2.0-dev
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --release -p rmux-app --target ${{ matrix.target }}
+
+      - name: Stage asset (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          BIN="target/${{ matrix.target }}/release/rmux"
+          cp "$BIN" "${{ matrix.asset }}"
+          chmod +x "${{ matrix.asset }}"
+          shasum -a 256 "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"
+
+      - name: Stage asset (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Copy-Item "target/${{ matrix.target }}/release/rmux.exe" "${{ matrix.asset }}"
+          Get-FileHash "${{ matrix.asset }}" -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash.ToLower())  ${{ matrix.asset }}" } |
+            Set-Content "${{ matrix.asset }}.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: |
+            ${{ matrix.asset }}
+            ${{ matrix.asset }}.sha256
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all assets
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List assets
+        run: find dist -type f | sort
+
+      - name: Create / update release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: dist/**
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

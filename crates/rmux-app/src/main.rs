@@ -28,6 +28,7 @@ mod shortcut_handler;
 mod shortcut_manager;
 mod shortcuts;
 mod ui;
+mod update;
 mod workspace;
 
 /// CLI arguments for the rmux terminal multiplexer.
@@ -70,7 +71,12 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     init_logging(cli.verbose);
 
-    tracing::info!("rmux starting (version {})", env!("CARGO_PKG_VERSION"));
+    let sha = env!("RMUX_GIT_SHA");
+    if sha.is_empty() {
+        tracing::info!("rmux starting (version {})", env!("CARGO_PKG_VERSION"));
+    } else {
+        tracing::info!("rmux starting (version {} @ {})", env!("CARGO_PKG_VERSION"), sha);
+    }
 
     let mut viewport =
         egui::ViewportBuilder::default().with_inner_size([1200.0, 800.0]).with_title("rmux");
