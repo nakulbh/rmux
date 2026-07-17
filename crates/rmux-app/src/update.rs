@@ -461,11 +461,29 @@ pub fn spawn_apply_update(
     rx
 }
 
-/// Relaunch the installed binary and request the current window to close.
+/// Relaunch the installed binary (caller should close the current window after).
 ///
 /// Prefer `binary_path` from a successful install; fall back to `current_exe`.
+/// On macOS, if `~/Applications/rmux.app` exists, uses `open -n` so Launch
+/// Services starts a fresh GUI instance the same way Dock / Spotlight do.
 pub fn relaunch(binary_path: &str) -> Result<(), String> {
     use std::process::Command;
+
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(app) = macos_app_bundle() {
+            Command::new("open")
+                .args(["-n", "-a"])
+                .arg(&app)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .map_err(|e| format!("failed to open {}: {e}", app.display()))?;
+            tracing::info!(path = %app.display(), "relaunched via macOS app bundle");
+            return Ok(());
+        }
+    }
 
     let path = if std::path::Path::new(binary_path).is_file() {
         binary_path.to_string()
@@ -483,6 +501,14 @@ pub fn relaunch(binary_path: &str) -> Result<(), String> {
 
     tracing::info!(%path, "relaunched updated binary");
     Ok(())
+}
+
+/// `~/Applications/rmux.app` when present (install.sh desktop integration).
+#[cfg(target_os = "macos")]
+fn macos_app_bundle() -> Option<std::path::PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    let app = std::path::PathBuf::from(home).join("Applications").join("rmux.app");
+    app.is_dir().then_some(app)
 }
 
 // ─── tests (no network) ─────────────────────────────────────────────────────
