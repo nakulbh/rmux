@@ -20,6 +20,9 @@ pub const GITHUB_REPO: &str = "rmux";
 /// Human-facing releases page.
 pub const RELEASES_URL: &str = "https://github.com/nakulbh/rmux/releases";
 /// Install script URL (always from `main` so the installer itself is current).
+///
+/// Only referenced by the Unix installer path (`apply_update_unix`).
+#[cfg(not(windows))]
 pub const INSTALL_SCRIPT_URL: &str =
     "https://raw.githubusercontent.com/nakulbh/rmux/main/scripts/install.sh";
 
@@ -283,6 +286,10 @@ pub fn spawn_check() -> std::sync::mpsc::Receiver<UpdateCheckOutcome> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApplyUpdateOutcome {
     /// Binary (and optional desktop integration) installed successfully.
+    ///
+    /// Constructed by the Unix installer path. Matched on all platforms (and
+    /// in tests); on Windows `apply_update` currently only returns `Failed`.
+    #[allow(dead_code)]
     Success {
         /// Path we expect the user to relaunch (`~/.local/bin/rmux` or current exe).
         binary_path: String,
@@ -303,31 +310,22 @@ pub fn install_ref_for(source: UpdateSource, remote_label: &str) -> String {
 }
 
 /// Default install location used by `scripts/install.sh`.
+#[cfg(not(windows))]
 pub fn default_install_dir() -> std::path::PathBuf {
     dirs_home()
         .map(|h| h.join(".local").join("bin"))
         .unwrap_or_else(|| std::path::PathBuf::from("."))
 }
 
+#[cfg(not(windows))]
 fn dirs_home() -> Option<std::path::PathBuf> {
-    #[cfg(windows)]
-    {
-        std::env::var_os("HOME")
-            .or(std::env::var_os("USERPROFILE"))
-            .map(std::path::PathBuf::from)
-    }
-    #[cfg(not(windows))]
-    {
-        std::env::var_os("HOME").map(std::path::PathBuf::from)
-    }
+    std::env::var_os("HOME").map(std::path::PathBuf::from)
 }
 
 /// Expected path of the installed binary after a successful update.
+#[cfg(not(windows))]
 pub fn installed_binary_path() -> std::path::PathBuf {
     let mut p = default_install_dir();
-    #[cfg(windows)]
-    p.push("rmux.exe");
-    #[cfg(not(windows))]
     p.push("rmux");
     p
 }
@@ -345,9 +343,10 @@ pub fn apply_update(source: UpdateSource, remote_label: &str) -> ApplyUpdateOutc
     {
         // install.sh is bash/curl oriented; Windows users should use the
         // documented one-liner from a Git Bash / WSL environment for now.
-        return ApplyUpdateOutcome::Failed {
+        let _ = installed_ref;
+        ApplyUpdateOutcome::Failed {
             message: "in-app update is not supported on Windows yet — run the install script from Git Bash or WSL".into(),
-        };
+        }
     }
 
     #[cfg(not(windows))]
@@ -434,6 +433,7 @@ fn command_exists(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(any(test, not(windows)))]
 fn truncate_msg(s: &str, max: usize) -> String {
     let t = s.trim();
     if t.chars().count() <= max {
