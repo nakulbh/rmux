@@ -80,6 +80,12 @@ impl PtyBackend {
     /// When `cwd` is `None` (or not a directory), falls back to `$HOME`
     /// on Unix, otherwise the process inherits the parent cwd.
     ///
+    /// The shell is started as a **login** shell when the binary supports
+    /// it (`-l` / `--login`). That loads profile scripts (`.zprofile`,
+    /// `.bash_profile`, etc.) so tools installed via Homebrew, cargo, nvm,
+    /// and similar are on `PATH` — including when rmux itself was launched
+    /// from the Dock / Finder with macOS's sparse GUI environment.
+    ///
     /// # Errors
     ///
     /// Returns [`PtyError::OpenPty`] if the PTY could not be created.
@@ -104,7 +110,7 @@ impl PtyBackend {
         let pair = pty_system.openpty(pty_size).map_err(PtyError::OpenPty)?;
 
         let mut cmd = CommandBuilder::new(&shell);
-        cmd.env("TERM", "xterm-256color");
+        configure_shell_env(&mut cmd, &shell);
 
         // Prefer the caller's cwd (sibling terminal path); else $HOME on Unix.
         if let Some(dir) = cwd.filter(|p| p.is_dir()) {
@@ -227,6 +233,114 @@ impl std::fmt::Debug for PtyBackend {
     }
 }
 
+/// Configure environment and argv for a user shell inside a PTY.
+///
+/// * Sets `TERM` / `COLORTERM` so apps get modern capabilities.
+/// * Starts a login shell when supported so profile scripts populate `PATH`
+///   (critical when the parent GUI process has a sparse Dock/Finder env).
+/// * When the parent process itself has a sparse `PATH` (GUI launch), injects
+///   the user's login-shell `PATH` so even non-login shells and child tools
+///   see Homebrew / cargo / nvm.
+fn configure_shell_env(cmd: &mut CommandBuilder, shell: &str) {
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
+
+    if let Some(path) = login_path_if_needed(shell) {
+        cmd.env("PATH", path);
+    }
+
+    for arg in login_args_for_shell(shell) {
+        cmd.arg(arg);
+    }
+}
+
+/// Login-shell flags for common shells. Empty for shells that don't use them.
+///
+/// Login shells source profile files (`.zprofile`, `.bash_profile`, …) where
+/// package managers install their `PATH` setup. Matches Terminal.app / iTerm2 /
+/// WezTerm defaults on macOS.
+fn login_args_for_shell(shell: &str) -> Vec<&'static str> {
+    let name = Path::new(shell).file_name().and_then(|s| s.to_str()).unwrap_or(shell);
+
+    match name {
+        // POSIX / common Unix shells
+        "bash" | "zsh" | "fish" | "ksh" | "dash" | "csh" | "tcsh" | "sh" => {
+            vec!["-l"]
+        }
+        // Nushell
+        "nu" | "nushell" => vec!["--login"],
+        // Windows shells / unknown: leave argv alone
+        _ => Vec::new(),
+    }
+}
+
+/// When the current process `PATH` looks like a macOS/Linux GUI default,
+/// query the user's login shell once and return its `PATH`.
+///
+/// Returns `None` when the inherited `PATH` already looks complete (started
+/// from a terminal) so we don't override the user's environment.
+fn login_path_if_needed(shell: &str) -> Option<String> {
+    use std::sync::OnceLock;
+
+    static CACHED: OnceLock<Option<String>> = OnceLock::new();
+
+    CACHED
+        .get_or_init(|| {
+            let current = std::env::var("PATH").unwrap_or_default();
+            if !path_looks_sparse(&current) {
+                return None;
+            }
+
+            capture_login_path(shell).filter(|p| !p.is_empty() && p != &current)
+        })
+        .clone()
+}
+
+/// Heuristic: GUI defaults are short; developer shells usually include
+/// Homebrew, cargo, or a longer list of entries.
+fn path_looks_sparse(path: &str) -> bool {
+    let entries: Vec<&str> = path.split(':').filter(|s| !s.is_empty()).collect();
+    if entries.len() <= 6 {
+        return true;
+    }
+    let has_user_tools = entries.iter().any(|p| {
+        p.contains("homebrew")
+            || p.contains("/.cargo/")
+            || p.contains("/.local/bin")
+            || p.contains("/.nvm/")
+            || *p == "/usr/local/bin"
+            || *p == "/opt/homebrew/bin"
+    });
+    !has_user_tools && entries.len() < 12
+}
+
+/// Run `shell -l -c 'printf %s "$PATH"'` (or nushell equivalent) and capture
+/// the resulting PATH. Used only when the parent env looks sparse.
+fn capture_login_path(shell: &str) -> Option<String> {
+    let name = Path::new(shell).file_name().and_then(|s| s.to_str()).unwrap_or(shell);
+
+    let mut cmd = std::process::Command::new(shell);
+    // Clear PATH so profile scripts rebuild it from scratch (path_helper,
+    // brew shellenv, etc.) instead of appending to the sparse GUI path.
+    cmd.env_remove("PATH");
+
+    match name {
+        "nu" | "nushell" => {
+            cmd.args(["--login", "-c", "print $env.PATH | str join ':'"]);
+        }
+        _ => {
+            cmd.args(["-l", "-c", "printf %s \"$PATH\""]);
+        }
+    }
+
+    let output = cmd.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if path.is_empty() { None } else { Some(path) }
+}
+
 /// Resolve the current working directory of process `pid`.
 ///
 /// * Linux: read `/proc/<pid>/cwd` symlink.
@@ -338,5 +452,37 @@ mod tests {
         let result = backend.resize(120, 40);
         assert!(result.is_ok(), "Resize should succeed");
         backend.kill().ok();
+    }
+
+    #[test]
+    fn test_login_args_for_common_shells() {
+        assert_eq!(login_args_for_shell("/bin/zsh"), vec!["-l"]);
+        assert_eq!(login_args_for_shell("/bin/bash"), vec!["-l"]);
+        assert_eq!(login_args_for_shell("/usr/local/bin/fish"), vec!["-l"]);
+        assert_eq!(login_args_for_shell("/opt/homebrew/bin/nu"), vec!["--login"]);
+        assert_eq!(login_args_for_shell("cmd.exe"), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn test_path_looks_sparse_detects_gui_default() {
+        assert!(path_looks_sparse("/usr/bin:/bin:/usr/sbin:/sbin"));
+        assert!(path_looks_sparse(""));
+        // Long path with homebrew is not sparse
+        assert!(!path_looks_sparse(
+            "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/x/.cargo/bin"
+        ));
+    }
+
+    #[test]
+    fn test_capture_login_path_returns_nonempty() {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        // Should succeed on Unix CI / developer machines.
+        if cfg!(unix) {
+            let path = capture_login_path(&shell);
+            assert!(
+                path.as_ref().is_some_and(|p| !p.is_empty()),
+                "login shell should print a non-empty PATH, got {path:?}"
+            );
+        }
     }
 }
