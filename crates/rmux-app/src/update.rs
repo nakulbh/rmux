@@ -310,18 +310,16 @@ pub fn default_install_dir() -> std::path::PathBuf {
 }
 
 fn dirs_home() -> Option<std::path::PathBuf> {
-    std::env::var_os("HOME")
-        .or_else(|| {
-            #[cfg(windows)]
-            {
-                std::env::var_os("USERPROFILE")
-            }
-            #[cfg(not(windows))]
-            {
-                None
-            }
-        })
-        .map(std::path::PathBuf::from)
+    #[cfg(windows)]
+    {
+        std::env::var_os("HOME")
+            .or(std::env::var_os("USERPROFILE"))
+            .map(std::path::PathBuf::from)
+    }
+    #[cfg(not(windows))]
+    {
+        std::env::var_os("HOME").map(std::path::PathBuf::from)
+    }
 }
 
 /// Expected path of the installed binary after a successful update.
