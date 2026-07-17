@@ -316,7 +316,11 @@ impl SidebarView {
             // Right-side chips: close × on hover, else shortcut hint / unread.
             let mut right_reserved = 0.0_f32;
 
-            if hovered && can_close && !show_hints {
+            // Close × — register the hit target whenever closing is allowed so
+            // the widget exists every frame (not only while hovered). The full
+            // card also uses Sense::click(); if we only interact on hover, the
+            // card can steal the click and close.clicked() never fires.
+            if can_close && !show_hints {
                 let close_rect = egui::Rect::from_center_size(
                     egui::Pos2::new(content.right() - CLOSE_SIZE / 2.0_f32, content.center().y),
                     egui::Vec2::splat(CLOSE_SIZE),
@@ -330,39 +334,46 @@ impl SidebarView {
                     .on_hover_cursor(egui::CursorIcon::PointingHand)
                     .on_hover_text("Close workspace");
 
-                let x_color = if is_active {
-                    if close.hovered() {
-                        p().accent_fg
-                    } else {
-                        p().accent_fg.gamma_multiply(0.75_f32)
-                    }
-                } else if close.hovered() {
-                    p().danger
-                } else {
-                    p().text_muted
-                };
-
-                if close.hovered() {
-                    let chip_fill = if is_active {
-                        p().accent_fg.gamma_multiply(0.18_f32)
-                    } else {
-                        p().danger.gamma_multiply(0.2_f32)
-                    };
-                    painter.rect_filled(close_rect, egui::CornerRadius::same(3), chip_fill);
-                }
-
-                painter.text(
-                    close_rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    "\u{00d7}", // ×
-                    egui::FontId::proportional(14.0_f32),
-                    x_color,
-                );
-
-                if close.clicked() {
+                // Robust click: close widget won, OR the card click landed in
+                // the × rect (parent Sense::click sometimes wins the hit test).
+                let click_in_close =
+                    response.interact_pointer_pos().is_some_and(|pos| close_rect.contains(pos));
+                if close.clicked() || (response.clicked() && click_in_close) {
                     close_clicked = true;
                 }
-                right_reserved = CLOSE_SIZE + 4.0_f32;
+
+                // Paint only when the card or × is hovered (cmux reveal-on-hover).
+                if hovered || close.hovered() {
+                    let x_color = if is_active {
+                        if close.hovered() {
+                            p().accent_fg
+                        } else {
+                            p().accent_fg.gamma_multiply(0.75_f32)
+                        }
+                    } else if close.hovered() {
+                        p().danger
+                    } else {
+                        p().text_muted
+                    };
+
+                    if close.hovered() {
+                        let chip_fill = if is_active {
+                            p().accent_fg.gamma_multiply(0.18_f32)
+                        } else {
+                            p().danger.gamma_multiply(0.2_f32)
+                        };
+                        painter.rect_filled(close_rect, egui::CornerRadius::same(3), chip_fill);
+                    }
+
+                    painter.text(
+                        close_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "\u{00d7}", // ×
+                        egui::FontId::proportional(14.0_f32),
+                        x_color,
+                    );
+                    right_reserved = CLOSE_SIZE + 4.0_f32;
+                }
             } else if show_hints && index < 9 {
                 let badge_center = egui::Pos2::new(content.right() - 12.0_f32, content.center().y);
                 crate::ui::shortcut_hints::draw_workspace_badge(ui, badge_center, index, is_active);
