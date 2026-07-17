@@ -10,8 +10,8 @@
 //! crisp at any DPI and match cmux's thin SF-Symbols aesthetic.
 
 use egui::{
-    Color32, CornerRadius, CursorIcon, FontId, Pos2, Rect, Sense, Shape, Stroke, StrokeKind,
-    pos2, vec2,
+    Color32, CornerRadius, CursorIcon, FontId, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, pos2,
+    vec2,
 };
 
 use crate::notifications::NotificationManager;
