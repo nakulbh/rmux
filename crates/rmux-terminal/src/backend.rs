@@ -262,6 +262,10 @@ fn cwd_of_process_macos(pid: u32) -> Option<PathBuf> {
 }
 
 /// Parse `lsof -Fn` stdout and return the first `n<path>` entry that is a dir.
+///
+/// Compiled on macOS (production caller) and under `cfg(test)` on all platforms
+/// so unit tests stay green on Linux/Windows without dead-code warnings.
+#[cfg(any(test, target_os = "macos"))]
 fn parse_lsof_cwd_output(stdout: &[u8]) -> Option<PathBuf> {
     let text = String::from_utf8_lossy(stdout);
     for line in text.lines() {
