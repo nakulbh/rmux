@@ -12,6 +12,7 @@
 pub mod model;
 pub mod splits;
 pub mod surface;
+pub mod title;
 
 use std::collections::VecDeque;
 
@@ -102,11 +103,13 @@ impl WorkspaceManager {
             next_split_id: 1,
             closed_tabs: VecDeque::new(),
         };
-        manager.create_workspace("Workspace 1".to_string());
+        // Seed title; real auto title arrives once the first terminal reports
+        // cwd / process (see [`Self::refresh_auto_titles`]).
+        manager.create_workspace("Terminal".to_string());
         manager
     }
 
-    /// Create a new workspace with the given name.
+    /// Create a new workspace with the given seed name (auto-title until renamed).
     ///
     /// The new workspace automatically becomes the active workspace.
     pub fn create_workspace(&mut self, name: String) -> WorkspaceId {
@@ -379,11 +382,32 @@ impl WorkspaceManager {
         cleanup
     }
 
-    /// Rename a workspace by ID.
+    /// Rename a workspace by ID (marks the name as user-custom, cmux-style).
     pub fn rename_workspace(&mut self, id: model::WorkspaceId, new_name: String) {
         if let Some(ws) = self.workspaces.iter_mut().find(|w| w.id == id) {
-            ws.name = new_name;
-            tracing::debug!(workspace_id = ?id, "Renamed workspace");
+            ws.set_custom_name(new_name);
+            tracing::debug!(workspace_id = ?id, "Renamed workspace (custom)");
+        }
+    }
+
+    /// Refresh automatic sidebar titles from each workspace's focused terminal.
+    ///
+    /// Mirrors cmux `applyProcessTitle` / single-panel title sync: the focused
+    /// surface's process or path title becomes the workspace name unless the
+    /// user has set a custom name.
+    pub fn refresh_auto_titles(&mut self) {
+        for ws in &mut self.workspaces {
+            if ws.name_is_custom {
+                continue;
+            }
+            let Some(title) = focused_auto_title(ws) else {
+                continue;
+            };
+            // Keep git_branch metadata in sync for any UI that shows it.
+            if let Some(branch) = focused_git_branch(ws) {
+                ws.git_branch = Some(branch);
+            }
+            let _ = ws.apply_automatic_title(title);
         }
     }
 
@@ -563,6 +587,17 @@ impl WorkspaceManager {
 
         Ok(())
     }
+}
+
+/// Auto title from the focused pane's active surface terminal.
+fn focused_auto_title(ws: &Workspace) -> Option<String> {
+    let term = ws.root.find_pane(ws.active_pane).and_then(|n| n.active_terminal())?;
+    Some(term.auto_workspace_title())
+}
+
+fn focused_git_branch(ws: &Workspace) -> Option<String> {
+    let term = ws.root.find_pane(ws.active_pane).and_then(|n| n.active_terminal())?;
+    term.cached_git_branch().map(str::to_string)
 }
 
 impl Default for WorkspaceManager {

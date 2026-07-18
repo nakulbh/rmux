@@ -25,4 +25,4 @@ pub mod workspace_view;
 pub use help_menu::HelpMenu;
 pub use notification_panel::NotificationPanel;
 pub use settings_panel::SettingsPanel;
-pub use terminal_pane::{DEFAULT_FONT_SIZE, TerminalPane};
+pub use terminal_pane::{DEFAULT_FONT_SIZE, TerminalPane, format_cwd_tab_title};

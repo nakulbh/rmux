@@ -101,6 +101,8 @@ impl eframe::App for RmuxApp {
         // Process PTY output for all terminal panes (exit detection, grid).
         // OSC → notification generation is disabled for now.
         self.workspace_manager.process_all_panes();
+        // cmux-style dynamic sidebar titles from focused process / path.
+        self.workspace_manager.refresh_auto_titles();
 
         // Consume app shortcuts BEFORE UI so reserved chords never reach the
         // terminal PTY. On Linux egui sets both `ctrl` and `command` for Ctrl;
@@ -227,8 +229,7 @@ impl RmuxApp {
                 self.settings_panel.open = !self.settings_panel.open;
             }
             TopBarAction::NewWorkspace => {
-                let count = self.workspace_manager.workspace_count() + 1;
-                let ws = self.create_workspace_with_terminal(format!("Workspace {count}"));
+                let ws = self.create_workspace_with_terminal("Terminal".to_string());
                 tracing::info!(workspace_id = ws, "Created workspace via top bar");
             }
             TopBarAction::PrevWorkspace => {

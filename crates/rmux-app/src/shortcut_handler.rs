@@ -136,8 +136,7 @@ impl RmuxApp {
             }
 
             AppCommand::NewWorkspace => {
-                let count = self.workspace_manager.workspace_count() + 1;
-                let ws = self.create_workspace_with_terminal(format!("Workspace {count}"));
+                let ws = self.create_workspace_with_terminal("Terminal".to_string());
                 tracing::info!(workspace_id = ws, "Created workspace");
             }
 

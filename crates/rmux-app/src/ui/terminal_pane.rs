@@ -65,8 +65,12 @@ pub struct TerminalPane {
     /// Cached shell cwd for tab titles (refreshed periodically; avoids
     /// calling `lsof` / reading `/proc` every frame).
     last_cwd: Option<PathBuf>,
-    /// Frame counter used to throttle cwd refreshes.
+    /// Frame counter used to throttle cwd / process-title refreshes.
     cwd_tick: u16,
+    /// Cached foreground process title (`cargo run …`), when the shell is busy.
+    last_fg_title: Option<String>,
+    /// Cached git branch for the shell cwd (idle workspace title).
+    last_git_branch: Option<String>,
 
     // Find bar state
     /// Whether the find/search bar is currently visible.
@@ -173,6 +177,8 @@ impl TerminalPane {
             // process-query refresh.
             last_cwd: cwd.map(Path::to_path_buf),
             cwd_tick: 0,
+            last_fg_title: None,
+            last_git_branch: None,
             find_visible: false,
             find_query: String::new(),
             find_results: Vec::new(),
@@ -215,16 +221,33 @@ impl TerminalPane {
             }
         }
 
-        // Refresh cwd cache ~every 45 frames (~0.7s at 60fps) for tab titles.
+        // Refresh cwd / process title / git branch ~every 45 frames (~0.7s at
+        // 60fps) for tab labels and cmux-style workspace auto-titles.
         self.cwd_tick = self.cwd_tick.wrapping_add(1);
-        if self.cwd_tick.is_multiple_of(45)
-            && let Some(cwd) = self.backend.working_directory()
-        {
-            self.last_cwd = Some(cwd);
+        if self.cwd_tick.is_multiple_of(45) {
+            self.refresh_title_sources();
         } else if self.last_cwd.is_none() {
-            // First chance: populate immediately so new tabs aren't "Terminal N".
+            // First chance: populate immediately so new tabs aren't empty.
+            self.refresh_title_sources();
+        }
+    }
+
+    /// Probe cwd, foreground process, and git branch (throttled by caller).
+    fn refresh_title_sources(&mut self) {
+        if let Some(cwd) = self.backend.working_directory() {
+            // Git branch only when cwd changes or we have never probed.
+            let cwd_changed = self.last_cwd.as_ref() != Some(&cwd);
+            self.last_cwd = Some(cwd);
+            if (cwd_changed || self.last_git_branch.is_none())
+                && let Some(ref path) = self.last_cwd
+            {
+                self.last_git_branch = crate::workspace::title::git_branch_for_cwd(path);
+            }
+        } else if self.last_cwd.is_none() {
             self.last_cwd = self.backend.working_directory();
         }
+
+        self.last_fg_title = self.backend.foreground_process_title();
     }
 
     /// Best-effort current working directory of this pane's shell.
@@ -247,6 +270,22 @@ impl TerminalPane {
             return format_cwd_tab_title(cwd);
         }
         user_host_title()
+    }
+
+    /// cmux-style workspace / process title for the sidebar.
+    ///
+    /// Prefers a running non-shell command; otherwise `{branch} · {path}`.
+    pub fn auto_workspace_title(&self) -> String {
+        crate::workspace::title::compose_auto_title(
+            self.last_fg_title.as_deref(),
+            self.cached_cwd(),
+            self.last_git_branch.as_deref(),
+        )
+    }
+
+    /// Cached git branch for the shell cwd, if known.
+    pub fn cached_git_branch(&self) -> Option<&str> {
+        self.last_git_branch.as_deref()
     }
 
     /// Write raw text to the pane's PTY as if it had been typed.
