@@ -325,8 +325,12 @@ impl TerminalPane {
             self.handle_keyboard_input(ui);
         }
 
-        // Toggle cursor blink
-        self.show_cursor = (ui.input(|i| i.time) as u64 % 1000) < 500;
+        // Blink caret while focused. The previous formula cast wall-clock
+        // seconds to `u64` and used `% 1000 < 500`, which left the cursor
+        // fully invisible for entire ~500 s windows (looked like a missing
+        // caret). See [`cursor_blink_visible`].
+        let now = ui.input(|i| i.time);
+        self.show_cursor = cursor_blink_visible(now, self.has_focus);
 
         self.show_title_bar(ui, rect);
 
@@ -1240,9 +1244,49 @@ impl TerminalPane {
     }
 }
 
+/// Half-period of the terminal caret blink, in seconds (on + off ≈ 1 s).
+const CURSOR_BLINK_HALF_PERIOD_SECS: f64 = 0.5;
+
+/// Whether the terminal caret should be painted this frame.
+///
+/// When focused, blinks at ~1 Hz (500 ms on / 500 ms off) using the fractional
+/// part of `time_secs` so long uptimes never stick in an "always off" phase.
+/// When unfocused, stays solid so the insert point remains visible after
+/// focus moves to another pane or widget.
+fn cursor_blink_visible(time_secs: f64, has_focus: bool) -> bool {
+    if !has_focus {
+        return true;
+    }
+    time_secs.rem_euclid(CURSOR_BLINK_HALF_PERIOD_SECS * 2.0) < CURSOR_BLINK_HALF_PERIOD_SECS
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_cursor_blink_on_during_first_half_period() {
+        assert!(cursor_blink_visible(0.0, true));
+        assert!(cursor_blink_visible(0.49, true));
+        // Long uptime must still blink — not freeze off for 500 s.
+        assert!(cursor_blink_visible(1234.1, true));
+        assert!(cursor_blink_visible(500.1, true));
+    }
+
+    #[test]
+    fn test_cursor_blink_off_during_second_half_period() {
+        assert!(!cursor_blink_visible(0.51, true));
+        assert!(!cursor_blink_visible(0.99, true));
+        assert!(!cursor_blink_visible(1234.6, true));
+    }
+
+    #[test]
+    fn test_cursor_solid_when_unfocused() {
+        // Unfocused panes keep a steady caret (no blink hide).
+        assert!(cursor_blink_visible(0.0, false));
+        assert!(cursor_blink_visible(0.75, false));
+        assert!(cursor_blink_visible(9999.9, false));
+    }
 
     #[test]
     fn test_copy_mode_default_false() {

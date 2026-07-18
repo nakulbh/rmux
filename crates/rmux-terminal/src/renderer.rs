@@ -2,8 +2,10 @@ use crate::state::GridSnapshot;
 use alacritty_terminal::vte::ansi::CursorShape;
 use egui::{Color32, FontFamily, FontId, Pos2, Rect, Stroke, Ui, Vec2};
 
-const CURSOR_BLOCK_ALPHA: u8 = 128;
-const CURSOR_LINE_ALPHA: u8 = 200;
+// Opaque enough to read on dark themes; old 128 made the block nearly
+// invisible over black cells, especially with a light theme cursor color.
+const CURSOR_BLOCK_ALPHA: u8 = 200;
+const CURSOR_LINE_ALPHA: u8 = 255;
 
 /// Extra vertical padding factor applied on top of measured glyph height so
 /// descenders ("gypq") and combining marks don't clip, while still keeping
