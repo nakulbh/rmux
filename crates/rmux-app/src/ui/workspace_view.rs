@@ -288,9 +288,10 @@ fn render_tab_bar(
             title_color,
         );
 
-        // Close × — always on active tab (cmux), or on hover for others.
-        let show_close = surface_count > 1 && (is_current || resp.hovered());
-        if show_close {
+        // Close × — register hit target whenever multi-tab so the parent
+        // tab click cannot steal the event. Paint when active or hovered.
+        let mut closed_this_tab = false;
+        if surface_count > 1 {
             let close_center =
                 egui::pos2(tab_rect.right() - TAB_CLOSE_SIZE / 2.0_f32 - 2.0_f32, cy);
             let close_rect = Rect::from_center_size(close_center, Vec2::splat(TAB_CLOSE_SIZE));
@@ -298,33 +299,40 @@ fn render_tab_bar(
                 .interact(close_rect, ui.id().with(("surf_close", idx)), egui::Sense::click())
                 .on_hover_cursor(egui::CursorIcon::PointingHand)
                 .on_hover_text("Close terminal");
-            let x_color = if close.hovered() {
-                palette.danger
-            } else if is_current {
-                palette.text_muted
-            } else {
-                palette.text_disabled
-            };
-            if close.hovered() {
-                ui.painter().circle_filled(
-                    close_center,
-                    TAB_CLOSE_SIZE / 2.0_f32 - 1.0_f32,
-                    palette.danger.gamma_multiply(0.2_f32),
-                );
-            }
-            ui.painter().text(
-                close_center,
-                egui::Align2::CENTER_CENTER,
-                "\u{00d7}",
-                egui::FontId::proportional(12.0_f32),
-                x_color,
-            );
-            if close.clicked() {
+            let click_in_close =
+                resp.interact_pointer_pos().is_some_and(|pos| close_rect.contains(pos));
+            if close.clicked() || (resp.clicked() && click_in_close) {
                 actions.push(TabAction::Close(idx));
+                closed_this_tab = true;
+            }
+
+            let show_close = is_current || resp.hovered() || close.hovered();
+            if show_close {
+                let x_color = if close.hovered() {
+                    palette.danger
+                } else if is_current {
+                    palette.text_muted
+                } else {
+                    palette.text_disabled
+                };
+                if close.hovered() {
+                    ui.painter().circle_filled(
+                        close_center,
+                        TAB_CLOSE_SIZE / 2.0_f32 - 1.0_f32,
+                        palette.danger.gamma_multiply(0.2_f32),
+                    );
+                }
+                ui.painter().text(
+                    close_center,
+                    egui::Align2::CENTER_CENTER,
+                    "\u{00d7}",
+                    egui::FontId::proportional(12.0_f32),
+                    x_color,
+                );
             }
         }
 
-        if resp.clicked() && !is_current {
+        if resp.clicked() && !is_current && !closed_this_tab {
             actions.push(TabAction::Select(idx));
         }
 
