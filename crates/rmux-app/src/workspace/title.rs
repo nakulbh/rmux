@@ -91,9 +91,8 @@ fn truncate_title(s: &str, max: usize) -> String {
 /// 3. Path/branch context when the primary title is a running command or custom
 ///    name (so `cargo run…` still shows `main · ~/proj` underneath)
 /// 4. Dirty git status when nothing else applies
-/// Priority helper used by unit tests and as a single-line fallback.
 ///
-/// The live sidebar now paints discrete cmux slots instead.
+/// Used by unit tests; the live sidebar paints discrete cmux slots instead.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn compose_subtitle(
     primary_title: &str,
