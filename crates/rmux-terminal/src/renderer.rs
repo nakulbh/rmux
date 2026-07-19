@@ -32,6 +32,60 @@ fn is_nerd_icon(c: char) -> bool {
     )
 }
 
+/// Unicode ranges where a missing font glyph should use geometry instead of tofu.
+///
+/// This is the **general** anti-tofu policy for the terminal: we do not need a
+/// new `is_special_shape` arm for every symbol TUIs invent. If the full font
+/// cascade (JetBrains → Nerd → system symbols) still lacks the codepoint, draw
+/// a neutral geometric stand-in rather than a hollow □ replacement glyph.
+fn is_symbol_range(c: char) -> bool {
+    let cp = c as u32;
+    matches!(
+        cp,
+        0x2190..=0x21FF // Arrows
+            | 0x2200..=0x22FF // Mathematical Operators
+            | 0x2300..=0x23FF // Miscellaneous Technical
+            | 0x2460..=0x24FF // Enclosed Alphanumerics
+            | 0x2500..=0x257F // Box Drawing (prefer font; fallback if absent)
+            | 0x2580..=0x259F // Block Elements
+            | 0x25A0..=0x25FF // Geometric Shapes
+            | 0x2600..=0x26FF // Miscellaneous Symbols
+            | 0x2700..=0x27BF // Dingbats
+            | 0x27F0..=0x27FF // Supplemental Arrows-A
+            | 0x2900..=0x297F // Supplemental Arrows-B
+            | 0x2B00..=0x2BFF // Miscellaneous Symbols and Arrows
+            | 0x1F300..=0x1F9FF // Misc Symbols and Pictographs / Supplemental (emoji-ish)
+    )
+}
+
+/// Last-resort geometry when no font has the glyph.
+///
+/// Prefers the explicit special-shape painter when we know the codepoint;
+/// otherwise draws a small diamond so the cell is never an empty tofu box.
+fn paint_missing_symbol_fallback(painter: &egui::Painter, cell: Rect, c: char, fg: Color32) {
+    if paint_special_shape(painter, cell, c, fg) {
+        return;
+    }
+    // Neutral diamond stand-in — readable, not confusable with the □ tofu
+    // that fonts emit for .notdef glyphs.
+    let cx = cell.center().x;
+    let cy = cell.center().y;
+    let rx = cell.width() * 0.22;
+    let ry = cell.height() * 0.28;
+    painter.add(egui::Shape::convex_polygon(
+        vec![
+            Pos2::new(cx, cy - ry),
+            Pos2::new(cx + rx, cy),
+            Pos2::new(cx, cy + ry),
+            Pos2::new(cx - rx, cy),
+        ],
+        fg,
+        Stroke::NONE,
+    ));
+    // `c` reserved for future per-block heuristics (arrows vs dingbats).
+    let _c = c;
+}
+
 /// Characters we draw as geometry instead of font glyphs.
 ///
 /// Covers:
@@ -507,29 +561,37 @@ impl TerminalRenderer {
 
                 if cell.c != ' ' {
                     if is_special_shape(cell.c) {
-                        // Geometry path — solid triangles / blocks like Ghostty.
+                        // Explicit geometry for TUI shapes (Ghostty/cmux solid look).
                         paint_special_shape(painter, cell_rect, cell.c, cell.fg);
                     } else {
                         let font_id =
                             if cell.bold { font_bold.clone() } else { font_regular.clone() };
 
-                        let galley =
-                            ui.fonts(|f| f.layout_no_wrap(cell.c.to_string(), font_id, cell.fg));
-                        let gw = galley.size().x;
-                        let gh = galley.size().y;
-
-                        let x = if is_nerd_icon(cell.c) {
-                            // Center nerd icons in the cell (Ghostty-style).
-                            cell_rect.left() + (cell_rect.width() - gw) * 0.5
+                        // General anti-tofu: if *no* font in the cascade has
+                        // this codepoint, don't paint a hollow □ replacement —
+                        // use geometry for symbol ranges instead.
+                        let has_glyph = ui.fonts(|f| f.has_glyph(&font_id, cell.c));
+                        if !has_glyph && is_symbol_range(cell.c) {
+                            paint_missing_symbol_fallback(painter, cell_rect, cell.c, cell.fg);
                         } else {
-                            cell_rect.left()
-                        };
-                        // Slight top bias keeps the Latin baseline closer to
-                        // native terminal metrics than pure vertical center,
-                        // which made text look "floaty" vs cmux.
-                        let y = cell_rect.top() + (cell_rect.height() - gh) * 0.35;
+                            let galley = ui
+                                .fonts(|f| f.layout_no_wrap(cell.c.to_string(), font_id, cell.fg));
+                            let gw = galley.size().x;
+                            let gh = galley.size().y;
 
-                        painter.galley(Pos2::new(x, y), galley, cell.fg);
+                            let x = if is_nerd_icon(cell.c) {
+                                // Center nerd icons in the cell (Ghostty-style).
+                                cell_rect.left() + (cell_rect.width() - gw) * 0.5
+                            } else {
+                                cell_rect.left()
+                            };
+                            // Slight top bias keeps the Latin baseline closer to
+                            // native terminal metrics than pure vertical center,
+                            // which made text look "floaty" vs cmux.
+                            let y = cell_rect.top() + (cell_rect.height() - gh) * 0.35;
+
+                            painter.galley(Pos2::new(x, y), galley, cell.fg);
+                        }
                     }
 
                     if cell.underline {
@@ -650,6 +712,20 @@ mod tests {
         assert!(is_special_shape('▄'));
         assert!(is_special_shape('▀'));
         assert!(!is_special_shape('A'));
+    }
+
+    #[test]
+    fn test_symbol_range_covers_common_tofu_sources() {
+        // Geometric / dingbat / technical — general anti-tofu policy.
+        assert!(is_symbol_range('⎇')); // U+2387 branch
+        assert!(is_symbol_range('□'));
+        assert!(is_symbol_range('✓'));
+        assert!(is_symbol_range('→'));
+        assert!(is_symbol_range('★'));
+        // Normal text must still go through fonts.
+        assert!(!is_symbol_range('A'));
+        assert!(!is_symbol_range('中'));
+        assert!(!is_symbol_range(' '));
     }
 
     #[test]
