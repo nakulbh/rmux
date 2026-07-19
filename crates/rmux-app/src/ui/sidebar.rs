@@ -1,10 +1,14 @@
 //! Sidebar view — cmux-style workspace card list.
 //!
-//! Vertical list of workspace cards on the left. Each card shows the
-//! workspace name (no pane/git/port metadata for now). Active card uses
-//! the accent fill; hover reveals a close (×) button. Double-click or
-//! Cmd/Ctrl+Shift+R starts an inline rename. Hold ⌘/Ctrl to see `⌘1…⌘9`
-//! switch shortcuts on each card.
+//! Vertical list of workspace cards on the left. Each card shows:
+//! - **Title** — dynamic process/path name (or user custom rename)
+//! - **Subtitle** — cmux-style metadata: latest notification, API status,
+//!   or `branch · path` context under a running command
+//! - optional **progress** bar and unread badge
+//!
+//! Active card uses the accent fill; hover reveals a close (×) button.
+//! Double-click or Cmd/Ctrl+Shift+R starts an inline rename. Hold ⌘/Ctrl
+//! to see `⌘1…⌘9` switch shortcuts on each card.
 
 use crate::notifications::NotificationManager;
 use crate::ui::help_menu::HelpMenu;
@@ -25,8 +29,10 @@ fn card_radius() -> u8 {
 const CARD_PAD_X: f32 = 10.0;
 /// Card vertical padding.
 const CARD_PAD_Y: f32 = 8.0;
-/// Fixed card height (name-only layout, cmux-like density).
-const CARD_HEIGHT: f32 = 36.0;
+/// Single-line card (title only).
+const CARD_HEIGHT_COMPACT: f32 = 36.0;
+/// Two-line card (title + muted metadata), cmux-like density.
+const CARD_HEIGHT_WITH_META: f32 = 52.0;
 /// Close (×) hit target size.
 const CLOSE_SIZE: f32 = 18.0;
 
@@ -34,8 +40,12 @@ const CLOSE_SIZE: f32 = 18.0;
 struct TabData {
     /// Workspace id.
     id: WorkspaceId,
-    /// Display name.
+    /// Primary display name.
     name: String,
+    /// Muted secondary line (notification / status / path context).
+    subtitle: Option<String>,
+    /// Progress in `0.0..=1.0` drawn as a thin bar under the card content.
+    progress: Option<f32>,
     /// Number of unread notifications for this workspace.
     unread: usize,
 }
@@ -164,10 +174,17 @@ impl SidebarView {
         let workspaces: Vec<TabData> = manager
             .workspaces()
             .iter()
-            .map(|w| TabData {
-                id: w.id,
-                name: w.name.clone(),
-                unread: notifications.unread_count_for_workspace(w.id.0),
+            .map(|w| {
+                let unread = notifications.unread_count_for_workspace(w.id.0);
+                let latest = notifications.latest_unread_text_for_workspace(w.id.0);
+                let subtitle = crate::workspace::title::compose_subtitle(
+                    &w.name,
+                    latest.as_deref(),
+                    w.status.as_deref(),
+                    w.path_context.as_deref(),
+                    w.git_status.as_deref(),
+                );
+                TabData { id: w.id, name: w.name.clone(), subtitle, progress: w.progress, unread }
             })
             .collect();
         let active_index = manager.active_index();
@@ -239,7 +256,9 @@ impl SidebarView {
         show_hints: bool,
         can_close: bool,
     ) -> CardResult {
-        let desired_size = egui::Vec2::new(ui.available_width(), CARD_HEIGHT);
+        let has_meta = tab.subtitle.is_some() || tab.progress.is_some();
+        let card_h = if has_meta { CARD_HEIGHT_WITH_META } else { CARD_HEIGHT_COMPACT };
+        let desired_size = egui::Vec2::new(ui.available_width(), card_h);
         let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
 
         if !ui.is_rect_visible(rect) {
@@ -251,12 +270,12 @@ impl SidebarView {
         let painter = ui.painter().with_clip_rect(rect);
 
         // cmux: active = solid accent blue + dark text; inactive = flat panel.
-        let (fill, border_color, title_color) = if is_active {
-            (p().accent, p().accent, p().accent_fg)
+        let (fill, border_color, title_color, subtitle_color) = if is_active {
+            (p().accent, p().accent, p().accent_fg, p().accent_fg.gamma_multiply(0.78_f32))
         } else if hovered {
-            (p().panel_active_bg, p().border, p().text_primary)
+            (p().panel_active_bg, p().border, p().text_primary, p().text_muted)
         } else {
-            (p().panel_bg, p().border, p().text_muted)
+            (p().panel_bg, p().border, p().text_muted, p().text_disabled)
         };
 
         painter.rect_filled(rect, radius, fill);
@@ -314,6 +333,9 @@ impl SidebarView {
             let content = rect.shrink2(egui::Vec2::new(CARD_PAD_X, CARD_PAD_Y));
 
             // Right-side chips: close × on hover, else shortcut hint / unread.
+            // Vertically align chips with the title row (top of content).
+            let chip_y =
+                if tab.subtitle.is_some() { content.top() + 8.0_f32 } else { content.center().y };
             let mut right_reserved = 0.0_f32;
 
             // Close × — register the hit target whenever closing is allowed so
@@ -322,7 +344,7 @@ impl SidebarView {
             // card can steal the click and close.clicked() never fires.
             if can_close && !show_hints {
                 let close_rect = egui::Rect::from_center_size(
-                    egui::Pos2::new(content.right() - CLOSE_SIZE / 2.0_f32, content.center().y),
+                    egui::Pos2::new(content.right() - CLOSE_SIZE / 2.0_f32, chip_y),
                     egui::Vec2::splat(CLOSE_SIZE),
                 );
                 let close = ui
@@ -375,11 +397,11 @@ impl SidebarView {
                     right_reserved = CLOSE_SIZE + 4.0_f32;
                 }
             } else if show_hints && index < 9 {
-                let badge_center = egui::Pos2::new(content.right() - 12.0_f32, content.center().y);
+                let badge_center = egui::Pos2::new(content.right() - 12.0_f32, chip_y);
                 crate::ui::shortcut_hints::draw_workspace_badge(ui, badge_center, index, is_active);
                 right_reserved = 28.0_f32;
             } else if tab.unread > 0 {
-                let badge_center = egui::Pos2::new(content.right() - 8.0_f32, content.center().y);
+                let badge_center = egui::Pos2::new(content.right() - 8.0_f32, chip_y);
                 painter.circle_filled(
                     badge_center,
                     7.0_f32,
@@ -395,19 +417,69 @@ impl SidebarView {
                 right_reserved = 20.0_f32;
             }
 
-            // Workspace name — single line, truncated.
-            let mut job = egui::text::LayoutJob::simple_singleline(
+            let text_width = (content.width() - right_reserved).max(0.0_f32);
+
+            // Primary title.
+            let mut title_job = egui::text::LayoutJob::simple_singleline(
                 tab.name.clone(),
                 egui::FontId::proportional(13.0_f32),
                 title_color,
             );
-            job.wrap = egui::text::TextWrapping::truncate_at_width(
-                (content.width() - right_reserved).max(0.0_f32),
-            );
-            let galley = ui.fonts(|f| f.layout_job(job));
-            let name_pos =
-                egui::Pos2::new(content.left(), content.center().y - galley.size().y / 2.0_f32);
-            painter.galley(name_pos, galley, title_color);
+            title_job.wrap = egui::text::TextWrapping::truncate_at_width(text_width);
+            let title_galley = ui.fonts(|f| f.layout_job(title_job));
+
+            if let Some(ref sub) = tab.subtitle {
+                // Two-line layout: title on top, muted metadata below (cmux).
+                let mut sub_job = egui::text::LayoutJob::simple_singleline(
+                    sub.clone(),
+                    egui::FontId::proportional(11.0_f32),
+                    subtitle_color,
+                );
+                sub_job.wrap = egui::text::TextWrapping::truncate_at_width(text_width);
+                let sub_galley = ui.fonts(|f| f.layout_job(sub_job));
+
+                let title_h = title_galley.size().y;
+                let sub_h = sub_galley.size().y;
+                let block_h = title_h + 2.0_f32 + sub_h;
+                let top = content.center().y - block_h / 2.0_f32;
+                painter.galley(egui::Pos2::new(content.left(), top), title_galley, title_color);
+                painter.galley(
+                    egui::Pos2::new(content.left(), top + title_h + 2.0_f32),
+                    sub_galley,
+                    subtitle_color,
+                );
+            } else {
+                let title_h = title_galley.size().y;
+                let name_pos =
+                    egui::Pos2::new(content.left(), content.center().y - title_h / 2.0_f32);
+                painter.galley(name_pos, title_galley, title_color);
+            }
+
+            // Thin progress bar along the bottom edge (sidebar.set_progress).
+            if let Some(prog) = tab.progress {
+                let bar_h = 2.0_f32;
+                let bar_rect = egui::Rect::from_min_max(
+                    egui::Pos2::new(rect.left() + 4.0_f32, rect.bottom() - bar_h - 2.0_f32),
+                    egui::Pos2::new(rect.right() - 4.0_f32, rect.bottom() - 2.0_f32),
+                );
+                painter.rect_filled(
+                    bar_rect,
+                    egui::CornerRadius::same(1),
+                    if is_active { p().accent_fg.gamma_multiply(0.25_f32) } else { p().border },
+                );
+                let fill_w = bar_rect.width() * prog.clamp(0.0_f32, 1.0_f32);
+                if fill_w > 0.5_f32 {
+                    let fill_rect = egui::Rect::from_min_size(
+                        bar_rect.min,
+                        egui::Vec2::new(fill_w, bar_rect.height()),
+                    );
+                    painter.rect_filled(
+                        fill_rect,
+                        egui::CornerRadius::same(1),
+                        if is_active { p().accent_fg } else { p().accent },
+                    );
+                }
+            }
         }
 
         CardResult { response, close_clicked }

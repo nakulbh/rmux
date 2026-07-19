@@ -86,6 +86,21 @@ impl NotificationManager {
         self.notifications.iter().filter(|n| !n.read && n.workspace_id == Some(ws)).count()
     }
 
+    /// Latest unread notification line for a workspace (cmux `latestNotificationText`).
+    ///
+    /// Prefers title; appends body when present and short. Used as the sidebar
+    /// secondary line so agent prompts like "Claude is waiting for your input"
+    /// surface without opening the notification panel.
+    #[must_use]
+    pub fn latest_unread_text_for_workspace(&self, ws: u64) -> Option<String> {
+        self.notifications.iter().rev().find(|n| !n.read && n.workspace_id == Some(ws)).map(|n| {
+            match n.body.as_deref().map(str::trim).filter(|b| !b.is_empty()) {
+                Some(body) if body != n.title => format!("{} — {body}", n.title),
+                _ => n.title.clone(),
+            }
+        })
+    }
+
     /// Mark the notification with the given id as read (no-op if absent).
     pub fn mark_read(&mut self, id: u64) {
         if let Some(notification) = self.notifications.iter_mut().find(|n| n.id == id) {
@@ -167,6 +182,23 @@ mod tests {
         manager.mark_read(a);
         assert_eq!(manager.unread_count(), 3);
         assert_eq!(manager.unread_count_for_workspace(1), 1);
+    }
+
+    #[test]
+    fn test_latest_unread_text_for_workspace() {
+        let (mut manager, _calls) = manager_with_recorder();
+        manager.add("older".into(), None, None, Some(1));
+        manager.add(
+            "Claude is waiting for your input".into(),
+            Some("session idle".into()),
+            None,
+            Some(1),
+        );
+        manager.add("other ws".into(), None, None, Some(2));
+        let text = manager.latest_unread_text_for_workspace(1).expect("text");
+        assert!(text.contains("Claude is waiting"), "got {text}");
+        manager.mark_all_read();
+        assert!(manager.latest_unread_text_for_workspace(1).is_none());
     }
 
     #[test]

@@ -83,6 +83,42 @@ fn truncate_title(s: &str, max: usize) -> String {
     out
 }
 
+/// Build the muted secondary line under a workspace title (cmux row metadata).
+///
+/// Priority (first non-empty wins), matching cmux sidebar row inputs:
+/// 1. Latest unread notification text (`latestNotificationText`)
+/// 2. Explicit API status (`sidebar.set_status`)
+/// 3. Path/branch context when the primary title is a running command or custom
+///    name (so `cargo run…` still shows `main · ~/proj` underneath)
+/// 4. Dirty git status when nothing else applies
+pub fn compose_subtitle(
+    primary_title: &str,
+    latest_notification: Option<&str>,
+    status: Option<&str>,
+    path_context: Option<&str>,
+    git_status: Option<&str>,
+) -> Option<String> {
+    if let Some(text) = latest_notification.map(str::trim).filter(|s| !s.is_empty()) {
+        return Some(truncate_title(text, MAX_WORKSPACE_TITLE_CHARS));
+    }
+    if let Some(text) = status.map(str::trim).filter(|s| !s.is_empty()) {
+        return Some(truncate_title(text, MAX_WORKSPACE_TITLE_CHARS));
+    }
+    if let Some(path) = path_context.map(str::trim).filter(|s| !s.is_empty()) {
+        // Avoid duplicating the same string on both lines.
+        if path != primary_title.trim() {
+            return Some(truncate_title(path, MAX_WORKSPACE_TITLE_CHARS));
+        }
+    }
+    if let Some(st) = git_status
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && !matches!(*s, "clean" | "ok" | "up to date"))
+    {
+        return Some(truncate_title(st, MAX_WORKSPACE_TITLE_CHARS));
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,5 +167,36 @@ mod tests {
         // /tmp is rarely a git root; either None or Some is ok if someone
         // made it one — only assert it does not panic.
         let _ = git_branch_for_cwd(&tmp);
+    }
+
+    #[test]
+    fn test_compose_subtitle_prefers_notification() {
+        let sub = compose_subtitle(
+            "cargo run",
+            Some("Claude is waiting for your input"),
+            Some("building"),
+            Some("main · ~/proj"),
+            Some("modified"),
+        );
+        assert_eq!(sub.as_deref(), Some("Claude is waiting for your input"));
+    }
+
+    #[test]
+    fn test_compose_subtitle_status_over_path() {
+        let sub =
+            compose_subtitle("cargo run", None, Some("PR #23 open"), Some("main · ~/x"), None);
+        assert_eq!(sub.as_deref(), Some("PR #23 open"));
+    }
+
+    #[test]
+    fn test_compose_subtitle_path_when_title_is_process() {
+        let sub = compose_subtitle("cargo run -p rmux", None, None, Some("main · ~/rmux"), None);
+        assert_eq!(sub.as_deref(), Some("main · ~/rmux"));
+    }
+
+    #[test]
+    fn test_compose_subtitle_skips_duplicate_path() {
+        let sub = compose_subtitle("main · ~/rmux", None, None, Some("main · ~/rmux"), None);
+        assert!(sub.is_none());
     }
 }

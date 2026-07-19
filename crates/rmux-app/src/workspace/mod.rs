@@ -397,16 +397,22 @@ impl WorkspaceManager {
     /// user has set a custom name.
     pub fn refresh_auto_titles(&mut self) {
         for ws in &mut self.workspaces {
+            // Always refresh path/git metadata for the subtitle row, even when
+            // the display name is a user custom title (cmux keeps process/path
+            // context under a custom name).
+            if let Some(path_ctx) = focused_path_context(ws) {
+                ws.path_context = Some(path_ctx);
+            }
+            if let Some(branch) = focused_git_branch(ws) {
+                ws.git_branch = Some(branch);
+            }
+
             if ws.name_is_custom {
                 continue;
             }
             let Some(title) = focused_auto_title(ws) else {
                 continue;
             };
-            // Keep git_branch metadata in sync for any UI that shows it.
-            if let Some(branch) = focused_git_branch(ws) {
-                ws.git_branch = Some(branch);
-            }
             let _ = ws.apply_automatic_title(title);
         }
     }
@@ -593,6 +599,12 @@ impl WorkspaceManager {
 fn focused_auto_title(ws: &Workspace) -> Option<String> {
     let term = ws.root.find_pane(ws.active_pane).and_then(|n| n.active_terminal())?;
     Some(term.auto_workspace_title())
+}
+
+/// Idle path/branch line (no process), for the muted metadata row under the title.
+fn focused_path_context(ws: &Workspace) -> Option<String> {
+    let term = ws.root.find_pane(ws.active_pane).and_then(|n| n.active_terminal())?;
+    Some(title::compose_auto_title(None, term.cached_cwd(), term.cached_git_branch()))
 }
 
 fn focused_git_branch(ws: &Workspace) -> Option<String> {

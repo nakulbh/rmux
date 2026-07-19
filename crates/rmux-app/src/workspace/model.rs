@@ -85,6 +85,9 @@ pub struct Workspace {
     /// Last auto-derived title from the focused pane (process or path).
     /// Restored when the user clears a custom name.
     pub process_title: String,
+    /// Idle path context for the sidebar subtitle (`main · ~/proj`), independent
+    /// of whether the primary title is currently a running command.
+    pub path_context: Option<String>,
     /// The root of the pane tree.
     pub root: PaneNode,
     /// The currently focused (active) pane.
@@ -126,6 +129,7 @@ impl Workspace {
             name,
             name_is_custom: false,
             process_title,
+            path_context: None,
             root: pane,
             active_pane: PaneId(pane_id),
             status: None,
