@@ -10,6 +10,7 @@
 //! - `mod` (this file) — `WorkspaceManager` for multi-workspace management
 
 pub mod model;
+pub mod sidebar_snapshot;
 pub mod splits;
 pub mod surface;
 pub mod title;
@@ -397,15 +398,16 @@ impl WorkspaceManager {
     /// user has set a custom name.
     pub fn refresh_auto_titles(&mut self) {
         for ws in &mut self.workspaces {
-            // Always refresh path/git metadata for the subtitle row, even when
-            // the display name is a user custom title (cmux keeps process/path
-            // context under a custom name).
+            // Always refresh path/git/PR/agent metadata for cmux-style slots,
+            // even when the display name is a user custom title.
             if let Some(path_ctx) = focused_path_context(ws) {
                 ws.path_context = Some(path_ctx);
             }
             if let Some(branch) = focused_git_branch(ws) {
                 ws.git_branch = Some(branch);
             }
+            ws.pull_request = focused_pull_request(ws);
+            ws.shows_agent_activity = focused_agent_activity(ws);
 
             if ws.name_is_custom {
                 continue;
@@ -610,6 +612,27 @@ fn focused_path_context(ws: &Workspace) -> Option<String> {
 fn focused_git_branch(ws: &Workspace) -> Option<String> {
     let term = ws.root.find_pane(ws.active_pane).and_then(|n| n.active_terminal())?;
     term.cached_git_branch().map(str::to_string)
+}
+
+fn focused_pull_request(ws: &Workspace) -> Option<sidebar_snapshot::PullRequestDisplay> {
+    let term = ws.root.find_pane(ws.active_pane).and_then(|n| n.active_terminal())?;
+    term.cached_pull_request().cloned()
+}
+
+fn focused_agent_activity(ws: &Workspace) -> bool {
+    let Some(term) = ws.root.find_pane(ws.active_pane).and_then(|n| n.active_terminal()) else {
+        return false;
+    };
+    term.cached_fg_title().is_some_and(|cmd| {
+        let token = cmd.split_whitespace().next().unwrap_or(cmd);
+        let base = token.rsplit('/').next().unwrap_or(token).to_ascii_lowercase();
+        base.contains("claude")
+            || base.contains("codex")
+            || base.contains("cursor")
+            || base.contains("gemini")
+            || base.contains("grok")
+            || base == "aider"
+    })
 }
 
 impl Default for WorkspaceManager {

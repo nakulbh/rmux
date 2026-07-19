@@ -88,6 +88,10 @@ pub struct Workspace {
     /// Idle path context for the sidebar subtitle (`main · ~/proj`), independent
     /// of whether the primary title is currently a running command.
     pub path_context: Option<String>,
+    /// Best-effort GitHub PR for the focused pane cwd (cmux PR chip).
+    pub pull_request: Option<crate::workspace::sidebar_snapshot::PullRequestDisplay>,
+    /// True when the focused pane's foreground process looks like a coding agent.
+    pub shows_agent_activity: bool,
     /// The root of the pane tree.
     pub root: PaneNode,
     /// The currently focused (active) pane.
@@ -130,6 +134,8 @@ impl Workspace {
             name_is_custom: false,
             process_title,
             path_context: None,
+            pull_request: None,
+            shows_agent_activity: false,
             root: pane,
             active_pane: PaneId(pane_id),
             status: None,

@@ -71,6 +71,10 @@ pub struct TerminalPane {
     last_fg_title: Option<String>,
     /// Cached git branch for the shell cwd (idle workspace title).
     last_git_branch: Option<String>,
+    /// Cached PR chip for the shell cwd (throttled; cmux pull-request row).
+    last_pull_request: Option<crate::workspace::sidebar_snapshot::PullRequestDisplay>,
+    /// Frames since last PR probe (PR probe is slower than cwd/`ps`).
+    pr_tick: u16,
 
     // Find bar state
     /// Whether the find/search bar is currently visible.
@@ -179,6 +183,8 @@ impl TerminalPane {
             cwd_tick: 0,
             last_fg_title: None,
             last_git_branch: None,
+            last_pull_request: None,
+            pr_tick: 0,
             find_visible: false,
             find_query: String::new(),
             find_results: Vec::new(),
@@ -234,9 +240,9 @@ impl TerminalPane {
 
     /// Probe cwd, foreground process, and git branch (throttled by caller).
     fn refresh_title_sources(&mut self) {
+        let mut cwd_changed = false;
         if let Some(cwd) = self.backend.working_directory() {
-            // Git branch only when cwd changes or we have never probed.
-            let cwd_changed = self.last_cwd.as_ref() != Some(&cwd);
+            cwd_changed = self.last_cwd.as_ref() != Some(&cwd);
             self.last_cwd = Some(cwd);
             if (cwd_changed || self.last_git_branch.is_none())
                 && let Some(ref path) = self.last_cwd
@@ -248,6 +254,17 @@ impl TerminalPane {
         }
 
         self.last_fg_title = self.backend.foreground_process_title();
+
+        // PR probe ~every 180 frames (~3s) or when cwd changes — `gh` is slow.
+        self.pr_tick = self.pr_tick.wrapping_add(1);
+        if cwd_changed || self.pr_tick.is_multiple_of(180) {
+            if let Some(ref path) = self.last_cwd {
+                self.last_pull_request =
+                    crate::workspace::sidebar_snapshot::pull_request_for_cwd(path);
+            } else {
+                self.last_pull_request = None;
+            }
+        }
     }
 
     /// Best-effort current working directory of this pane's shell.
@@ -286,6 +303,18 @@ impl TerminalPane {
     /// Cached git branch for the shell cwd, if known.
     pub fn cached_git_branch(&self) -> Option<&str> {
         self.last_git_branch.as_deref()
+    }
+
+    /// Cached foreground process title, if the shell is busy.
+    pub fn cached_fg_title(&self) -> Option<&str> {
+        self.last_fg_title.as_deref()
+    }
+
+    /// Cached PR for the shell cwd, if `gh` reported one.
+    pub fn cached_pull_request(
+        &self,
+    ) -> Option<&crate::workspace::sidebar_snapshot::PullRequestDisplay> {
+        self.last_pull_request.as_ref()
     }
 
     /// Write raw text to the pane's PTY as if it had been typed.
