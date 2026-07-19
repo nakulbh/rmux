@@ -31,8 +31,8 @@ fn card_radius() -> u8 {
 const CARD_PAD_X: f32 = 10.0;
 const CARD_PAD_Y: f32 = 8.0;
 const CLOSE_SIZE: f32 = 18.0;
-/// Git branch glyph (cmux uses SF `arrow.triangle.branch`).
-const BRANCH_GLYPH: &str = "\u{2387}"; // ⎇
+/// Width reserved for painted leading icons (agent / branch).
+const ICON_SLOT: f32 = 12.0;
 
 /// Per-workspace data captured before rendering a card.
 struct TabData {
@@ -382,39 +382,43 @@ impl SidebarView {
                 right_reserved = 20.0_f32;
             }
 
-            let mut left = content.left();
-            if snap.shows_agent_activity {
-                painter.text(
-                    egui::Pos2::new(left, content.top() + 2.0_f32),
-                    egui::Align2::LEFT_TOP,
-                    "\u{25cc}",
-                    egui::FontId::proportional(11.0_f32),
-                    secondary,
-                );
-                left += 14.0_f32;
-            }
-
-            let text_width = (content.right() - left - right_reserved).max(0.0_f32);
+            // Text column (no font glyphs for icons — those were rendering as □
+            // tofu because JetBrains Mono / system proportional fonts lack ⎇ / ◌).
+            let text_left = content.left();
+            let text_width = (content.width() - right_reserved).max(0.0_f32);
             let mut y = content.top();
 
-            // 1) Title — cmux ~12.5pt semibold
-            y = paint_truncated_line(
-                ui,
-                &painter,
-                egui::Pos2::new(left, y),
-                text_width,
-                &snap.title,
-                egui::FontId::new(12.5_f32, egui::FontFamily::Proportional),
-                title_color,
-            );
+            // 1) Title row: optional agent activity disc + title text.
+            {
+                let mut title_x = text_left;
+                let mut title_w = text_width;
+                if snap.shows_agent_activity {
+                    let icon_rect = egui::Rect::from_min_size(
+                        egui::Pos2::new(text_left, y + 2.0_f32),
+                        egui::Vec2::splat(ICON_SLOT),
+                    );
+                    paint_agent_activity_icon(&painter, icon_rect, secondary);
+                    title_x += ICON_SLOT + 4.0_f32;
+                    title_w = (text_width - ICON_SLOT - 4.0_f32).max(0.0_f32);
+                }
+                y = paint_truncated_line(
+                    ui,
+                    &painter,
+                    egui::Pos2::new(title_x, y),
+                    title_w,
+                    &snap.title,
+                    egui::FontId::new(12.5_f32, egui::FontFamily::Proportional),
+                    title_color,
+                );
+            }
 
-            // 2) Notification subtitle
+            // 2) Notification subtitle (cmux latestNotificationText)
             if let Some(ref notif) = snap.latest_notification {
                 y += 2.0_f32;
                 y = paint_truncated_line(
                     ui,
                     &painter,
-                    egui::Pos2::new(left, y),
+                    egui::Pos2::new(text_left, y),
                     text_width,
                     notif,
                     egui::FontId::proportional(10.0_f32),
@@ -427,7 +431,7 @@ impl SidebarView {
                 y += 4.0_f32;
                 let bar_h = 3.0_f32;
                 let bar_rect = egui::Rect::from_min_size(
-                    egui::Pos2::new(left, y),
+                    egui::Pos2::new(text_left, y),
                     egui::Vec2::new(text_width, bar_h),
                 );
                 painter.rect_filled(
@@ -448,7 +452,7 @@ impl SidebarView {
                     y = paint_truncated_line(
                         ui,
                         &painter,
-                        egui::Pos2::new(left, y),
+                        egui::Pos2::new(text_left, y),
                         text_width,
                         status,
                         egui::FontId::proportional(9.0_f32),
@@ -460,7 +464,7 @@ impl SidebarView {
                 y = paint_truncated_line(
                     ui,
                     &painter,
-                    egui::Pos2::new(left, y),
+                    egui::Pos2::new(text_left, y),
                     text_width,
                     status,
                     egui::FontId::proportional(10.0_f32),
@@ -468,18 +472,22 @@ impl SidebarView {
                 );
             }
 
-            // 4) Branch · directory
+            // 4) Branch · directory — painted fork icon + mono path (no ⎇ glyph)
             if snap.shows_branch_line()
                 && let Some(ref branch_line) = snap.branch_directory_text
             {
                 y += 2.0_f32;
-                let line = format!("{BRANCH_GLYPH} {branch_line}");
+                let icon_rect = egui::Rect::from_min_size(
+                    egui::Pos2::new(text_left, y + 1.0_f32),
+                    egui::Vec2::splat(ICON_SLOT),
+                );
+                paint_branch_icon(&painter, icon_rect, secondary);
                 y = paint_truncated_line(
                     ui,
                     &painter,
-                    egui::Pos2::new(left, y),
-                    text_width,
-                    &line,
+                    egui::Pos2::new(text_left + ICON_SLOT + 4.0_f32, y),
+                    (text_width - ICON_SLOT - 4.0_f32).max(0.0_f32),
+                    branch_line,
                     egui::FontId::monospace(10.0_f32),
                     secondary,
                 );
@@ -496,7 +504,7 @@ impl SidebarView {
                 y = paint_truncated_line(
                     ui,
                     &painter,
-                    egui::Pos2::new(left, y),
+                    egui::Pos2::new(text_left, y),
                     text_width,
                     &pr.label,
                     egui::FontId::proportional(10.0_f32),
@@ -514,11 +522,10 @@ impl SidebarView {
                     .map(|port| format!(":{port}"))
                     .collect::<Vec<_>>()
                     .join("  ");
-                let _ = y;
                 let _ = paint_truncated_line(
                     ui,
                     &painter,
-                    egui::Pos2::new(left, y),
+                    egui::Pos2::new(text_left, y),
                     text_width,
                     &ports,
                     egui::FontId::monospace(10.0_f32),
@@ -534,6 +541,43 @@ impl SidebarView {
 struct CardResult {
     response: egui::Response,
     close_clicked: bool,
+}
+
+/// Agent activity indicator drawn as geometry (never a font glyph → no □ tofu).
+fn paint_agent_activity_icon(painter: &egui::Painter, rect: egui::Rect, color: egui::Color32) {
+    let r = rect.width().min(rect.height()) * 0.28_f32;
+    painter.circle_filled(rect.center(), r, color);
+    painter.circle_stroke(
+        rect.center(),
+        r + 2.2_f32,
+        egui::Stroke::new(1.0_f32, color.gamma_multiply(0.7_f32)),
+    );
+}
+
+/// Git branch fork drawn with strokes (cmux SF Symbol stand-in).
+///
+/// U+2387 ⎇ is missing from typical UI fonts and rendered as □.
+fn paint_branch_icon(painter: &egui::Painter, rect: egui::Rect, color: egui::Color32) {
+    let c = rect.center();
+    let s = rect.width().min(rect.height()) * 0.5_f32;
+    let stroke = egui::Stroke::new(1.25_f32, color);
+    painter.line_segment(
+        [
+            egui::Pos2::new(c.x - s * 0.15_f32, c.y + s * 0.55_f32),
+            egui::Pos2::new(c.x - s * 0.15_f32, c.y - s * 0.15_f32),
+        ],
+        stroke,
+    );
+    painter.line_segment(
+        [
+            egui::Pos2::new(c.x - s * 0.15_f32, c.y + s * 0.05_f32),
+            egui::Pos2::new(c.x + s * 0.45_f32, c.y - s * 0.45_f32),
+        ],
+        stroke,
+    );
+    painter.circle_filled(egui::Pos2::new(c.x - s * 0.15_f32, c.y + s * 0.55_f32), 1.4_f32, color);
+    painter.circle_filled(egui::Pos2::new(c.x - s * 0.15_f32, c.y - s * 0.15_f32), 1.4_f32, color);
+    painter.circle_filled(egui::Pos2::new(c.x + s * 0.45_f32, c.y - s * 0.45_f32), 1.4_f32, color);
 }
 
 fn paint_truncated_line(

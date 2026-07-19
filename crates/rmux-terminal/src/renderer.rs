@@ -50,9 +50,15 @@ fn is_special_shape(c: char) -> bool {
         | '\u{23F4}'..='\u{23FA}'
         // Geometric shapes: triangles, pointers, squares, circles (subset)
         | '\u{25B2}'..='\u{25C5}'
-        | '\u{25A0}'..='\u{25A1}'
+        | '\u{25A0}'..='\u{25A3}'
         | '\u{25AA}'..='\u{25AB}'
+        | '\u{25FB}'..='\u{25FE}'
         | '\u{25CF}' | '\u{25CB}' | '\u{25C9}' | '\u{25C6}' | '\u{25C7}' | '\u{25C8}' | '\u{25CE}'
+        // Large squares (often used as TUI selection markers)
+        | '\u{2B1B}' | '\u{2B1C}'
+        // Ballot / check marks used by model pickers & TUIs (Claude, etc.)
+        | '\u{2610}' | '\u{2611}' | '\u{2612}'
+        | '\u{2713}' | '\u{2714}' | '\u{2717}' | '\u{2718}'
         // Powerline solid arrows (common in prompts)
         | '\u{E0B0}'..='\u{E0B3}'
     )
@@ -263,22 +269,71 @@ fn paint_special_shape(painter: &egui::Painter, cell: Rect, c: char, fg: Color32
         '\u{25C5}' => fill_triangle_left(painter, cell, fg, 0.10),
 
         // Squares
-        '\u{25A0}' => fill(0.15, 0.15, 0.85, 0.85), // ■
-        '\u{25A1}' => {
-            // □ hollow
+        '\u{25A0}' | '\u{25FE}' | '\u{2B1B}' => fill(0.15, 0.15, 0.85, 0.85), // ■ ◾ ⬛
+        '\u{25A1}' | '\u{25FD}' | '\u{2B1C}' | '\u{2610}' => {
+            // □ / white medium square / ballot box — hollow frame (TUIs use these
+            // as selection markers; font glyphs often tofu without this path).
             let inset = Rect::from_min_max(
-                Pos2::new(left + w * 0.15, top + h * 0.15),
-                Pos2::new(left + w * 0.85, top + h * 0.85),
+                Pos2::new(left + w * 0.18, top + h * 0.18),
+                Pos2::new(left + w * 0.82, top + h * 0.82),
+            );
+            painter.rect_stroke(inset, 0.0, Stroke::new(1.6_f32, fg), egui::StrokeKind::Inside);
+        }
+        '\u{25A2}' => {
+            // ▢ white square with rounded corners
+            let inset = Rect::from_min_max(
+                Pos2::new(left + w * 0.18, top + h * 0.18),
+                Pos2::new(left + w * 0.82, top + h * 0.82),
+            );
+            painter.rect_stroke(inset, 2.0, Stroke::new(1.5_f32, fg), egui::StrokeKind::Inside);
+        }
+        '\u{25A3}' | '\u{2611}' => {
+            // ▣ / ☑ — filled frame with inner mark
+            let inset = Rect::from_min_max(
+                Pos2::new(left + w * 0.18, top + h * 0.18),
+                Pos2::new(left + w * 0.82, top + h * 0.82),
             );
             painter.rect_stroke(inset, 0.0, Stroke::new(1.5_f32, fg), egui::StrokeKind::Inside);
+            // Check stroke
+            let x0 = left + w * 0.30;
+            let y0 = top + h * 0.52;
+            let x1 = left + w * 0.45;
+            let y1 = top + h * 0.70;
+            let x2 = left + w * 0.72;
+            let y2 = top + h * 0.32;
+            painter.line_segment([Pos2::new(x0, y0), Pos2::new(x1, y1)], Stroke::new(1.6_f32, fg));
+            painter.line_segment([Pos2::new(x1, y1), Pos2::new(x2, y2)], Stroke::new(1.6_f32, fg));
         }
-        '\u{25AA}' => fill(0.30, 0.30, 0.70, 0.70), // ▪
+        '\u{25FB}' | '\u{25FC}' => fill(0.22, 0.22, 0.78, 0.78), // ◻/◼ medium
+        '\u{25AA}' => fill(0.30, 0.30, 0.70, 0.70),              // ▪
         '\u{25AB}' => {
             let inset = Rect::from_min_max(
                 Pos2::new(left + w * 0.30, top + h * 0.30),
                 Pos2::new(left + w * 0.70, top + h * 0.70),
             );
             painter.rect_stroke(inset, 0.0, Stroke::new(1.2_f32, fg), egui::StrokeKind::Inside);
+        }
+        '\u{2713}' | '\u{2714}' => {
+            // ✓ ✔ check marks
+            let x0 = left + w * 0.22;
+            let y0 = top + h * 0.52;
+            let x1 = left + w * 0.42;
+            let y1 = top + h * 0.72;
+            let x2 = left + w * 0.78;
+            let y2 = top + h * 0.28;
+            let sw = if c == '\u{2714}' { 2.0_f32 } else { 1.6_f32 };
+            painter.line_segment([Pos2::new(x0, y0), Pos2::new(x1, y1)], Stroke::new(sw, fg));
+            painter.line_segment([Pos2::new(x1, y1), Pos2::new(x2, y2)], Stroke::new(sw, fg));
+        }
+        '\u{2717}' | '\u{2718}' | '\u{2612}' => {
+            // ✗ ✘ ☒ — X mark
+            let pad = 0.25_f32;
+            let x0 = left + w * pad;
+            let y0 = top + h * pad;
+            let x1 = left + w * (1.0 - pad);
+            let y1 = top + h * (1.0 - pad);
+            painter.line_segment([Pos2::new(x0, y0), Pos2::new(x1, y1)], Stroke::new(1.6_f32, fg));
+            painter.line_segment([Pos2::new(x1, y0), Pos2::new(x0, y1)], Stroke::new(1.6_f32, fg));
         }
 
         // Circles / diamonds
