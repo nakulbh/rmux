@@ -8,7 +8,7 @@
 //! 1. Title (+ unread badge / close)
 //! 2. Notification subtitle (`latestNotificationText`)
 //! 3. Progress bar
-//! 4. Branch · directory line
+//! 4. Path lines — one `branch · dir` per distinct terminal cwd (cmux multi-row)
 //! 5. Pull-request row (best-effort via `gh`)
 //! 6. Listening ports
 
@@ -37,11 +37,17 @@ pub struct WorkspaceSidebarSnapshot {
     pub status: Option<String>,
     /// `0.0..=1.0` progress bar.
     pub progress: Option<f32>,
-    /// Git branch for the branch line (`showsGitBranch`).
+    /// Git branch for the focused / primary path line (`showsGitBranch`).
     pub git_branch: Option<String>,
-    /// Short directory candidates for the branch line (longest first).
+    /// Short directory candidates for the primary branch line (longest first).
     pub directory_candidates: Vec<String>,
-    /// Compact `branch · dir` string when both are known.
+    /// Unique path lines from all terminals (`branch · dir`), focused first.
+    ///
+    /// cmux shows one muted row per distinct pane path under the title —
+    /// not only the focused terminal.
+    pub path_lines: Vec<String>,
+    /// Compact primary `branch · dir` (first of [`Self::path_lines`]) for
+    /// older layout helpers.
     pub branch_directory_text: Option<String>,
     /// Best-effort PR chip from `gh`.
     pub pull_request: Option<PullRequestDisplay>,
@@ -49,12 +55,16 @@ pub struct WorkspaceSidebarSnapshot {
     pub ports: Vec<u16>,
     /// Unread notification count.
     pub unread_count: usize,
-    /// True when a coding agent is the foreground process (spinner slot).
+    /// True when a coding agent is the foreground process on any pane.
     pub shows_agent_activity: bool,
 }
 
+/// Max path rows under a workspace card (cmux-style cap so the list stays
+/// scannable when a workspace has many splits/tabs).
+pub const MAX_PATH_LINES: usize = 6;
+
 impl WorkspaceSidebarSnapshot {
-    /// Build a snapshot from live workspace + focused terminal caches.
+    /// Build a snapshot from live workspace + terminal aggregates.
     #[allow(clippy::too_many_arguments)] // mirrors cmux Snapshot field pack
     pub fn build(
         title: impl Into<String>,
@@ -67,21 +77,37 @@ impl WorkspaceSidebarSnapshot {
         cwd: Option<&Path>,
         fg_command: Option<&str>,
         pull_request: Option<PullRequestDisplay>,
+        path_lines: &[String],
     ) -> Self {
         let title = title.into();
         let directory_candidates = directory_candidates_for(cwd);
-        let branch_directory_text = {
+
+        // Prefer pre-collected multi-pane lines; fall back to single focused
+        // idle path when the collector returned nothing yet.
+        let mut path_lines: Vec<String> = path_lines
+            .iter()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| truncate(s, MAX_WORKSPACE_TITLE_CHARS))
+            .collect();
+
+        if path_lines.is_empty() {
             let path_ctx = compose_auto_title(None, cwd, git_branch);
-            if path_ctx.is_empty() || path_ctx == "Terminal" {
-                None
-            } else if path_ctx == title {
-                // Title already is the branch·path line — still keep structured
-                // fields for layout, but the dedicated branch slot can hide.
-                Some(path_ctx)
-            } else {
-                Some(path_ctx)
+            if !path_ctx.is_empty() && path_ctx != "Terminal" {
+                path_lines.push(path_ctx);
             }
-        };
+        }
+
+        // Drop lines that exactly match the primary title (avoids
+        // `main · ~/x` under a title that is already that string). Keep them
+        // when there are *multiple* path rows — the first still orients the
+        // user even if it matches a path-style title.
+        if path_lines.len() == 1 && path_lines[0] == title {
+            // Single duplicate of title → hide dedicated path slot.
+            path_lines.clear();
+        }
+
+        let branch_directory_text = path_lines.first().cloned();
 
         Self {
             title,
@@ -99,6 +125,7 @@ impl WorkspaceSidebarSnapshot {
                 .filter(|s| !s.is_empty() && *s != "HEAD")
                 .map(str::to_string),
             directory_candidates,
+            path_lines,
             branch_directory_text,
             pull_request,
             ports: ports.to_vec(),
@@ -107,23 +134,14 @@ impl WorkspaceSidebarSnapshot {
         }
     }
 
-    /// Whether the dedicated branch/dir slot should paint under the title.
-    ///
-    /// cmux always has a separate branch section when enabled; we hide it only
-    /// when it would duplicate the primary title with no extra signal.
+    /// Whether any path line should paint under the title.
     pub fn shows_branch_line(&self) -> bool {
-        match self.branch_directory_text.as_deref() {
-            Some(text) if text != self.title => true,
-            // Still show branch icon line when we have a branch but title is process.
-            Some(_) if self.git_branch.is_some() && self.shows_process_like_title() => true,
-            _ => false,
-        }
+        !self.path_lines.is_empty()
     }
 
-    fn shows_process_like_title(&self) -> bool {
-        // Heuristic: path titles usually contain `·`, `~`, or `/`.
-        let t = self.title.as_str();
-        !(t.contains('·') || t.starts_with('~') || t.starts_with('/'))
+    /// Path rows to paint (already deduped / capped).
+    pub fn visible_path_lines(&self) -> &[String] {
+        &self.path_lines
     }
 
     /// Whether any auxiliary slot below the title is visible.
@@ -190,7 +208,7 @@ pub fn pull_request_for_cwd(cwd: &Path) -> Option<PullRequestDisplay> {
     Some(PullRequestDisplay { number, label, url, is_open })
 }
 
-fn is_coding_agent_command(cmd: &str) -> bool {
+pub fn is_coding_agent_command(cmd: &str) -> bool {
     let token = cmd.split_whitespace().next().unwrap_or(cmd);
     let base = token.rsplit('/').next().unwrap_or(token).to_ascii_lowercase();
     matches!(
@@ -222,13 +240,45 @@ fn truncate(s: &str, max: usize) -> String {
     out
 }
 
+/// Build unique idle path lines from a sequence of `(cwd, branch)` pairs.
+///
+/// `focused_first` — when set, that pair is inserted first (cmux puts the
+/// active surface's path at the top of the metadata stack).
+pub fn unique_path_lines(
+    focused: Option<(Option<&Path>, Option<&str>)>,
+    others: impl IntoIterator<Item = (Option<std::path::PathBuf>, Option<String>)>,
+    max: usize,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut push = |cwd: Option<&Path>, branch: Option<&str>| {
+        if lines.len() >= max {
+            return;
+        }
+        let line = compose_auto_title(None, cwd, branch);
+        if line.is_empty() || line == "Terminal" {
+            return;
+        }
+        if !lines.iter().any(|existing| existing == &line) {
+            lines.push(truncate(&line, MAX_WORKSPACE_TITLE_CHARS));
+        }
+    };
+
+    if let Some((cwd, branch)) = focused {
+        push(cwd, branch);
+    }
+    for (cwd, branch) in others {
+        push(cwd.as_deref(), branch.as_deref());
+    }
+    lines
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
 
     #[test]
-    fn test_snapshot_shows_branch_when_title_is_process() {
+    fn test_snapshot_shows_path_when_title_is_process() {
         let snap = WorkspaceSidebarSnapshot::build(
             "cargo run -p rmux",
             None,
@@ -240,13 +290,14 @@ mod tests {
             Some(Path::new("/tmp/rmux")),
             Some("cargo run -p rmux"),
             None,
+            &[],
         );
-        assert!(snap.shows_branch_line(), "process title should show branch line");
-        assert!(snap.branch_directory_text.is_some());
+        assert!(snap.shows_branch_line(), "process title should show path line");
+        assert!(!snap.path_lines.is_empty());
     }
 
     #[test]
-    fn test_snapshot_hides_duplicate_branch_line() {
+    fn test_snapshot_hides_single_duplicate_path_line() {
         let path_title = compose_auto_title(None, Some(Path::new("/tmp/rmux")), Some("main"));
         let snap = WorkspaceSidebarSnapshot::build(
             path_title.clone(),
@@ -259,14 +310,53 @@ mod tests {
             Some(Path::new("/tmp/rmux")),
             None,
             None,
+            std::slice::from_ref(&path_title),
         );
-        // Title already is branch·path — dedicated line hidden.
         assert!(
-            !snap.shows_branch_line() || snap.branch_directory_text.as_ref() == Some(&path_title)
+            !snap.shows_branch_line(),
+            "single path line equal to title should hide"
         );
-        if snap.branch_directory_text.as_ref() == Some(&path_title) {
-            assert!(!snap.shows_branch_line());
-        }
+    }
+
+    #[test]
+    fn test_snapshot_keeps_multiple_path_lines() {
+        let lines = vec![
+            "main · ~/a".to_string(),
+            "feat/x · ~/b".to_string(),
+            "feat/y · ~/c".to_string(),
+        ];
+        let snap = WorkspaceSidebarSnapshot::build(
+            "custom workspace",
+            None,
+            None,
+            &[],
+            0,
+            None,
+            Some("main"),
+            Some(Path::new("/tmp/a")),
+            None,
+            None,
+            &lines,
+        );
+        assert_eq!(snap.path_lines.len(), 3);
+        assert!(snap.shows_branch_line());
+    }
+
+    #[test]
+    fn test_unique_path_lines_dedupes_and_prefers_focused() {
+        let focused_cwd = PathBuf::from("/Users/me/proj-a");
+        let other_cwd = PathBuf::from("/Users/me/proj-b");
+        let lines = unique_path_lines(
+            Some((Some(focused_cwd.as_path()), Some("main"))),
+            [
+                (Some(other_cwd.clone()), Some("feat/x".to_string())),
+                (Some(focused_cwd.clone()), Some("main".to_string())), // dup of focused
+                (Some(other_cwd), Some("feat/x".to_string())),         // dup
+            ],
+            MAX_PATH_LINES,
+        );
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("main") || lines[0].contains("proj-a"));
     }
 
     #[test]
@@ -296,9 +386,11 @@ mod tests {
             Some(Path::new("/tmp/x")),
             None,
             None,
+            &["feat/other · ~/y".to_string()],
         );
         assert_eq!(snap.latest_notification.as_deref(), Some("Claude is waiting for your input"));
         assert_eq!(snap.unread_count, 2);
         assert!(snap.has_auxiliary_slots());
+        assert_eq!(snap.path_lines.len(), 1);
     }
 }

@@ -108,7 +108,13 @@ impl eframe::App for RmuxApp {
         // terminal PTY. On Linux egui sets both `ctrl` and `command` for Ctrl;
         // if the terminal reads the key first, the shortcut appears to need a
         // double-press. Dispatch runs immediately; commands only touch app state.
+        //
+        // text_sink still holds last frame's mark here (rename/find/URL) so
+        // bare Escape/Enter gating matches the previous-frame focus model.
         self.handle_keyboard_shortcuts(ctx);
+
+        // Clear the sink for this frame; TextEdits re-mark while drawing.
+        crate::ui::text_sink::begin_frame(ctx);
 
         // Auto-close tabs/panes whose process has exited; respawn the last
         // shell of the last workspace so the window is never left dead.

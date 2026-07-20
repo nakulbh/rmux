@@ -23,8 +23,13 @@ impl RmuxApp {
             let has_selection = term.map(|t| t.has_selection()).unwrap_or(false);
             (find_visible, has_selection)
         };
-        // Previous-frame text focus is fine for gating bare Escape/Enter.
-        let text_focused = ctx.wants_keyboard_input();
+        // Prefer our text-sink flag over `wants_keyboard_input()`: the latter is
+        // true whenever *any* widget (including a focused Button) has focus, and
+        // with the terminal holding focus for Tab it would always suppress bare
+        // Escape/Enter. The sink is set by rename/find/URL TextEdits only.
+        // Shortcuts run before UI, so this is the previous frame's mark — fine
+        // for gating (same latency as the old wants_keyboard_input path).
+        let text_focused = crate::ui::text_sink::is_active(ctx);
 
         let commands = self
             .shortcut_manager

@@ -4,7 +4,7 @@
 //! 1. **Title** (semibold) + unread badge / close × / agent glyph
 //! 2. **Notification subtitle** (`latestNotificationText`)
 //! 3. **Progress** bar (`sidebar.set_progress`) + optional status label
-//! 4. **Branch · directory** line (monospace, secondary)
+//! 4. **Path lines** — one `branch · dir` per distinct terminal (not only focused)
 //! 5. **Pull request** chip (best-effort `gh pr view`)
 //! 6. **Ports** chips
 //!
@@ -152,6 +152,13 @@ impl SidebarView {
                 let unread = notifications.unread_count_for_workspace(w.id.0);
                 let latest = notifications.latest_unread_text_for_workspace(w.id.0);
                 let term = w.root.find_pane(w.active_pane).and_then(|n| n.active_terminal());
+                // Prefer multi-pane path lines collected in `refresh_auto_titles`
+                // (all terminals). Fall back to a single focused line if empty.
+                let path_lines = if w.path_contexts.is_empty() {
+                    w.path_context.clone().into_iter().collect::<Vec<_>>()
+                } else {
+                    w.path_contexts.clone()
+                };
                 let snap = WorkspaceSidebarSnapshot::build(
                     w.name.clone(),
                     w.status.as_deref(),
@@ -163,6 +170,7 @@ impl SidebarView {
                     term.and_then(|t| t.cached_cwd()),
                     term.and_then(|t| t.cached_fg_title()),
                     w.pull_request.clone(),
+                    &path_lines,
                 );
                 // Prefer live agent flag from workspace refresh when set.
                 let mut snap = snap;
@@ -286,6 +294,9 @@ impl SidebarView {
                     .text_color_opt(Some(p().text_primary))
                     .margin(egui::Margin::symmetric(4, 2)),
             );
+
+            // Block PTY keystrokes while the rename field owns typing.
+            crate::ui::text_sink::mark_active(ui.ctx());
 
             if !edit_response.has_focus()
                 && !edit_response.lost_focus()
@@ -472,25 +483,39 @@ impl SidebarView {
                 );
             }
 
-            // 4) Branch · directory — painted fork icon + mono path (no ⎇ glyph)
-            if snap.shows_branch_line()
-                && let Some(ref branch_line) = snap.branch_directory_text
-            {
-                y += 2.0_f32;
-                let icon_rect = egui::Rect::from_min_size(
-                    egui::Pos2::new(text_left, y + 1.0_f32),
-                    egui::Vec2::splat(ICON_SLOT),
-                );
-                paint_branch_icon(&painter, icon_rect, secondary);
-                y = paint_truncated_line(
-                    ui,
-                    &painter,
-                    egui::Pos2::new(text_left + ICON_SLOT + 4.0_f32, y),
-                    (text_width - ICON_SLOT - 4.0_f32).max(0.0_f32),
-                    branch_line,
-                    egui::FontId::monospace(10.0_f32),
-                    secondary,
-                );
+            // 4) Path lines — one row per distinct terminal cwd (cmux multi-row).
+            // First row gets a painted branch icon; further rows are plain mono
+            // so multi-pane workspaces stay scannable like cmux.
+            if snap.shows_branch_line() {
+                for (i, path_line) in snap.visible_path_lines().iter().enumerate() {
+                    y += 2.0_f32;
+                    if i == 0 {
+                        let icon_rect = egui::Rect::from_min_size(
+                            egui::Pos2::new(text_left, y + 1.0_f32),
+                            egui::Vec2::splat(ICON_SLOT),
+                        );
+                        paint_branch_icon(&painter, icon_rect, secondary);
+                        y = paint_truncated_line(
+                            ui,
+                            &painter,
+                            egui::Pos2::new(text_left + ICON_SLOT + 4.0_f32, y),
+                            (text_width - ICON_SLOT - 4.0_f32).max(0.0_f32),
+                            path_line,
+                            egui::FontId::monospace(10.0_f32),
+                            secondary,
+                        );
+                    } else {
+                        y = paint_truncated_line(
+                            ui,
+                            &painter,
+                            egui::Pos2::new(text_left, y),
+                            text_width,
+                            path_line,
+                            egui::FontId::monospace(10.0_f32),
+                            secondary,
+                        );
+                    }
+                }
             }
 
             // 5) Pull request
@@ -611,7 +636,7 @@ fn estimate_card_height(snap: &WorkspaceSidebarSnapshot) -> f32 {
         h += 14.0_f32;
     }
     if snap.shows_branch_line() {
-        h += 14.0_f32;
+        h += 14.0_f32 * snap.visible_path_lines().len().max(1) as f32;
     }
     if snap.pull_request.is_some() {
         h += 14.0_f32;
@@ -713,6 +738,7 @@ mod tests {
             None,
             None,
             None,
+            &[],
         );
         let with_notif = WorkspaceSidebarSnapshot::build(
             "title",
@@ -725,7 +751,30 @@ mod tests {
             Some(std::path::Path::new("/tmp/rmux")),
             Some("cargo run"),
             None,
+            &[],
         );
         assert!(estimate_card_height(&with_notif) > estimate_card_height(&base));
+
+        let multi_paths = WorkspaceSidebarSnapshot::build(
+            "workspace",
+            None,
+            None,
+            &[],
+            0,
+            None,
+            Some("main"),
+            Some(std::path::Path::new("/tmp/a")),
+            None,
+            None,
+            &[
+                "main · ~/a".to_string(),
+                "feat/x · ~/b".to_string(),
+                "feat/y · ~/c".to_string(),
+            ],
+        );
+        assert!(
+            estimate_card_height(&multi_paths) > estimate_card_height(&with_notif),
+            "multiple path lines should grow the card"
+        );
     }
 }

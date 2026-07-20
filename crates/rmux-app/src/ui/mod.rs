@@ -18,6 +18,7 @@ pub mod shortcut_hints;
 pub mod sidebar;
 pub mod status_bar;
 mod terminal_pane;
+pub mod text_sink;
 pub mod theme;
 pub mod top_bar;
 pub mod workspace_view;

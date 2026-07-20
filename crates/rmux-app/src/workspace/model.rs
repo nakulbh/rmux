@@ -87,10 +87,17 @@ pub struct Workspace {
     pub process_title: String,
     /// Idle path context for the sidebar subtitle (`main · ~/proj`), independent
     /// of whether the primary title is currently a running command.
+    ///
+    /// Prefer [`Self::path_contexts`] for multi-pane display; this stays as the
+    /// first / focused line for older call sites.
     pub path_context: Option<String>,
-    /// Best-effort GitHub PR for the focused pane cwd (cmux PR chip).
+    /// Unique idle path lines from **all** terminals in the workspace (cmux
+    /// multi-row metadata: one `branch · dir` per distinct cwd/branch).
+    /// Focused pane's line is first when present.
+    pub path_contexts: Vec<String>,
+    /// Best-effort GitHub PR aggregated across panes (prefer open PR / focused).
     pub pull_request: Option<crate::workspace::sidebar_snapshot::PullRequestDisplay>,
-    /// True when the focused pane's foreground process looks like a coding agent.
+    /// True when **any** pane's foreground process looks like a coding agent.
     pub shows_agent_activity: bool,
     /// The root of the pane tree.
     pub root: PaneNode,
@@ -134,6 +141,7 @@ impl Workspace {
             name_is_custom: false,
             process_title,
             path_context: None,
+            path_contexts: Vec::new(),
             pull_request: None,
             shows_agent_activity: false,
             root: pane,

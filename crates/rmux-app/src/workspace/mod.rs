@@ -391,28 +391,28 @@ impl WorkspaceManager {
         }
     }
 
-    /// Refresh automatic sidebar titles from each workspace's focused terminal.
+    /// Refresh automatic sidebar titles and multi-pane metadata.
     ///
-    /// Mirrors cmux `applyProcessTitle` / single-panel title sync: the focused
-    /// surface's process or path title becomes the workspace name unless the
-    /// user has set a custom name.
+    /// - **Title** still follows the focused surface (cmux `applyProcessTitle`)
+    ///   unless the user set a custom name.
+    /// - **Path lines / PR / agent** aggregate **all** terminals in the
+    ///   workspace so the sidebar can show multiple `branch · dir` rows like
+    ///   cmux (not only the focused pane).
     pub fn refresh_auto_titles(&mut self) {
         for ws in &mut self.workspaces {
-            // Always refresh path/git/PR/agent metadata for cmux-style slots,
-            // even when the display name is a user custom title.
-            if let Some(path_ctx) = focused_path_context(ws) {
-                ws.path_context = Some(path_ctx);
-            }
-            if let Some(branch) = focused_git_branch(ws) {
+            let meta = collect_workspace_sidebar_meta(ws);
+            ws.path_contexts = meta.path_lines;
+            ws.path_context = ws.path_contexts.first().cloned();
+            if let Some(branch) = meta.focused_git_branch {
                 ws.git_branch = Some(branch);
             }
-            ws.pull_request = focused_pull_request(ws);
-            ws.shows_agent_activity = focused_agent_activity(ws);
+            ws.pull_request = meta.pull_request;
+            ws.shows_agent_activity = meta.shows_agent_activity;
 
             if ws.name_is_custom {
                 continue;
             }
-            let Some(title) = focused_auto_title(ws) else {
+            let Some(title) = meta.focused_title else {
                 continue;
             };
             let _ = ws.apply_automatic_title(title);
@@ -597,42 +597,72 @@ impl WorkspaceManager {
     }
 }
 
-/// Auto title from the focused pane's active surface terminal.
-fn focused_auto_title(ws: &Workspace) -> Option<String> {
-    let term = ws.root.find_pane(ws.active_pane).and_then(|n| n.active_terminal())?;
-    Some(term.auto_workspace_title())
+/// Aggregated sidebar metadata from every terminal in a workspace.
+struct WorkspaceSidebarMeta {
+    focused_title: Option<String>,
+    focused_git_branch: Option<String>,
+    path_lines: Vec<String>,
+    pull_request: Option<sidebar_snapshot::PullRequestDisplay>,
+    shows_agent_activity: bool,
 }
 
-/// Idle path/branch line (no process), for the muted metadata row under the title.
-fn focused_path_context(ws: &Workspace) -> Option<String> {
-    let term = ws.root.find_pane(ws.active_pane).and_then(|n| n.active_terminal())?;
-    Some(title::compose_auto_title(None, term.cached_cwd(), term.cached_git_branch()))
-}
+/// Walk all panes: unique path lines (focused first), any-agent flag, best PR.
+fn collect_workspace_sidebar_meta(ws: &Workspace) -> WorkspaceSidebarMeta {
+    let focused_term = ws.root.find_pane(ws.active_pane).and_then(|n| n.active_terminal());
 
-fn focused_git_branch(ws: &Workspace) -> Option<String> {
-    let term = ws.root.find_pane(ws.active_pane).and_then(|n| n.active_terminal())?;
-    term.cached_git_branch().map(str::to_string)
-}
+    let focused_title = focused_term.map(|t| t.auto_workspace_title());
+    let focused_git_branch = focused_term.and_then(|t| t.cached_git_branch().map(str::to_string));
+    let focused_cwd = focused_term.and_then(|t| t.cached_cwd().map(|p| p.to_path_buf()));
+    let focused_branch_ref = focused_git_branch.as_deref();
 
-fn focused_pull_request(ws: &Workspace) -> Option<sidebar_snapshot::PullRequestDisplay> {
-    let term = ws.root.find_pane(ws.active_pane).and_then(|n| n.active_terminal())?;
-    term.cached_pull_request().cloned()
-}
+    let mut others: Vec<(Option<std::path::PathBuf>, Option<String>)> = Vec::new();
+    let mut any_agent = false;
+    let mut open_pr: Option<sidebar_snapshot::PullRequestDisplay> = None;
+    let mut any_pr: Option<sidebar_snapshot::PullRequestDisplay> = None;
+    let focused_ptr = focused_term.map(|t| t as *const _);
 
-fn focused_agent_activity(ws: &Workspace) -> bool {
-    let Some(term) = ws.root.find_pane(ws.active_pane).and_then(|n| n.active_terminal()) else {
-        return false;
-    };
-    term.cached_fg_title().is_some_and(|cmd| {
-        let token = cmd.split_whitespace().next().unwrap_or(cmd);
-        let base = token.rsplit('/').next().unwrap_or(token).to_ascii_lowercase();
-        base.contains("claude")
-            || base.contains("codex")
-            || base.contains("cursor")
-            || base.contains("gemini")
-            || base.contains("grok")
-            || base == "aider"
-    })
+    ws.root.for_each_terminal(&mut |term| {
+        // Skip the focused terminal in the "others" list — it is injected first.
+        let is_focused = focused_ptr.is_some_and(|p| std::ptr::eq(term, p));
+        if !is_focused {
+            others.push((
+                term.cached_cwd().map(|p| p.to_path_buf()),
+                term.cached_git_branch().map(str::to_string),
+            ));
+        }
+
+        if term.cached_fg_title().is_some_and(sidebar_snapshot::is_coding_agent_command) {
+            any_agent = true;
+        }
+
+        if let Some(pr) = term.cached_pull_request() {
+            if pr.is_open && open_pr.is_none() {
+                open_pr = Some(pr.clone());
+            } else if any_pr.is_none() {
+                any_pr = Some(pr.clone());
+            }
+        }
+    });
+
+    // Prefer focused terminal's PR when it has one; else first open PR; else any.
+    let pull_request = focused_term
+        .and_then(|t| t.cached_pull_request().cloned())
+        .or(open_pr)
+        .or(any_pr);
+
+    let path_lines = sidebar_snapshot::unique_path_lines(
+        Some((focused_cwd.as_deref(), focused_branch_ref)),
+        others,
+        sidebar_snapshot::MAX_PATH_LINES,
+    );
+
+    WorkspaceSidebarMeta {
+        focused_title,
+        focused_git_branch,
+        path_lines,
+        pull_request,
+        shows_agent_activity: any_agent,
+    }
 }
 
 impl Default for WorkspaceManager {
