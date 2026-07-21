@@ -176,6 +176,31 @@ fn test_new_workspace_has_no_git_info_or_ports() {
 }
 
 #[test]
+fn test_apply_automatic_title_updates_name_when_not_custom() {
+    let mut pane_id = 1;
+    let mut ws = make_workspace(1, "Terminal", &mut pane_id);
+    assert!(!ws.name_is_custom);
+    assert!(ws.apply_automatic_title("cargo run -p rmux".into()));
+    assert_eq!(ws.name, "cargo run -p rmux");
+    assert_eq!(ws.process_title, "cargo run -p rmux");
+}
+
+#[test]
+fn test_custom_name_blocks_automatic_title() {
+    let mut pane_id = 1;
+    let mut ws = make_workspace(1, "Terminal", &mut pane_id);
+    ws.set_custom_name("My project".into());
+    assert!(ws.name_is_custom);
+    assert!(!ws.apply_automatic_title("cargo run".into()));
+    assert_eq!(ws.name, "My project");
+    // process_title still tracks auto source for restore
+    assert_eq!(ws.process_title, "cargo run");
+    ws.clear_custom_name();
+    assert!(!ws.name_is_custom);
+    assert_eq!(ws.name, "cargo run");
+}
+
+#[test]
 fn test_update_git_info_sets_branch_and_status() {
     let mut pane_id = 1;
     let mut ws = make_workspace(1, "Test", &mut pane_id);

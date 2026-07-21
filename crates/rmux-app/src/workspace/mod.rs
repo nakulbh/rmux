@@ -10,8 +10,10 @@
 //! - `mod` (this file) — `WorkspaceManager` for multi-workspace management
 
 pub mod model;
+pub mod sidebar_snapshot;
 pub mod splits;
 pub mod surface;
+pub mod title;
 
 use std::collections::VecDeque;
 
@@ -102,11 +104,13 @@ impl WorkspaceManager {
             next_split_id: 1,
             closed_tabs: VecDeque::new(),
         };
-        manager.create_workspace("Workspace 1".to_string());
+        // Seed title; real auto title arrives once the first terminal reports
+        // cwd / process (see [`Self::refresh_auto_titles`]).
+        manager.create_workspace("Terminal".to_string());
         manager
     }
 
-    /// Create a new workspace with the given name.
+    /// Create a new workspace with the given seed name (auto-title until renamed).
     ///
     /// The new workspace automatically becomes the active workspace.
     pub fn create_workspace(&mut self, name: String) -> WorkspaceId {
@@ -379,11 +383,39 @@ impl WorkspaceManager {
         cleanup
     }
 
-    /// Rename a workspace by ID.
+    /// Rename a workspace by ID (marks the name as user-custom, cmux-style).
     pub fn rename_workspace(&mut self, id: model::WorkspaceId, new_name: String) {
         if let Some(ws) = self.workspaces.iter_mut().find(|w| w.id == id) {
-            ws.name = new_name;
-            tracing::debug!(workspace_id = ?id, "Renamed workspace");
+            ws.set_custom_name(new_name);
+            tracing::debug!(workspace_id = ?id, "Renamed workspace (custom)");
+        }
+    }
+
+    /// Refresh automatic sidebar titles and multi-pane metadata.
+    ///
+    /// - **Title** still follows the focused surface (cmux `applyProcessTitle`)
+    ///   unless the user set a custom name.
+    /// - **Path lines / PR / agent** aggregate **all** terminals in the
+    ///   workspace so the sidebar can show multiple `branch · dir` rows like
+    ///   cmux (not only the focused pane).
+    pub fn refresh_auto_titles(&mut self) {
+        for ws in &mut self.workspaces {
+            let meta = collect_workspace_sidebar_meta(ws);
+            ws.path_contexts = meta.path_lines;
+            ws.path_context = ws.path_contexts.first().cloned();
+            if let Some(branch) = meta.focused_git_branch {
+                ws.git_branch = Some(branch);
+            }
+            ws.pull_request = meta.pull_request;
+            ws.shows_agent_activity = meta.shows_agent_activity;
+
+            if ws.name_is_custom {
+                continue;
+            }
+            let Some(title) = meta.focused_title else {
+                continue;
+            };
+            let _ = ws.apply_automatic_title(title);
         }
     }
 
@@ -562,6 +594,74 @@ impl WorkspaceManager {
         );
 
         Ok(())
+    }
+}
+
+/// Aggregated sidebar metadata from every terminal in a workspace.
+struct WorkspaceSidebarMeta {
+    focused_title: Option<String>,
+    focused_git_branch: Option<String>,
+    path_lines: Vec<String>,
+    pull_request: Option<sidebar_snapshot::PullRequestDisplay>,
+    shows_agent_activity: bool,
+}
+
+/// Walk all panes: unique path lines (focused first), any-agent flag, best PR.
+fn collect_workspace_sidebar_meta(ws: &Workspace) -> WorkspaceSidebarMeta {
+    let focused_term = ws.root.find_pane(ws.active_pane).and_then(|n| n.active_terminal());
+
+    let focused_title = focused_term.map(|t| t.auto_workspace_title());
+    let focused_git_branch = focused_term.and_then(|t| t.cached_git_branch().map(str::to_string));
+    let focused_cwd = focused_term.and_then(|t| t.cached_cwd().map(|p| p.to_path_buf()));
+    let focused_branch_ref = focused_git_branch.as_deref();
+
+    let mut others: Vec<(Option<std::path::PathBuf>, Option<String>)> = Vec::new();
+    let mut any_agent = false;
+    let mut open_pr: Option<sidebar_snapshot::PullRequestDisplay> = None;
+    let mut any_pr: Option<sidebar_snapshot::PullRequestDisplay> = None;
+    let focused_ptr = focused_term.map(|t| t as *const _);
+
+    ws.root.for_each_terminal(&mut |term| {
+        // Skip the focused terminal in the "others" list — it is injected first.
+        let is_focused = focused_ptr.is_some_and(|p| std::ptr::eq(term, p));
+        if !is_focused {
+            others.push((
+                term.cached_cwd().map(|p| p.to_path_buf()),
+                term.cached_git_branch().map(str::to_string),
+            ));
+        }
+
+        if term.cached_fg_title().is_some_and(sidebar_snapshot::is_coding_agent_command) {
+            any_agent = true;
+        }
+
+        if let Some(pr) = term.cached_pull_request() {
+            if pr.is_open && open_pr.is_none() {
+                open_pr = Some(pr.clone());
+            } else if any_pr.is_none() {
+                any_pr = Some(pr.clone());
+            }
+        }
+    });
+
+    // Prefer focused terminal's PR when it has one; else first open PR; else any.
+    let pull_request = focused_term
+        .and_then(|t| t.cached_pull_request().cloned())
+        .or(open_pr)
+        .or(any_pr);
+
+    let path_lines = sidebar_snapshot::unique_path_lines(
+        Some((focused_cwd.as_deref(), focused_branch_ref)),
+        others,
+        sidebar_snapshot::MAX_PATH_LINES,
+    );
+
+    WorkspaceSidebarMeta {
+        focused_title,
+        focused_git_branch,
+        path_lines,
+        pull_request,
+        shows_agent_activity: any_agent,
     }
 }
 

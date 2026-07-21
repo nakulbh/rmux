@@ -65,8 +65,16 @@ pub struct TerminalPane {
     /// Cached shell cwd for tab titles (refreshed periodically; avoids
     /// calling `lsof` / reading `/proc` every frame).
     last_cwd: Option<PathBuf>,
-    /// Frame counter used to throttle cwd refreshes.
+    /// Frame counter used to throttle cwd / process-title refreshes.
     cwd_tick: u16,
+    /// Cached foreground process title (`cargo run …`), when the shell is busy.
+    last_fg_title: Option<String>,
+    /// Cached git branch for the shell cwd (idle workspace title).
+    last_git_branch: Option<String>,
+    /// Cached PR chip for the shell cwd (throttled; cmux pull-request row).
+    last_pull_request: Option<crate::workspace::sidebar_snapshot::PullRequestDisplay>,
+    /// Frames since last PR probe (PR probe is slower than cwd/`ps`).
+    pr_tick: u16,
 
     // Find bar state
     /// Whether the find/search bar is currently visible.
@@ -173,6 +181,10 @@ impl TerminalPane {
             // process-query refresh.
             last_cwd: cwd.map(Path::to_path_buf),
             cwd_tick: 0,
+            last_fg_title: None,
+            last_git_branch: None,
+            last_pull_request: None,
+            pr_tick: 0,
             find_visible: false,
             find_query: String::new(),
             find_results: Vec::new(),
@@ -215,15 +227,43 @@ impl TerminalPane {
             }
         }
 
-        // Refresh cwd cache ~every 45 frames (~0.7s at 60fps) for tab titles.
+        // Refresh cwd / process title / git branch ~every 45 frames (~0.7s at
+        // 60fps) for tab labels and cmux-style workspace auto-titles.
         self.cwd_tick = self.cwd_tick.wrapping_add(1);
-        if self.cwd_tick.is_multiple_of(45)
-            && let Some(cwd) = self.backend.working_directory()
-        {
-            self.last_cwd = Some(cwd);
+        if self.cwd_tick.is_multiple_of(45) {
+            self.refresh_title_sources();
         } else if self.last_cwd.is_none() {
-            // First chance: populate immediately so new tabs aren't "Terminal N".
+            // First chance: populate immediately so new tabs aren't empty.
+            self.refresh_title_sources();
+        }
+    }
+
+    /// Probe cwd, foreground process, and git branch (throttled by caller).
+    fn refresh_title_sources(&mut self) {
+        let mut cwd_changed = false;
+        if let Some(cwd) = self.backend.working_directory() {
+            cwd_changed = self.last_cwd.as_ref() != Some(&cwd);
+            self.last_cwd = Some(cwd);
+            if (cwd_changed || self.last_git_branch.is_none())
+                && let Some(ref path) = self.last_cwd
+            {
+                self.last_git_branch = crate::workspace::title::git_branch_for_cwd(path);
+            }
+        } else if self.last_cwd.is_none() {
             self.last_cwd = self.backend.working_directory();
+        }
+
+        self.last_fg_title = self.backend.foreground_process_title();
+
+        // PR probe ~every 180 frames (~3s) or when cwd changes — `gh` is slow.
+        self.pr_tick = self.pr_tick.wrapping_add(1);
+        if cwd_changed || self.pr_tick.is_multiple_of(180) {
+            if let Some(ref path) = self.last_cwd {
+                self.last_pull_request =
+                    crate::workspace::sidebar_snapshot::pull_request_for_cwd(path);
+            } else {
+                self.last_pull_request = None;
+            }
         }
     }
 
@@ -247,6 +287,34 @@ impl TerminalPane {
             return format_cwd_tab_title(cwd);
         }
         user_host_title()
+    }
+
+    /// cmux-style workspace / process title for the sidebar.
+    ///
+    /// Prefers a running non-shell command; otherwise `{branch} · {path}`.
+    pub fn auto_workspace_title(&self) -> String {
+        crate::workspace::title::compose_auto_title(
+            self.last_fg_title.as_deref(),
+            self.cached_cwd(),
+            self.last_git_branch.as_deref(),
+        )
+    }
+
+    /// Cached git branch for the shell cwd, if known.
+    pub fn cached_git_branch(&self) -> Option<&str> {
+        self.last_git_branch.as_deref()
+    }
+
+    /// Cached foreground process title, if the shell is busy.
+    pub fn cached_fg_title(&self) -> Option<&str> {
+        self.last_fg_title.as_deref()
+    }
+
+    /// Cached PR for the shell cwd, if `gh` reported one.
+    pub fn cached_pull_request(
+        &self,
+    ) -> Option<&crate::workspace::sidebar_snapshot::PullRequestDisplay> {
+        self.last_pull_request.as_ref()
     }
 
     /// Write raw text to the pane's PTY as if it had been typed.
@@ -317,11 +385,28 @@ impl TerminalPane {
             }
         }
 
-        // Handle keyboard input when focused — but never while another egui
-        // widget owns the keyboard (sidebar rename TextEdit, find bar, URL
-        // bar, etc.). Without this gate, typed characters land in both the
-        // focused widget and the PTY simultaneously.
-        if self.has_focus && !ui.ctx().wants_keyboard_input() {
+        // Keyboard: active terminal claims egui focus so Tab is not stolen for
+        // widget navigation (which used to silence all subsequent keystrokes —
+        // see `text_sink`). Yield only to real TextEdits (rename / find / URL).
+        //
+        // When the find bar is open we always yield — otherwise `request_focus`
+        // would fight the find TextEdit every frame.
+        let text_sink = crate::ui::text_sink::is_active(ui.ctx()) || self.find_visible;
+        if self.has_focus && !text_sink {
+            // Lock Tab / arrows / Escape onto this surface so shell autocomplete
+            // and readline keep working like Ghostty/cmux.
+            term_response.request_focus();
+            ui.memory_mut(|m| {
+                m.set_focus_lock_filter(
+                    term_response.id,
+                    egui::EventFilter {
+                        tab: true,
+                        horizontal_arrows: true,
+                        vertical_arrows: true,
+                        escape: true,
+                    },
+                );
+            });
             self.handle_keyboard_input(ui);
         }
 
@@ -710,19 +795,29 @@ impl TerminalPane {
         true
     }
 
+    /// Stable id for the find-bar TextEdit (must match `show_find_bar`).
+    fn find_query_id(ui: &egui::Ui) -> egui::Id {
+        ui.id().with("rmux_find_query")
+    }
+
     /// Map an egui key event to terminal bytes.
     fn map_key_to_terminal(&self, key: &egui::Key, modifiers: &egui::Modifiers) -> Option<Vec<u8>> {
         use egui::Key;
 
         let ctrl = modifiers.ctrl;
-        let _shift = modifiers.shift;
+        let shift = modifiers.shift;
         let alt = modifiers.alt;
 
         match key {
             Key::Enter => Some(vec![b'\r']),
+            // Shift+Tab → reverse completion (bash/zsh/fish: CSI Z).
+            Key::Tab if shift => Some(vec![0x1b, b'[', b'Z']),
             Key::Tab => Some(vec![b'\t']),
+            // DEL (0x7f) is what modern terminals / readline expect for ⌫.
             Key::Backspace => Some(vec![0x7f]),
             Key::Escape => Some(vec![0x1b]),
+            // Space arrives as Event::Text(" ") — do not also map Key::Space
+            // or the shell sees a double space.
             Key::Delete => Some(vec![0x1b, b'[', b'3', b'~']),
             Key::Insert => Some(vec![0x1b, b'[', b'2', b'~']),
             Key::Home => Some(vec![0x1b, b'[', b'H']),
@@ -1164,14 +1259,23 @@ impl TerminalPane {
             egui::CornerRadius::same(theme::radius_sm()),
             palette.panel_bg,
         );
+        let find_id = Self::find_query_id(ui);
         let text_response = bar_ui.put(
             input_rect.shrink2(egui::Vec2::new(6.0_f32, 1.0_f32)),
             egui::TextEdit::singleline(&mut self.find_query)
+                .id(find_id)
                 .hint_text("Find...")
                 .font(egui::FontId::monospace(12.0_f32))
                 .vertical_align(egui::Align::Center)
                 .frame(false),
         );
+        // Prefer focus on the find field while the bar is open. Do **not**
+        // mark `text_sink` here — Escape/Enter must still close / step via
+        // shortcuts (`find_only` bindings). The terminal already yields for
+        // the whole time `find_visible` is true.
+        if !text_response.has_focus() {
+            ui.memory_mut(|m| m.request_focus(find_id));
+        }
         let input_border = if text_response.has_focus() { palette.accent } else { palette.border };
         bar_ui.painter().rect_stroke(
             input_rect,

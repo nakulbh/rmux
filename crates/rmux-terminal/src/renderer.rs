@@ -34,6 +34,60 @@ fn is_nerd_icon(c: char) -> bool {
     )
 }
 
+/// Unicode ranges where a missing font glyph should use geometry instead of tofu.
+///
+/// This is the **general** anti-tofu policy for the terminal: we do not need a
+/// new `is_special_shape` arm for every symbol TUIs invent. If the full font
+/// cascade (JetBrains → Nerd → system symbols) still lacks the codepoint, draw
+/// a neutral geometric stand-in rather than a hollow □ replacement glyph.
+fn is_symbol_range(c: char) -> bool {
+    let cp = c as u32;
+    matches!(
+        cp,
+        0x2190..=0x21FF // Arrows
+            | 0x2200..=0x22FF // Mathematical Operators
+            | 0x2300..=0x23FF // Miscellaneous Technical
+            | 0x2460..=0x24FF // Enclosed Alphanumerics
+            | 0x2500..=0x257F // Box Drawing (prefer font; fallback if absent)
+            | 0x2580..=0x259F // Block Elements
+            | 0x25A0..=0x25FF // Geometric Shapes
+            | 0x2600..=0x26FF // Miscellaneous Symbols
+            | 0x2700..=0x27BF // Dingbats
+            | 0x27F0..=0x27FF // Supplemental Arrows-A
+            | 0x2900..=0x297F // Supplemental Arrows-B
+            | 0x2B00..=0x2BFF // Miscellaneous Symbols and Arrows
+            | 0x1F300..=0x1F9FF // Misc Symbols and Pictographs / Supplemental (emoji-ish)
+    )
+}
+
+/// Last-resort geometry when no font has the glyph.
+///
+/// Prefers the explicit special-shape painter when we know the codepoint;
+/// otherwise draws a small diamond so the cell is never an empty tofu box.
+fn paint_missing_symbol_fallback(painter: &egui::Painter, cell: Rect, c: char, fg: Color32) {
+    if paint_special_shape(painter, cell, c, fg) {
+        return;
+    }
+    // Neutral diamond stand-in — readable, not confusable with the □ tofu
+    // that fonts emit for .notdef glyphs.
+    let cx = cell.center().x;
+    let cy = cell.center().y;
+    let rx = cell.width() * 0.22;
+    let ry = cell.height() * 0.28;
+    painter.add(egui::Shape::convex_polygon(
+        vec![
+            Pos2::new(cx, cy - ry),
+            Pos2::new(cx + rx, cy),
+            Pos2::new(cx, cy + ry),
+            Pos2::new(cx - rx, cy),
+        ],
+        fg,
+        Stroke::NONE,
+    ));
+    // `c` reserved for future per-block heuristics (arrows vs dingbats).
+    let _c = c;
+}
+
 /// Characters we draw as geometry instead of font glyphs.
 ///
 /// Covers:
@@ -52,9 +106,15 @@ fn is_special_shape(c: char) -> bool {
         | '\u{23F4}'..='\u{23FA}'
         // Geometric shapes: triangles, pointers, squares, circles (subset)
         | '\u{25B2}'..='\u{25C5}'
-        | '\u{25A0}'..='\u{25A1}'
+        | '\u{25A0}'..='\u{25A3}'
         | '\u{25AA}'..='\u{25AB}'
+        | '\u{25FB}'..='\u{25FE}'
         | '\u{25CF}' | '\u{25CB}' | '\u{25C9}' | '\u{25C6}' | '\u{25C7}' | '\u{25C8}' | '\u{25CE}'
+        // Large squares (often used as TUI selection markers)
+        | '\u{2B1B}' | '\u{2B1C}'
+        // Ballot / check marks used by model pickers & TUIs (Claude, etc.)
+        | '\u{2610}' | '\u{2611}' | '\u{2612}'
+        | '\u{2713}' | '\u{2714}' | '\u{2717}' | '\u{2718}'
         // Powerline solid arrows (common in prompts)
         | '\u{E0B0}'..='\u{E0B3}'
     )
@@ -265,22 +325,71 @@ fn paint_special_shape(painter: &egui::Painter, cell: Rect, c: char, fg: Color32
         '\u{25C5}' => fill_triangle_left(painter, cell, fg, 0.10),
 
         // Squares
-        '\u{25A0}' => fill(0.15, 0.15, 0.85, 0.85), // ■
-        '\u{25A1}' => {
-            // □ hollow
+        '\u{25A0}' | '\u{25FE}' | '\u{2B1B}' => fill(0.15, 0.15, 0.85, 0.85), // ■ ◾ ⬛
+        '\u{25A1}' | '\u{25FD}' | '\u{2B1C}' | '\u{2610}' => {
+            // □ / white medium square / ballot box — hollow frame (TUIs use these
+            // as selection markers; font glyphs often tofu without this path).
             let inset = Rect::from_min_max(
-                Pos2::new(left + w * 0.15, top + h * 0.15),
-                Pos2::new(left + w * 0.85, top + h * 0.85),
+                Pos2::new(left + w * 0.18, top + h * 0.18),
+                Pos2::new(left + w * 0.82, top + h * 0.82),
+            );
+            painter.rect_stroke(inset, 0.0, Stroke::new(1.6_f32, fg), egui::StrokeKind::Inside);
+        }
+        '\u{25A2}' => {
+            // ▢ white square with rounded corners
+            let inset = Rect::from_min_max(
+                Pos2::new(left + w * 0.18, top + h * 0.18),
+                Pos2::new(left + w * 0.82, top + h * 0.82),
+            );
+            painter.rect_stroke(inset, 2.0, Stroke::new(1.5_f32, fg), egui::StrokeKind::Inside);
+        }
+        '\u{25A3}' | '\u{2611}' => {
+            // ▣ / ☑ — filled frame with inner mark
+            let inset = Rect::from_min_max(
+                Pos2::new(left + w * 0.18, top + h * 0.18),
+                Pos2::new(left + w * 0.82, top + h * 0.82),
             );
             painter.rect_stroke(inset, 0.0, Stroke::new(1.5_f32, fg), egui::StrokeKind::Inside);
+            // Check stroke
+            let x0 = left + w * 0.30;
+            let y0 = top + h * 0.52;
+            let x1 = left + w * 0.45;
+            let y1 = top + h * 0.70;
+            let x2 = left + w * 0.72;
+            let y2 = top + h * 0.32;
+            painter.line_segment([Pos2::new(x0, y0), Pos2::new(x1, y1)], Stroke::new(1.6_f32, fg));
+            painter.line_segment([Pos2::new(x1, y1), Pos2::new(x2, y2)], Stroke::new(1.6_f32, fg));
         }
-        '\u{25AA}' => fill(0.30, 0.30, 0.70, 0.70), // ▪
+        '\u{25FB}' | '\u{25FC}' => fill(0.22, 0.22, 0.78, 0.78), // ◻/◼ medium
+        '\u{25AA}' => fill(0.30, 0.30, 0.70, 0.70),              // ▪
         '\u{25AB}' => {
             let inset = Rect::from_min_max(
                 Pos2::new(left + w * 0.30, top + h * 0.30),
                 Pos2::new(left + w * 0.70, top + h * 0.70),
             );
             painter.rect_stroke(inset, 0.0, Stroke::new(1.2_f32, fg), egui::StrokeKind::Inside);
+        }
+        '\u{2713}' | '\u{2714}' => {
+            // ✓ ✔ check marks
+            let x0 = left + w * 0.22;
+            let y0 = top + h * 0.52;
+            let x1 = left + w * 0.42;
+            let y1 = top + h * 0.72;
+            let x2 = left + w * 0.78;
+            let y2 = top + h * 0.28;
+            let sw = if c == '\u{2714}' { 2.0_f32 } else { 1.6_f32 };
+            painter.line_segment([Pos2::new(x0, y0), Pos2::new(x1, y1)], Stroke::new(sw, fg));
+            painter.line_segment([Pos2::new(x1, y1), Pos2::new(x2, y2)], Stroke::new(sw, fg));
+        }
+        '\u{2717}' | '\u{2718}' | '\u{2612}' => {
+            // ✗ ✘ ☒ — X mark
+            let pad = 0.25_f32;
+            let x0 = left + w * pad;
+            let y0 = top + h * pad;
+            let x1 = left + w * (1.0 - pad);
+            let y1 = top + h * (1.0 - pad);
+            painter.line_segment([Pos2::new(x0, y0), Pos2::new(x1, y1)], Stroke::new(1.6_f32, fg));
+            painter.line_segment([Pos2::new(x1, y0), Pos2::new(x0, y1)], Stroke::new(1.6_f32, fg));
         }
 
         // Circles / diamonds
@@ -454,29 +563,37 @@ impl TerminalRenderer {
 
                 if cell.c != ' ' {
                     if is_special_shape(cell.c) {
-                        // Geometry path — solid triangles / blocks like Ghostty.
+                        // Explicit geometry for TUI shapes (Ghostty/cmux solid look).
                         paint_special_shape(painter, cell_rect, cell.c, cell.fg);
                     } else {
                         let font_id =
                             if cell.bold { font_bold.clone() } else { font_regular.clone() };
 
-                        let galley =
-                            ui.fonts(|f| f.layout_no_wrap(cell.c.to_string(), font_id, cell.fg));
-                        let gw = galley.size().x;
-                        let gh = galley.size().y;
-
-                        let x = if is_nerd_icon(cell.c) {
-                            // Center nerd icons in the cell (Ghostty-style).
-                            cell_rect.left() + (cell_rect.width() - gw) * 0.5
+                        // General anti-tofu: if *no* font in the cascade has
+                        // this codepoint, don't paint a hollow □ replacement —
+                        // use geometry for symbol ranges instead.
+                        let has_glyph = ui.fonts(|f| f.has_glyph(&font_id, cell.c));
+                        if !has_glyph && is_symbol_range(cell.c) {
+                            paint_missing_symbol_fallback(painter, cell_rect, cell.c, cell.fg);
                         } else {
-                            cell_rect.left()
-                        };
-                        // Slight top bias keeps the Latin baseline closer to
-                        // native terminal metrics than pure vertical center,
-                        // which made text look "floaty" vs cmux.
-                        let y = cell_rect.top() + (cell_rect.height() - gh) * 0.35;
+                            let galley = ui
+                                .fonts(|f| f.layout_no_wrap(cell.c.to_string(), font_id, cell.fg));
+                            let gw = galley.size().x;
+                            let gh = galley.size().y;
 
-                        painter.galley(Pos2::new(x, y), galley, cell.fg);
+                            let x = if is_nerd_icon(cell.c) {
+                                // Center nerd icons in the cell (Ghostty-style).
+                                cell_rect.left() + (cell_rect.width() - gw) * 0.5
+                            } else {
+                                cell_rect.left()
+                            };
+                            // Slight top bias keeps the Latin baseline closer to
+                            // native terminal metrics than pure vertical center,
+                            // which made text look "floaty" vs cmux.
+                            let y = cell_rect.top() + (cell_rect.height() - gh) * 0.35;
+
+                            painter.galley(Pos2::new(x, y), galley, cell.fg);
+                        }
                     }
 
                     if cell.underline {
@@ -597,6 +714,20 @@ mod tests {
         assert!(is_special_shape('▄'));
         assert!(is_special_shape('▀'));
         assert!(!is_special_shape('A'));
+    }
+
+    #[test]
+    fn test_symbol_range_covers_common_tofu_sources() {
+        // Geometric / dingbat / technical — general anti-tofu policy.
+        assert!(is_symbol_range('⎇')); // U+2387 branch
+        assert!(is_symbol_range('□'));
+        assert!(is_symbol_range('✓'));
+        assert!(is_symbol_range('→'));
+        assert!(is_symbol_range('★'));
+        // Normal text must still go through fonts.
+        assert!(!is_symbol_range('A'));
+        assert!(!is_symbol_range('中'));
+        assert!(!is_symbol_range(' '));
     }
 
     #[test]

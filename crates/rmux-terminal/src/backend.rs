@@ -154,6 +154,17 @@ impl PtyBackend {
         cwd_of_process(pid)
     }
 
+    /// Best-effort title of the command currently running under this shell.
+    ///
+    /// Walks the shell's child processes (via `ps`) and returns a cleaned
+    /// command line for the first non-shell descendant. Used for cmux-style
+    /// dynamic workspace names (`cargo run …`, `nvim`, etc.). Returns `None`
+    /// when the shell is idle (only shell descendants) or probing fails.
+    pub fn foreground_process_title(&self) -> Option<String> {
+        let pid = self.process_id()?;
+        foreground_process_title(pid)
+    }
+
     /// Write input bytes to the PTY (keyboard input, paste, etc.).
     ///
     /// # Errors
@@ -341,6 +352,158 @@ fn capture_login_path(shell: &str) -> Option<String> {
     if path.is_empty() { None } else { Some(path) }
 }
 
+/// Maximum characters kept for a process-title string (sidebar-friendly).
+const MAX_PROCESS_TITLE_CHARS: usize = 48;
+
+/// Best-effort title of a non-shell process running under `shell_pid`.
+///
+/// Uses a single `ps` snapshot so we avoid N subprocesses when scanning.
+/// Returns `None` on non-Unix platforms or when no interesting child exists.
+pub fn foreground_process_title(shell_pid: u32) -> Option<String> {
+    #[cfg(unix)]
+    {
+        foreground_process_title_unix(shell_pid)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = shell_pid;
+        None
+    }
+}
+
+#[cfg(unix)]
+fn foreground_process_title_unix(shell_pid: u32) -> Option<String> {
+    let output =
+        std::process::Command::new("ps").args(["-ax", "-o", "pid=,ppid=,args="]).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let rows = parse_ps_pid_ppid_args(&text);
+    pick_foreground_title(shell_pid, &rows)
+}
+
+/// Parse `ps -o pid=,ppid=,args=` lines into `(pid, ppid, args)`.
+pub fn parse_ps_pid_ppid_args(stdout: &str) -> Vec<(u32, u32, String)> {
+    let mut rows = Vec::new();
+    for line in stdout.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let mut parts = line.split_whitespace();
+        let Some(pid_s) = parts.next() else { continue };
+        let Some(ppid_s) = parts.next() else { continue };
+        let Ok(pid) = pid_s.parse::<u32>() else { continue };
+        let Ok(ppid) = ppid_s.parse::<u32>() else { continue };
+        let args = parts.collect::<Vec<_>>().join(" ");
+        if args.is_empty() {
+            continue;
+        }
+        rows.push((pid, ppid, args));
+    }
+    rows
+}
+
+/// Choose a display title for the session rooted at `shell_pid`.
+///
+/// Prefers a direct non-shell child of the shell (the command the user ran).
+/// Falls back to a deeper non-shell descendant so wrappers like `env` still
+/// surface something useful.
+pub fn pick_foreground_title(shell_pid: u32, rows: &[(u32, u32, String)]) -> Option<String> {
+    let mut by_parent: std::collections::HashMap<u32, Vec<&(u32, u32, String)>> =
+        std::collections::HashMap::new();
+    for row in rows {
+        by_parent.entry(row.1).or_default().push(row);
+    }
+
+    // Breadth-first from the shell: first non-shell command line wins,
+    // preferring shallower processes (cargo/nvim over rustc grandchildren).
+    let mut queue = std::collections::VecDeque::new();
+    queue.push_back(shell_pid);
+    let mut seen = std::collections::HashSet::new();
+    seen.insert(shell_pid);
+
+    while let Some(pid) = queue.pop_front() {
+        let Some(children) = by_parent.get(&pid) else {
+            continue;
+        };
+        for (child_pid, _, args) in children {
+            if !seen.insert(*child_pid) {
+                continue;
+            }
+            queue.push_back(*child_pid);
+            let token = first_command_token(args);
+            if is_shell_or_helper(token) {
+                continue;
+            }
+            let cleaned = clean_process_title(args);
+            if !cleaned.is_empty() {
+                return Some(cleaned);
+            }
+        }
+    }
+    None
+}
+
+fn first_command_token(args: &str) -> &str {
+    let token = args.split_whitespace().next().unwrap_or(args);
+    // Strip leading path: /bin/zsh → zsh, ./target/debug/foo → foo
+    token.rsplit('/').next().unwrap_or(token)
+}
+
+/// Shells and wrappers that should not become the workspace title.
+fn is_shell_or_helper(comm: &str) -> bool {
+    let base = comm.trim_start_matches('-');
+    matches!(
+        base,
+        "sh"
+            | "bash"
+            | "zsh"
+            | "fish"
+            | "dash"
+            | "csh"
+            | "tcsh"
+            | "ksh"
+            | "login"
+            | "nu"
+            | "pwsh"
+            | "powershell"
+            | "cmd"
+            | "cmd.exe"
+            | "env"
+            | "nice"
+            | "nohup"
+            | "script"
+            | "time"
+            | "timeout"
+            | "stdbuf"
+            | "script_session"
+            // macOS login helpers
+            | "login.exe"
+    )
+}
+
+/// Collapse whitespace and truncate for sidebar display.
+pub fn clean_process_title(args: &str) -> String {
+    let collapsed: String = args.split_whitespace().collect::<Vec<_>>().join(" ");
+    truncate_chars(&collapsed, MAX_PROCESS_TITLE_CHARS)
+}
+
+fn truncate_chars(s: &str, max: usize) -> String {
+    let count = s.chars().count();
+    if count <= max {
+        return s.to_string();
+    }
+    if max <= 1 {
+        return "…".to_string();
+    }
+    let keep = max - 1;
+    let mut out: String = s.chars().take(keep).collect();
+    out.push('…');
+    out
+}
+
 /// Resolve the current working directory of process `pid`.
 ///
 /// * Linux: read `/proc/<pid>/cwd` symlink.
@@ -405,6 +568,48 @@ mod tests {
         assert!(backend.is_alive(), "Shell should be alive immediately after spawning");
         // Clean up
         backend.kill().ok();
+    }
+
+    #[test]
+    fn test_parse_ps_pid_ppid_args() {
+        let sample = "\
+  100   1 /bin/zsh\n\
+  200 100 cargo run -p rmux-app\n\
+  201 200 rustc --crate-name foo\n\
+";
+        let rows = parse_ps_pid_ppid_args(sample);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[1].2, "cargo run -p rmux-app");
+    }
+
+    #[test]
+    fn test_pick_foreground_title_prefers_shell_child() {
+        let rows = vec![
+            (100, 1, "/bin/zsh".into()),
+            (200, 100, "cargo run -p rmux-app --release".into()),
+            (201, 200, "rustc --crate-name foo".into()),
+        ];
+        let title = pick_foreground_title(100, &rows).expect("title");
+        assert!(title.starts_with("cargo run"), "got {title}");
+        // Idle shell → None
+        assert!(pick_foreground_title(100, &[(100, 1, "zsh".into())]).is_none());
+    }
+
+    #[test]
+    fn test_clean_process_title_truncates() {
+        let long = "a".repeat(80);
+        let cleaned = clean_process_title(&long);
+        assert_eq!(cleaned.chars().count(), MAX_PROCESS_TITLE_CHARS);
+        assert!(cleaned.ends_with('…'));
+    }
+
+    #[test]
+    fn test_is_shell_or_helper() {
+        assert!(is_shell_or_helper("zsh"));
+        assert!(is_shell_or_helper("-zsh"));
+        assert!(is_shell_or_helper("bash"));
+        assert!(!is_shell_or_helper("cargo"));
+        assert!(!is_shell_or_helper("nvim"));
     }
 
     #[test]

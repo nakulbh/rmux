@@ -137,13 +137,37 @@ const UI_SANS_FONT_CANDIDATES: &[&str] = &[
 /// `assets/fonts/NERD_FONTS_LICENSE.txt`).
 const NERD_FONT_SYMBOLS: &[u8] = include_bytes!("../assets/fonts/SymbolsNerdFontMono-Regular.ttf");
 
+/// System symbol / dingbat fonts for geometric shapes, branch glyphs, ballot
+/// boxes, arrows, etc. that JetBrains Mono + Nerd PUA do not cover.
+///
+/// Without this cascade, characters like ⎇ (U+2387), ◌, many Geometric Shapes
+/// (U+25A0–), and Misc Symbols render as hollow □ tofu — we kept patching
+/// those one-by-one. Loading a broad symbol face is the general fix.
+const SYMBOL_FONT_CANDIDATES: &[&str] = &[
+    // macOS — full geometric + technical symbol coverage
+    "/System/Library/Fonts/Apple Symbols.ttf",
+    "/System/Library/Fonts/Supplemental/Apple Symbols.ttf",
+    // Windows
+    "C:\\Windows\\Fonts\\seguisym.ttf", // Segoe UI Symbol
+    "C:\\Windows\\Fonts\\segmdl2.ttf",  // Segoe MDL2 Assets
+    // Linux
+    "/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSansSymbols-Regular.ttf",
+    "/usr/share/fonts/OTF/NotoSansSymbols2-Regular.otf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", // decent symbol coverage
+    "/usr/share/fonts/truetype/ancient-scripts/Symbola_hint.ttf",
+    "/usr/share/fonts/truetype/symbola/Symbola.ttf",
+];
+
 /// Load custom fonts for the UI and terminal.
 ///
 /// Matches Ghostty/cmux defaults as closely as egui allows:
 /// 1. **JetBrains Mono** as the primary monospace face (bundled) — crisp
 ///    coding font with consistent cell metrics for TUIs like LazyVim.
 /// 2. **Symbols Nerd Font Mono** as fallback for PUA icons (devicons, powerline).
-/// 3. System sans for proportional UI chrome.
+/// 3. **System symbol font** (Apple Symbols / Segoe UI Symbol / Noto) for
+///    Geometric Shapes, arrows, ballot boxes — general anti-tofu cascade.
+/// 4. System sans for proportional UI chrome.
 ///
 /// We deliberately do **not** prefer macOS SF Mono for the terminal: it is a
 /// multi-named / variable face that ab_glyph can resolve poorly, and it lacks
@@ -164,20 +188,39 @@ fn setup_fonts(ctx: &egui::Context) {
         std::sync::Arc::new(egui::FontData::from_static(NERD_FONT_SYMBOLS)),
     );
 
-    // Monospace: JetBrains Mono first, then Nerd symbols for missing codepoints.
-    // Bold face is registered under its own family name for the renderer.
+    let has_system_symbols = if let Some(bytes) = load_first_readable(SYMBOL_FONT_CANDIDATES) {
+        fonts.font_data.insert(
+            "SystemSymbols".to_owned(),
+            std::sync::Arc::new(egui::FontData::from_owned(bytes)),
+        );
+        true
+    } else {
+        tracing::warn!(
+            "no system symbol font found; uncommon glyphs may still tofu. \
+             install Noto Sans Symbols 2 or use Apple/Windows system fonts"
+        );
+        false
+    };
+
+    // Monospace cascade (egui walks the list for each missing codepoint):
+    // JetBrains → Nerd PUA → SystemSymbols → Hack.
     {
         let mono = fonts.families.entry(egui::FontFamily::Monospace).or_default();
         mono.clear();
         mono.push("JetBrainsMono".to_owned());
         mono.push("NerdFontSymbols".to_owned());
-        // Keep egui's built-in Hack as last resort for rare coverage gaps.
+        if has_system_symbols {
+            mono.push("SystemSymbols".to_owned());
+        }
         mono.push("Hack".to_owned());
     }
-    fonts.families.insert(
-        egui::FontFamily::Name("JetBrainsMonoBold".into()),
-        vec!["JetBrainsMonoBold".to_owned(), "NerdFontSymbols".to_owned()],
-    );
+    {
+        let mut bold = vec!["JetBrainsMonoBold".to_owned(), "NerdFontSymbols".to_owned()];
+        if has_system_symbols {
+            bold.push("SystemSymbols".to_owned());
+        }
+        fonts.families.insert(egui::FontFamily::Name("JetBrainsMonoBold".into()), bold);
+    }
 
     if let Some(bytes) = load_first_readable(UI_SANS_FONT_CANDIDATES) {
         fonts.font_data.insert(
@@ -191,12 +234,14 @@ fn setup_fonts(ctx: &egui::Context) {
             .insert(0, "SystemSans".to_owned());
     }
 
-    // Nerd symbols also on Proportional so UI chrome icons resolve.
-    fonts
-        .families
-        .entry(egui::FontFamily::Proportional)
-        .or_default()
-        .push("NerdFontSymbols".to_owned());
+    // Proportional: system sans → nerd PUA → system symbols (sidebar/icons).
+    {
+        let prop = fonts.families.entry(egui::FontFamily::Proportional).or_default();
+        prop.push("NerdFontSymbols".to_owned());
+        if has_system_symbols {
+            prop.push("SystemSymbols".to_owned());
+        }
+    }
 
     ctx.set_fonts(fonts);
 }

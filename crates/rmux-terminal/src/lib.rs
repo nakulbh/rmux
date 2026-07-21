@@ -19,7 +19,10 @@ mod renderer;
 mod state;
 mod theme;
 
-pub use backend::{PtyBackend, PtyError, PtyResult};
+pub use backend::{
+    PtyBackend, PtyError, PtyResult, clean_process_title, foreground_process_title,
+    parse_ps_pid_ppid_args, pick_foreground_title,
+};
 pub use input::InputMapper;
 pub use osc::{OscKind, OscNotification, OscScanner};
 pub use renderer::TerminalRenderer;

@@ -554,6 +554,29 @@ impl PaneNode {
         }
     }
 
+    /// Immutable walk over every live terminal (legacy leaf + multi-surface tabs).
+    ///
+    /// Used by the sidebar to aggregate cmux-style metadata (path lines, PRs,
+    /// agent activity) from **all** panes, not only the focused one.
+    pub fn for_each_terminal<F: FnMut(&TerminalPane)>(&self, f: &mut F) {
+        match self {
+            Self::Leaf { terminal, surfaces, .. } => {
+                if let Some(t) = terminal.as_ref() {
+                    f(t);
+                }
+                for surface in surfaces.iter() {
+                    f(&surface.terminal);
+                }
+            }
+            Self::Browser { .. } => {}
+            Self::Split { children, .. } => {
+                for child in children.iter() {
+                    child.for_each_terminal(f);
+                }
+            }
+        }
+    }
+
     /// Recursively equalize all split ratios in the tree.
     ///
     /// For every `Split` node, each child gets an equal share of the

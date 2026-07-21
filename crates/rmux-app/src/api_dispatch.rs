@@ -86,10 +86,13 @@ fn workspace_list(app: &RmuxApp) -> Value {
 /// `workspace.create` — create a workspace with a live terminal pane.
 fn workspace_create(app: &mut RmuxApp, params: Value) -> Result<Value, JsonRpcError> {
     let params: WorkspaceCreateParams = parse_params(params)?;
-    let name = params
-        .name
-        .unwrap_or_else(|| format!("Workspace {}", app.workspace_manager.workspace_count() + 1));
-    let id = app.create_workspace_with_terminal(name);
+    let custom_name = params.name.filter(|n| !n.trim().is_empty());
+    let seed = custom_name.clone().unwrap_or_else(|| "Terminal".to_string());
+    let id = app.create_workspace_with_terminal(seed);
+    if let Some(name) = custom_name {
+        // Explicit API name is a user custom title (won't auto-update).
+        app.workspace_manager.rename_workspace(crate::workspace::model::WorkspaceId(id), name);
+    }
     Ok(json!({ "id": id }))
 }
 

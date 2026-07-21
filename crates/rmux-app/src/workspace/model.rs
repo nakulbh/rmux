@@ -76,8 +76,29 @@ pub enum FocusDirection {
 pub struct Workspace {
     /// Unique identifier for the workspace.
     pub id: WorkspaceId,
-    /// Display name shown in the sidebar.
+    /// Display name shown in the sidebar (custom or last auto title).
     pub name: String,
+    /// When `true`, [`Self::name`] was set by the user (inline rename / API)
+    /// and automatic process/cwd titles must not overwrite it — matching
+    /// cmux `customTitle` + `CustomTitleSource::user`.
+    pub name_is_custom: bool,
+    /// Last auto-derived title from the focused pane (process or path).
+    /// Restored when the user clears a custom name.
+    pub process_title: String,
+    /// Idle path context for the sidebar subtitle (`main · ~/proj`), independent
+    /// of whether the primary title is currently a running command.
+    ///
+    /// Prefer [`Self::path_contexts`] for multi-pane display; this stays as the
+    /// first / focused line for older call sites.
+    pub path_context: Option<String>,
+    /// Unique idle path lines from **all** terminals in the workspace (cmux
+    /// multi-row metadata: one `branch · dir` per distinct cwd/branch).
+    /// Focused pane's line is first when present.
+    pub path_contexts: Vec<String>,
+    /// Best-effort GitHub PR aggregated across panes (prefer open PR / focused).
+    pub pull_request: Option<crate::workspace::sidebar_snapshot::PullRequestDisplay>,
+    /// True when **any** pane's foreground process looks like a coding agent.
+    pub shows_agent_activity: bool,
     /// The root of the pane tree.
     pub root: PaneNode,
     /// The currently focused (active) pane.
@@ -110,9 +131,19 @@ impl Workspace {
         let pane_id = *next_pane_id;
         *next_pane_id += 1;
         let pane = PaneNode::new_leaf(PaneId(pane_id));
+        // Initial name is treated as a seed auto-title until the first
+        // refresh (or as custom when the API/user passes an explicit name —
+        // callers that want a lock should call [`Self::set_custom_name`]).
+        let process_title = name.clone();
         Self {
             id,
             name,
+            name_is_custom: false,
+            process_title,
+            path_context: None,
+            path_contexts: Vec::new(),
+            pull_request: None,
+            shows_agent_activity: false,
             root: pane,
             active_pane: PaneId(pane_id),
             status: None,
@@ -123,6 +154,46 @@ impl Workspace {
             zoomed_pane: None,
             next_surface_id: 1,
         }
+    }
+
+    /// Lock the display name to a user-chosen string (cmux custom title).
+    pub fn set_custom_name(&mut self, name: String) {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        self.name = trimmed.to_string();
+        self.name_is_custom = true;
+    }
+
+    /// Drop a custom name and resume automatic titles from `process_title`.
+    pub fn clear_custom_name(&mut self) {
+        self.name_is_custom = false;
+        if !self.process_title.is_empty() {
+            self.name = self.process_title.clone();
+        }
+    }
+
+    /// Apply an automatic title from the focused pane (cmux `applyProcessTitle`).
+    ///
+    /// No-op when the user has set a custom name. Returns whether `name` changed.
+    pub fn apply_automatic_title(&mut self, title: String) -> bool {
+        let trimmed = title.trim();
+        if trimmed.is_empty() {
+            return false;
+        }
+        if self.process_title == trimmed && (self.name_is_custom || self.name == trimmed) {
+            return false;
+        }
+        self.process_title = trimmed.to_string();
+        if self.name_is_custom {
+            return false;
+        }
+        if self.name == trimmed {
+            return false;
+        }
+        self.name = trimmed.to_string();
+        true
     }
 
     /// Set the terminal for a pane by its ID.
