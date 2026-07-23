@@ -91,6 +91,25 @@ impl PtyBackend {
     /// Returns [`PtyError::OpenPty`] if the PTY could not be created.
     /// Returns [`PtyError::SpawnProcess`] if the shell process could not be spawned.
     pub fn spawn_with_cwd(cols: u16, rows: u16, cwd: Option<&Path>) -> PtyResult<Self> {
+        Self::spawn_with_env(cols, rows, cwd, &[] as &[(&str, &str)])
+    }
+
+    /// Spawn a shell like [`Self::spawn_with_cwd`], also injecting `extra_env`.
+    ///
+    /// Used by the app to export `RMUX_WORKSPACE_ID`, `RMUX_PANE_ID`, and
+    /// `RMUX_SOCKET_PATH` so agent hooks can route notifications back to
+    /// the originating pane.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PtyError::OpenPty`] if the PTY could not be created.
+    /// Returns [`PtyError::SpawnProcess`] if the shell process could not be spawned.
+    pub fn spawn_with_env(
+        cols: u16,
+        rows: u16,
+        cwd: Option<&Path>,
+        extra_env: &[(impl AsRef<str>, impl AsRef<str>)],
+    ) -> PtyResult<Self> {
         // Determine which shell to use
         let shell = std::env::var("SHELL").unwrap_or_else(|_| {
             #[cfg(unix)]
@@ -111,6 +130,9 @@ impl PtyBackend {
 
         let mut cmd = CommandBuilder::new(&shell);
         configure_shell_env(&mut cmd, &shell);
+        for (key, value) in extra_env {
+            cmd.env(key.as_ref(), value.as_ref());
+        }
 
         // Prefer the caller's cwd (sibling terminal path); else $HOME on Unix.
         if let Some(dir) = cwd.filter(|p| p.is_dir()) {

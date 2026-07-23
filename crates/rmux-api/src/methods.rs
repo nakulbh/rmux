@@ -229,6 +229,12 @@ pub struct NotificationCreateParams {
     /// Optional body text.
     #[serde(default)]
     pub body: Option<String>,
+    /// Workspace that originated the notification (sidebar badge routing).
+    #[serde(default)]
+    pub workspace_id: Option<u64>,
+    /// Pane/surface that originated the notification (jump-to-pane).
+    #[serde(default)]
+    pub pane_id: Option<u64>,
 }
 
 /// Result of [`NOTIFICATION_CREATE`].

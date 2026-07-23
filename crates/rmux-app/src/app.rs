@@ -494,6 +494,17 @@ impl RmuxApp {
     }
 }
 
+/// Environment variables injected into every PTY so agent hooks can route
+/// notifications back to the originating workspace/pane.
+fn pty_hook_env(workspace_id: u64, pane_id: u64) -> Vec<(String, String)> {
+    let socket = rmux_api::default_socket_path();
+    vec![
+        ("RMUX_WORKSPACE_ID".to_owned(), workspace_id.to_string()),
+        ("RMUX_PANE_ID".to_owned(), pane_id.to_string()),
+        ("RMUX_SOCKET_PATH".to_owned(), socket.display().to_string()),
+    ]
+}
+
 /// Spawn a terminal and attach it to `pane_id` in the active workspace.
 ///
 /// When `cwd` is `Some`, the shell starts in that directory (used to inherit
@@ -506,7 +517,9 @@ fn attach_terminal(
     named_theme: rmux_terminal::NamedTheme,
     cwd: Option<&std::path::Path>,
 ) {
-    match TerminalPane::spawn_with_cwd(INITIAL_COLS, INITIAL_ROWS, font_size, cwd) {
+    let workspace_id = manager.active().id.0;
+    let env = pty_hook_env(workspace_id, pane_id.0);
+    match TerminalPane::spawn_with_env(INITIAL_COLS, INITIAL_ROWS, font_size, cwd, &env) {
         Ok(mut terminal) => {
             terminal.set_theme(rmux_terminal::TerminalTheme::default().named(named_theme));
             manager.active_mut().set_terminal(pane_id, terminal);

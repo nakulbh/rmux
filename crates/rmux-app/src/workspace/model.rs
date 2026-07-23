@@ -445,11 +445,18 @@ impl Workspace {
         let id = SurfaceId(self.next_surface_id);
         self.next_surface_id += 1;
 
-        let mut terminal = TerminalPane::spawn_with_cwd(
+        let socket = rmux_api::default_socket_path();
+        let env = [
+            ("RMUX_WORKSPACE_ID".to_owned(), self.id.0.to_string()),
+            ("RMUX_PANE_ID".to_owned(), self.active_pane.0.to_string()),
+            ("RMUX_SOCKET_PATH".to_owned(), socket.display().to_string()),
+        ];
+        let mut terminal = TerminalPane::spawn_with_env(
             INITIAL_COLS,
             INITIAL_ROWS,
             DEFAULT_FONT_SIZE,
             cwd.as_deref(),
+            &env,
         )
         .map_err(|e| WorkspaceError::SurfaceSpawnFailed(e.to_string()))?;
         // Match the app-wide theme immediately so Cmd+T tabs don't flash

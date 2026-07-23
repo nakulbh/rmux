@@ -9,6 +9,8 @@
 //!
 //! - [`socket`] — socket path resolution and the blocking line-protocol client
 //! - [`commands`] — one function per CLI subcommand
+//! - [`hooks`] — agent hook installers and event handlers
 
 pub mod commands;
+pub mod hooks;
 pub mod socket;

@@ -124,7 +124,21 @@ impl TerminalPane {
         font_size: f32,
         cwd: Option<&Path>,
     ) -> Result<Self, PtyError> {
-        let mut backend = PtyBackend::spawn_with_cwd(cols, rows, cwd)?;
+        Self::spawn_with_env(cols, rows, font_size, cwd, &[] as &[(&str, &str)])
+    }
+
+    /// Spawn a terminal with extra environment variables (agent-hook routing).
+    ///
+    /// `extra_env` typically includes `RMUX_WORKSPACE_ID`, `RMUX_PANE_ID`, and
+    /// `RMUX_SOCKET_PATH` so agent hooks can target this pane.
+    pub fn spawn_with_env(
+        cols: u16,
+        rows: u16,
+        font_size: f32,
+        cwd: Option<&Path>,
+        extra_env: &[(impl AsRef<str>, impl AsRef<str>)],
+    ) -> Result<Self, PtyError> {
+        let mut backend = PtyBackend::spawn_with_env(cols, rows, cwd, extra_env)?;
         let state = TermState::new(cols, rows, 10_000);
         let renderer = TerminalRenderer::new(font_size);
         let input_mapper = InputMapper::new();

@@ -8,6 +8,9 @@ use std::path::Path;
 use anyhow::Result;
 use serde_json::{Value, json};
 
+use crate::hooks::{
+    self, AgentChoice, ClaudeEvent, OpenCodeEvent, handle_claude_event, handle_opencode_event,
+};
 use crate::socket;
 
 /// `rmux-cli ping` — call `system.ping` and print `pong`.
@@ -39,6 +42,10 @@ pub fn capabilities(socket_path: &Path) -> Result<()> {
 /// `rmux-cli notify` — call `notification.create` and print the created
 /// notification id.
 ///
+/// Workspace/pane ids are taken from `workspace_id` / `pane_id` when set,
+/// otherwise from `$RMUX_WORKSPACE_ID` / `$RMUX_PANE_ID` so hooks running
+/// inside a pane badge the correct sidebar tab.
+///
 /// # Errors
 ///
 /// Returns an error if the socket call fails.
@@ -47,11 +54,81 @@ pub fn notify(
     title: &str,
     subtitle: Option<&str>,
     body: Option<&str>,
+    workspace_id: Option<u64>,
+    pane_id: Option<u64>,
 ) -> Result<()> {
-    let (method, params) = notify_request(title, subtitle, body);
+    let workspace_id = workspace_id
+        .or_else(|| std::env::var("RMUX_WORKSPACE_ID").ok().and_then(|s| s.parse().ok()));
+    let pane_id =
+        pane_id.or_else(|| std::env::var("RMUX_PANE_ID").ok().and_then(|s| s.parse().ok()));
+    let (method, params) = notify_request(title, subtitle, body, workspace_id, pane_id);
     let result = socket::call(socket_path, method, params)?;
     println!("{}", extract_id(&result));
     Ok(())
+}
+
+/// `rmux-cli hooks setup` — install Claude Code / OpenCode notification hooks.
+pub fn hooks_setup(agent: Option<&str>, force: bool) -> Result<()> {
+    let choice = parse_agent_choice(agent)?;
+    let outcomes = hooks::install_agents(choice, !force)?;
+    print_install_outcomes(&outcomes, "setup");
+    if outcomes.iter().any(|o| matches!(o.status, hooks::InstallStatus::Error)) {
+        anyhow::bail!("one or more agents failed to install");
+    }
+    Ok(())
+}
+
+/// `rmux-cli hooks uninstall` — remove rmux-owned agent hooks.
+pub fn hooks_uninstall(agent: Option<&str>) -> Result<()> {
+    let choice = parse_agent_choice(agent)?;
+    let outcomes = hooks::uninstall_agents(choice)?;
+    print_install_outcomes(&outcomes, "uninstall");
+    if outcomes.iter().any(|o| matches!(o.status, hooks::InstallStatus::Error)) {
+        anyhow::bail!("one or more agents failed to uninstall");
+    }
+    Ok(())
+}
+
+/// `rmux-cli hooks claude <event>` — handle a Claude Code hook (stdin JSON).
+///
+/// Always succeeds from the agent's perspective: socket failures are ignored.
+pub fn hooks_claude(socket_path: &Path, event: &str) -> Result<()> {
+    let Some(ev) = ClaudeEvent::parse(event) else {
+        anyhow::bail!("unknown claude hook event: {event}");
+    };
+    // Fail-open: never break the agent if rmux is down.
+    let _ = handle_claude_event(socket_path, ev);
+    Ok(())
+}
+
+/// `rmux-cli hooks opencode <event>` — handle an OpenCode plugin event.
+pub fn hooks_opencode(socket_path: &Path, event: &str) -> Result<()> {
+    let Some(ev) = OpenCodeEvent::parse(event) else {
+        anyhow::bail!("unknown opencode hook event: {event}");
+    };
+    let _ = handle_opencode_event(socket_path, ev);
+    Ok(())
+}
+
+fn parse_agent_choice(agent: Option<&str>) -> Result<AgentChoice> {
+    match agent {
+        None | Some("all") => Ok(AgentChoice::All),
+        Some("claude") => Ok(AgentChoice::Claude),
+        Some("opencode") => Ok(AgentChoice::OpenCode),
+        Some(other) => anyhow::bail!("unknown agent '{other}' (expected claude, opencode, or all)"),
+    }
+}
+
+fn print_install_outcomes(outcomes: &[hooks::InstallOutcome], op: &str) {
+    for o in outcomes {
+        let tag = match o.status {
+            hooks::InstallStatus::Installed => "installed",
+            hooks::InstallStatus::Uninstalled => "uninstalled",
+            hooks::InstallStatus::Skipped => "skipped",
+            hooks::InstallStatus::Error => "error",
+        };
+        println!("[{op}] {} ({tag}): {}", o.agent.as_str(), o.detail);
+    }
 }
 
 /// `rmux-cli new-workspace` — call `workspace.create` and print the
@@ -120,8 +197,19 @@ fn notify_request(
     title: &str,
     subtitle: Option<&str>,
     body: Option<&str>,
+    workspace_id: Option<u64>,
+    pane_id: Option<u64>,
 ) -> (&'static str, Value) {
-    ("notification.create", json!({ "title": title, "subtitle": subtitle, "body": body }))
+    (
+        "notification.create",
+        json!({
+            "title": title,
+            "subtitle": subtitle,
+            "body": body,
+            "workspace_id": workspace_id,
+            "pane_id": pane_id,
+        }),
+    )
 }
 
 fn new_workspace_request(name: Option<&str>) -> (&'static str, Value) {
@@ -240,15 +328,34 @@ mod tests {
 
     #[test]
     fn notify_request_includes_all_fields() {
-        let (method, params) = notify_request("Build", Some("rmux"), Some("done"));
+        let (method, params) =
+            notify_request("Build", Some("rmux"), Some("done"), Some(1), Some(2));
         assert_eq!(method, "notification.create");
-        assert_eq!(params, json!({ "title": "Build", "subtitle": "rmux", "body": "done" }));
+        assert_eq!(
+            params,
+            json!({
+                "title": "Build",
+                "subtitle": "rmux",
+                "body": "done",
+                "workspace_id": 1,
+                "pane_id": 2,
+            })
+        );
     }
 
     #[test]
     fn notify_request_nulls_missing_fields() {
-        let (_, params) = notify_request("Build", None, None);
-        assert_eq!(params, json!({ "title": "Build", "subtitle": null, "body": null }));
+        let (_, params) = notify_request("Build", None, None, None, None);
+        assert_eq!(
+            params,
+            json!({
+                "title": "Build",
+                "subtitle": null,
+                "body": null,
+                "workspace_id": null,
+                "pane_id": null,
+            })
+        );
     }
 
     #[test]

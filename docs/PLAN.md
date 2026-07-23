@@ -332,16 +332,21 @@ cross-platform Rust application targeting Linux, macOS, and Windows with a stric
 
 ### Tasks
 
-- [ ] **6.1** Define agent hook registry:
-  - Each agent: binary name, resume command, session store file
-  - Agents: Claude Code, Codex, OpenCode, Gemini, Amp, Cursor CLI, etc.
-- [ ] **6.2** Implement `rmux hooks setup [--agent NAME]`:
-  - Detect installed agents on PATH
-  - Write hook configs to agent config directories
-  - Session store: `~/.rmuxterm/<agent>-hook-sessions.json`
-- [ ] **6.3** Implement hook event handling:
-  - `SessionStart`, `SessionEnd`, `TurnComplete`, `WaitingForInput`
-  - Map events to notifications + sidebar status
+- [x] **6.1** Define agent hook registry (MVP: Claude Code + OpenCode):
+  - Binary name, display name, disable env vars
+  - See `crates/rmux-cli/src/hooks/registry.rs`
+  - Later: Codex, Gemini, Amp, Cursor CLI, session store files
+- [x] **6.2** Implement `rmux-cli hooks setup [--agent NAME]` (MVP notify path):
+  - Detect installed agents on PATH (`--force` skips check)
+  - Claude: merge hooks into `~/.claude/settings.json`
+  - OpenCode: write `plugins/rmux-notify.js` + register in `opencode.json`
+  - Guide: `docs/guide/agent-hooks.md`
+  - Later: session store `~/.rmuxterm/<agent>-hook-sessions.json`
+- [x] **6.3** Implement hook event handling (notifications + sidebar status):
+  - Claude: session-start, prompt-submit, stop, notification, push-notification, session-end
+  - OpenCode: session-start, stop, notification, status
+  - PTY env: `RMUX_WORKSPACE_ID`, `RMUX_PANE_ID`, `RMUX_SOCKET_PATH`
+  - Targeted `notification.create` + `sidebar.set_status`
 - [ ] **6.4** Implement agent session resume:
   - Read `~/.rmuxterm/<agent>-hook-sessions.json`
   - Match sessions to workspace/surface
@@ -352,9 +357,9 @@ cross-platform Rust application targeting Linux, macOS, and Windows with a stric
 
 ### Deliverables
 
-- `rmux hooks setup` installs hooks for detected agents
-- Agent sessions resume on relaunch
-- Sidebar shows agent status per workspace
+- [x] `rmux-cli hooks setup` installs hooks for Claude Code + OpenCode
+- [ ] Agent sessions resume on relaunch
+- [x] Sidebar shows agent status per workspace (via hook events)
 
 ### Milestone
 
@@ -502,4 +507,4 @@ rmux/
 | Phase 3: Notifications + API | 🟢 Complete | 100% |
 | Phase 4: Browser Pane | 🟡 In Progress | 20% |
 | Phase 5: SSH + Sessions | ⬜ Blocked by Phase 4 | 0% |
-| Phase 6: Agent Hooks | ⬜ Blocked by Phase 5 | 0% |
+| Phase 6: Agent Hooks | 🟡 In progress (notify MVP: Claude + OpenCode) | ~40% |
