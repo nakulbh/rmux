@@ -51,3 +51,7 @@ anyhow = "1"
 
 # HTTP (update check against GitHub Releases / commits API)
 ureq = { version = "2", default-features = true, features = ["json"] }
+
+# Chromium Embedded Framework (default browser engine via browser-chromium)
+# Version must match scripts/fetch-cef.sh CEF_VERSION (150.x).
+cef = { version = "150.2.1", default-features = false }

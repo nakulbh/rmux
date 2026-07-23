@@ -19,10 +19,15 @@ fn test_socket_path_falls_back_when_override_absent_or_empty() {
 #[test]
 fn test_all_methods_lists_full_phase3_contract() {
     let all = methods::all_methods();
-    assert_eq!(all.len(), 19);
+    // Phase 3 (19 including events.stream) + Phase 4 browser (13) = 32.
+    assert_eq!(all.len(), 32);
     assert!(all.contains(&methods::SYSTEM_PING));
     assert!(all.contains(&methods::EVENTS_STREAM));
     assert!(all.contains(&methods::SIDEBAR_SET_PROGRESS));
+    assert!(all.contains(&methods::BROWSER_OPEN));
+    assert!(all.contains(&methods::BROWSER_EVAL));
+    assert!(all.contains(&methods::BROWSER_SNAPSHOT));
+    assert!(all.contains(&methods::BROWSER_SCREENSHOT));
 }
 
 #[cfg(unix)]

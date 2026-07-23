@@ -14,7 +14,7 @@
 | Terminal emulator | `alacritty_terminal` |
 | PTY | `portable-pty` |
 | Async runtime | `tokio` |
-| Browser pane | `wry` |
+| Browser pane | CEF Chromium (`cef`; optional `wry` fallback) |
 | Notifications | `notify-rust` |
 | Min RAM target | < 100 MB with 20 panes |
 | Platforms | Linux, macOS, Windows |
@@ -302,7 +302,9 @@ doc:
 | Errors | `thiserror`, `anyhow` | Error handling |
 | Logging | `tracing`, `tracing-subscriber` | Structured logging |
 | Notifications | `notify-rust` | Desktop notifications |
-| Browser | `wry` | OS webview embedding |
+| Browser (default) | CEF / `cef` crate | Chromium OSR — see `docs/BROWSER_ENGINE.md` |
+| Browser (optional) | `wry` | OS webview fallback (`browser-os-webview`) |
+| Browser (target) | CEF / `wew` or `wef` | Chromium OSR — see `docs/BROWSER_ENGINE.md` |
 | Config dirs | `dirs` | XDG/AppData paths |
 | Fuzzy match | `nucleo` | Command palette |
 | SSH | `thrussh` or `ssh2` | Remote sessions (Phase 5) |
@@ -346,7 +348,7 @@ crates/
 │       │   ├── osc_parser.rs    # OSC 9/99/777
 │       │   └── manager.rs       # State + desktop notify
 │       └── browser/
-│           └── webview.rs       # wry wrapper
+│           └── webview.rs       # BrowserPane + CEF OSR / optional wry
 ├── rmux-terminal/
 │   ├── Cargo.toml
 │   └── src/

@@ -77,6 +77,49 @@ enum Command {
         /// are interpreted; unknown escapes pass through unchanged.
         text: String,
     },
+    /// Open a browser pane split (optional URL)
+    BrowserOpen {
+        /// URL to load after open
+        url: Option<String>,
+    },
+    /// Navigate the browser to a URL
+    BrowserNav {
+        /// Target URL
+        url: String,
+        /// Browser pane id (default: active / first browser)
+        #[arg(long)]
+        pane: Option<u64>,
+    },
+    /// Print the browser's current URL and title
+    BrowserUrl {
+        #[arg(long)]
+        pane: Option<u64>,
+    },
+    /// Evaluate a JavaScript expression in the page
+    BrowserEval {
+        /// JS expression (e.g. `document.title`)
+        script: String,
+        #[arg(long)]
+        pane: Option<u64>,
+    },
+    /// Click an element by CSS selector
+    BrowserClick {
+        selector: String,
+        #[arg(long)]
+        pane: Option<u64>,
+    },
+    /// Fill an input by CSS selector
+    BrowserFill {
+        selector: String,
+        value: String,
+        #[arg(long)]
+        pane: Option<u64>,
+    },
+    /// Dump a DOM / accessibility snapshot as JSON
+    BrowserSnapshot {
+        #[arg(long)]
+        pane: Option<u64>,
+    },
 }
 
 /// Split direction accepted by `new-split`.
@@ -111,6 +154,19 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::ListWorkspaces { json } => commands::list_workspaces(&socket_path, json),
         Command::NewSplit { direction } => commands::new_split(&socket_path, direction.as_str()),
         Command::Send { text } => commands::send(&socket_path, &text),
+        Command::BrowserOpen { url } => commands::browser_open(&socket_path, url.as_deref()),
+        Command::BrowserNav { url, pane } => commands::browser_nav(&socket_path, &url, pane),
+        Command::BrowserUrl { pane } => commands::browser_url(&socket_path, pane),
+        Command::BrowserEval { script, pane } => {
+            commands::browser_eval(&socket_path, &script, pane)
+        }
+        Command::BrowserClick { selector, pane } => {
+            commands::browser_click(&socket_path, &selector, pane)
+        }
+        Command::BrowserFill { selector, value, pane } => {
+            commands::browser_fill(&socket_path, &selector, &value, pane)
+        }
+        Command::BrowserSnapshot { pane } => commands::browser_snapshot(&socket_path, pane),
     }
 }
 

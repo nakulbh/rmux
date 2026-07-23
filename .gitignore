@@ -1,1 +1,5 @@
 /target
+
+# CEF / Chromium blobs (scripts/fetch-cef.sh) — never commit
+/third_party/cef/
+**/*.tar.bz2

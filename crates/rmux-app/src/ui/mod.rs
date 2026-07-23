@@ -12,6 +12,7 @@
 //! - `shortcut_hints` — hold-⌘ / hold-Ctrl chord overlays (cmux style)
 
 pub mod help_menu;
+pub mod icons;
 pub mod notification_panel;
 pub mod settings_panel;
 pub mod shortcut_hints;

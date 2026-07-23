@@ -57,6 +57,9 @@ pub struct RmuxApp {
     last_active_workspace: u64,
     /// Cross-platform shortcut manager (`KeyboardShortcut` → `AppCommand`).
     pub(crate) shortcut_manager: crate::shortcut_manager::ShortcutManager,
+    /// Deferred browser JS RPCs (`browser.eval`, `snapshot`, actions) waiting
+    /// for wry evaluate callbacks across frames.
+    pending_js_rpcs: Vec<crate::api_dispatch::PendingJsRpc>,
 }
 
 impl RmuxApp {
@@ -78,6 +81,7 @@ impl RmuxApp {
             api_event_tx: channels.event_tx,
             last_active_workspace: 0,
             shortcut_manager: crate::shortcut_manager::ShortcutManager::with_defaults(),
+            pending_js_rpcs: Vec::new(),
         };
 
         let pane_id = app.workspace_manager.active().active_pane;
@@ -87,6 +91,7 @@ impl RmuxApp {
         tracing::info!(
             workspaces = app.workspace_manager.workspace_count(),
             panes = app.workspace_manager.total_pane_count(),
+            browser_engine = crate::browser::EngineKind::compiled().as_str(),
             "Application initialized"
         );
         app
@@ -95,7 +100,10 @@ impl RmuxApp {
 
 impl eframe::App for RmuxApp {
     /// Called each frame to update the UI.
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        // Chromium CEF external message pump (no-op unless browser-chromium).
+        crate::browser::pump_browser_runtime();
+
         // Apply shadcn-inspired theme every frame
         crate::ui::theme::Theme::dark().apply(ctx);
         // Process PTY output for all terminal panes (exit detection, grid).
@@ -214,6 +222,14 @@ impl eframe::App for RmuxApp {
         // Render the workspace view (central panel)
         self.render_workspace(ctx);
 
+        // Create / show / hide / reposition native wry webviews after layout
+        // has assigned pane bounds. Must run after `render_workspace`.
+        self.sync_browser_webviews(frame);
+
+        // Complete deferred browser.eval / snapshot / action RPCs once the
+        // wry JS callback has delivered a result string.
+        self.poll_pending_js_rpcs();
+
         // Publish workspace.changed if the active workspace switched this
         // frame (keyboard, sidebar click, or API request).
         self.emit_workspace_change();
@@ -253,14 +269,51 @@ impl RmuxApp {
     /// Drain and answer all pending socket API requests.
     ///
     /// Runs on the main thread inside `update()`, so the dispatcher has
-    /// direct `&mut` access to application state. The `oneshot` respond
-    /// send is synchronous and non-blocking.
+    /// direct `&mut` access to application state. Immediate methods answer
+    /// via the oneshot immediately; browser JS methods may be deferred until
+    /// [`Self::poll_pending_js_rpcs`].
     fn process_api_requests(&mut self) {
+        use crate::api_dispatch::{DispatchOutcome, PendingJsRpc};
+
         while let Ok(envelope) = self.api_request_rx.try_recv() {
             tracing::debug!(method = %envelope.method, "handling API request");
-            let result = crate::api_dispatch::dispatch(self, &envelope.method, envelope.params);
-            let _ = envelope.respond.send(result);
+            match crate::api_dispatch::dispatch(self, &envelope.method, envelope.params) {
+                DispatchOutcome::Immediate(result) => {
+                    let _ = envelope.respond.send(result);
+                }
+                DispatchOutcome::PendingJs { result_rx, map } => {
+                    self.pending_js_rpcs.push(PendingJsRpc {
+                        result_rx,
+                        map,
+                        respond: envelope.respond,
+                    });
+                }
+            }
         }
+    }
+
+    /// Poll deferred browser JS evaluations and complete their RPC oneshots.
+    fn poll_pending_js_rpcs(&mut self) {
+        use crate::api_dispatch::map_pending_js;
+
+        let mut still_pending = Vec::with_capacity(self.pending_js_rpcs.len());
+        for pending in self.pending_js_rpcs.drain(..) {
+            match pending.result_rx.try_recv() {
+                Ok(raw) => {
+                    let result = map_pending_js(pending.map, &raw);
+                    let _ = pending.respond.send(result);
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    still_pending.push(pending);
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    let _ = pending.respond.send(Err(rmux_api::JsonRpcError::internal(
+                        "browser JS evaluation channel closed",
+                    )));
+                }
+            }
+        }
+        self.pending_js_rpcs = still_pending;
     }
 
     /// Publish an event to `events.stream` subscribers (best-effort:
@@ -351,22 +404,51 @@ impl RmuxApp {
     ///
     /// Shared by the Cmd/Ctrl+Shift+L shortcut and the socket API.
     /// Publishes a `pane.created` event. Returns the raw id of the
-    /// new browser pane.
+    /// new browser pane. Focus moves to the new browser pane.
     pub(crate) fn open_browser_split(&mut self, url: Option<&str>) -> Result<u64, PaneTreeError> {
         let new_id = self.workspace_manager.split_active_right()?;
         let browser = BrowserPane::new();
         self.workspace_manager.active_mut().set_browser(new_id, browser);
+        self.workspace_manager.active_mut().focus_pane(new_id);
         let workspace_id = self.workspace_manager.active().id.0;
-        if let Some(u) = url
-            && let Some(b) = self.workspace_manager.active_mut().root.find_browser_mut(new_id)
-        {
-            let _ = b.navigate(u);
+        if let Some(b) = self.workspace_manager.active_mut().root.find_browser_mut(new_id) {
+            // Focus the address bar so the user can type immediately (cmux UX).
+            b.focus_url_bar = true;
+            if let Some(u) = url {
+                let _ = b.navigate(u);
+            }
         }
         self.publish_event(
             "pane.created",
             json!({ "pane_id": new_id.0, "workspace_id": workspace_id }),
         );
         Ok(new_id.0)
+    }
+
+    /// After layout: create missing webviews, hide ones not shown this frame,
+    /// poll navigation events, and apply bounds.
+    ///
+    /// Native wry child webviews sit above the egui surface, so any browser
+    /// that was not laid out (other workspace, zoomed-away pane) must be
+    /// hidden or it will paint over the terminal UI.
+    fn sync_browser_webviews(&mut self, frame: &eframe::Frame) {
+        for workspace in self.workspace_manager.workspaces_mut() {
+            workspace.root.for_each_browser_mut(&mut |_id, browser| {
+                browser.poll_events();
+                let shown = browser.take_shown_this_frame();
+                if shown {
+                    if !browser.is_open()
+                        && let Err(e) = browser.create_webview(frame)
+                    {
+                        tracing::error!(error = %e, "Failed to create browser webview");
+                    }
+                    browser.set_visible(true);
+                    browser.reposition_webview();
+                } else if browser.is_open() {
+                    browser.set_visible(false);
+                }
+            });
+        }
     }
 
     /// Get a mutable reference to the active browser pane, if the active
@@ -478,18 +560,35 @@ impl RmuxApp {
 
     /// Render the workspace area in the central panel of the window.
     fn render_workspace(&mut self, ctx: &egui::Context) {
-        let mut new_tab = false;
+        let mut result = workspace_view::PaneTreeResult::default();
         egui::CentralPanel::default().show(ctx, |ui| {
             // Snapshot the zoomed pane id with an immutable borrow, then
             // hand the manager (and the snapshot) to the renderer. The
-            // renderer buffers tab-bar actions internally and replays
+            // renderer buffers chrome actions internally and replays
             // them after the tree-walk's `&mut Workspace` borrow ends.
             let zoomed = self.workspace_manager.active().zoomed_pane;
-            new_tab = workspace_view::render_pane_tree(ui, &mut self.workspace_manager, zoomed);
+            result = workspace_view::render_pane_tree(ui, &mut self.workspace_manager, zoomed);
         });
         // Tab-bar "+" — same path as Cmd+T so theme/font match.
-        if new_tab && let Err(e) = self.new_surface_with_terminal(None) {
+        if result.new_terminal_tab
+            && let Err(e) = self.new_surface_with_terminal(None)
+        {
             tracing::warn!(error = %e, "tab-bar new surface failed");
+        }
+        // Globe button on a terminal pane chrome.
+        if let Some(from) = result.open_browser_from {
+            self.workspace_manager.active_mut().focus_pane(from);
+            match self.open_browser_split(None) {
+                Ok(pane_id) => tracing::info!(pane_id, "Opened browser via globe button"),
+                Err(e) => tracing::warn!(error = %e, "Globe open browser failed"),
+            }
+        }
+        // Browser chrome ×.
+        if let Some(pane) = result.close_browser {
+            self.workspace_manager.active_mut().focus_pane(pane);
+            if let Err(e) = self.close_active_pane_with_event() {
+                tracing::warn!(error = %e, "Close browser pane failed");
+            }
         }
     }
 }

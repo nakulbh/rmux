@@ -2,72 +2,90 @@
 //!
 //! This module renders the recursive `PaneNode` tree into the central panel
 //! of the application window. Split nodes divide the available area among their
-//! children. Leaf nodes render terminal panes (with a tab bar above the
-//! terminal area when the leaf holds more than one surface). When a pane is
-//! zoomed (maximized), only that pane is rendered at full workspace size.
+//! children. Leaf and browser panes always show cmux-style chrome (tabs +
+//! globe / close). When a pane is zoomed (maximized), only that pane is
+//! rendered at full workspace size.
 
+use crate::ui::icons;
 use crate::ui::theme;
 use crate::workspace::WorkspaceManager;
 use crate::workspace::splits::{PaneId, PaneNode, SplitDirection, SplitId};
-use egui::{Rect, Vec2};
+use egui::{Rect, Vec2, pos2};
 
 const SPLIT_BORDER: f32 = 1.0;
-/// Height of the multi-surface tab strip (cmux-style flat bar).
+/// Height of the cmux-style pane chrome strip (tabs + globe / close).
 const TAB_BAR_HEIGHT: f32 = 28.0;
 /// Max width of a single tab label before ellipsis.
 const TAB_MAX_WIDTH: f32 = 180.0;
 /// Hit size for the per-tab close (×) control.
 const TAB_CLOSE_SIZE: f32 = 16.0;
+/// Size of the right-side chrome icon buttons (globe, close).
+const CHROME_ICON_SIZE: f32 = 22.0_f32;
 
-/// Actions emitted by the tab bar during rendering. They are collected
-/// into a `Vec` and applied to the [`WorkspaceManager`] after the
-/// tree-walk's mutable borrow is released, avoiding an unworkable
-/// `&mut Workspace` + `&mut WorkspaceManager` overlap.
+/// Actions emitted by pane chrome during rendering. Buffered and applied
+/// after the tree-walk releases its `&mut Workspace` borrow.
 #[derive(Debug, Clone, Copy)]
-enum TabAction {
-    Select(usize),
-    Close(usize),
-    New,
+enum ChromeAction {
+    SelectSurface(usize),
+    CloseSurface(usize),
+    NewTerminal,
+    /// Globe button on a terminal pane — open a browser split from this pane.
+    OpenBrowser {
+        from_pane: PaneId,
+    },
+    /// Close a browser pane (chrome ×).
+    CloseBrowser {
+        pane: PaneId,
+    },
 }
 
-/// Render the pane tree into the given `egui::Ui`, optionally zoomed to a
-/// single pane.
-///
-/// When `zoomed_pane` is `Some(id)`, only that pane is rendered at full
-/// workspace size. A small label in the top-right corner reminds the user
-/// how to restore the layout.
-///
-/// `manager` is used both to read the active workspace (during render)
-/// and to apply deferred tab-bar actions (after render). Actions emitted
-/// by the tab bar are buffered in a `Vec` and replayed against the
-/// manager once the tree-walk's mutable borrow has ended.
-///
-/// Returns whether the user requested a new terminal tab (`+` / deferred
-/// `TabAction::New`) so the app can spawn it with the current theme.
+/// Result of rendering the pane tree (deferred app-level actions).
+#[derive(Debug, Default)]
+pub struct PaneTreeResult {
+    /// User clicked "+" for a new terminal surface (Cmd+T path).
+    pub new_terminal_tab: bool,
+    /// User clicked the globe on a terminal pane.
+    pub open_browser_from: Option<PaneId>,
+    /// User closed a browser pane via chrome ×.
+    pub close_browser: Option<PaneId>,
+}
+
+/// Render the pane tree into the given `egui::Ui`, optionally zoomed.
 #[must_use]
 pub fn render_pane_tree(
     ui: &mut egui::Ui,
     manager: &mut WorkspaceManager,
     zoomed_pane: Option<PaneId>,
-) -> bool {
+) -> PaneTreeResult {
     let available = ui.available_rect_before_wrap();
 
     if !ui.is_rect_visible(available) {
-        return false;
+        return PaneTreeResult::default();
     }
 
     let palette = theme::palette();
     ui.painter().rect_filled(available, 0.0_f32, palette.app_bg);
 
-    let mut actions: Vec<TabAction> = Vec::new();
+    let mut actions: Vec<ChromeAction> = Vec::new();
 
     if let Some(zoom_id) = zoomed_pane {
         let ws = manager.active_mut();
-        if let Some(leaf) = ws.root.find_pane_mut(zoom_id) {
+        if ws.root.is_browser_pane(zoom_id) {
+            if let Some(browser) = ws.root.find_browser_mut(zoom_id) {
+                let is_active = zoom_id == ws.active_pane;
+                render_browser(
+                    ui,
+                    zoom_id,
+                    browser,
+                    available,
+                    is_active,
+                    &mut ws.active_pane,
+                    &mut actions,
+                );
+            }
+        } else if let Some(leaf) = ws.root.find_pane_mut(zoom_id) {
             let is_active = zoom_id == ws.active_pane;
             render_leaf(ui, leaf, available, is_active, &mut ws.active_pane, &mut actions);
-        } else if let Some(browser) = ws.root.find_browser_mut(zoom_id) {
-            render_browser(ui, browser, available, zoom_id == ws.active_pane, &mut ws.active_pane);
         }
 
         let label_rect = Rect::from_min_size(
@@ -94,28 +112,31 @@ pub fn render_pane_tree(
         render_node(ui, &mut ws.root, available, &mut ws.active_pane, &mut actions);
     }
 
-    // Replay buffered tab-bar actions now that the tree-walk's `&mut
-    // Workspace` borrow has ended. `New` is returned to the app so it
-    // can spawn with the current theme/font (not bare defaults).
-    let mut new_requested = false;
+    let mut result = PaneTreeResult::default();
     for action in actions {
         match action {
-            TabAction::Select(idx) => {
+            ChromeAction::SelectSurface(idx) => {
                 if let Err(e) = manager.select_surface_in_active(idx) {
                     tracing::warn!(error = %e, "select_surface_in_active failed");
                 }
             }
-            TabAction::Close(idx) => {
+            ChromeAction::CloseSurface(idx) => {
                 if let Err(e) = manager.close_surface_in_active(Some(idx)) {
                     tracing::warn!(error = %e, "close_surface_in_active failed");
                 }
             }
-            TabAction::New => {
-                new_requested = true;
+            ChromeAction::NewTerminal => {
+                result.new_terminal_tab = true;
+            }
+            ChromeAction::OpenBrowser { from_pane } => {
+                result.open_browser_from = Some(from_pane);
+            }
+            ChromeAction::CloseBrowser { pane } => {
+                result.close_browser = Some(pane);
             }
         }
     }
-    new_requested
+    result
 }
 
 fn render_node(
@@ -123,7 +144,7 @@ fn render_node(
     node: &mut PaneNode,
     rect: Rect,
     active_pane: &mut PaneId,
-    actions: &mut Vec<TabAction>,
+    actions: &mut Vec<ChromeAction>,
 ) {
     let resize_request: Option<(SplitId, usize, f32)> = match node {
         PaneNode::Leaf { id, .. } => {
@@ -132,8 +153,9 @@ fn render_node(
             None
         }
         PaneNode::Browser { id, browser } => {
-            let is_active = *id == *active_pane;
-            render_browser(ui, browser.as_mut(), rect, is_active, active_pane);
+            let pane_id = *id;
+            let is_active = pane_id == *active_pane;
+            render_browser(ui, pane_id, browser.as_mut(), rect, is_active, active_pane, actions);
             None
         }
         PaneNode::Split { id, direction, children, sizes } => {
@@ -153,24 +175,20 @@ fn render_leaf(
     rect: Rect,
     is_active: bool,
     active_pane: &mut PaneId,
-    actions: &mut Vec<TabAction>,
+    actions: &mut Vec<ChromeAction>,
 ) {
     let PaneNode::Leaf { id, .. } = leaf else {
         return;
     };
     let pane_id = *id;
-    let surface_count = leaf.leaf_surfaces().len();
-    let show_tab_bar = should_render_tab_bar(surface_count);
-    let tab_bar_height = if show_tab_bar { TAB_BAR_HEIGHT } else { 0.0_f32 };
 
-    if show_tab_bar {
-        let tab_bar_rect = Rect::from_min_size(rect.min, Vec2::new(rect.width(), TAB_BAR_HEIGHT));
-        render_tab_bar(ui, leaf, tab_bar_rect, is_active, actions);
-    }
+    // Always show cmux-style chrome (tabs + globe) on every terminal pane.
+    let chrome_rect = Rect::from_min_size(rect.min, Vec2::new(rect.width(), TAB_BAR_HEIGHT));
+    render_terminal_chrome(ui, leaf, pane_id, chrome_rect, is_active, actions);
 
     let terminal_rect = Rect::from_min_size(
-        rect.min + Vec2::new(0.0_f32, tab_bar_height),
-        Vec2::new(rect.width(), (rect.height() - tab_bar_height).max(0.0_f32)),
+        rect.min + Vec2::new(0.0_f32, TAB_BAR_HEIGHT),
+        Vec2::new(rect.width(), (rect.height() - TAB_BAR_HEIGHT).max(0.0_f32)),
     );
 
     let mut child_ui = ui
@@ -208,47 +226,51 @@ fn render_leaf(
     }
 }
 
-fn render_tab_bar(
+/// cmux-style terminal chrome: surface tabs on the left, globe + close on the right.
+fn render_terminal_chrome(
     ui: &mut egui::Ui,
     leaf: &mut PaneNode,
+    pane_id: PaneId,
     rect: Rect,
     is_active: bool,
-    actions: &mut Vec<TabAction>,
+    actions: &mut Vec<ChromeAction>,
 ) {
     let palette = theme::palette();
-    // Near-black strip matching cmux terminal chrome (slightly darker than panel).
     let bar_bg = egui::Color32::from_rgb(
         palette.app_bg.r().saturating_sub(6),
         palette.app_bg.g().saturating_sub(6),
         palette.app_bg.b().saturating_sub(6),
     );
     ui.painter().rect_filled(rect, 0.0_f32, bar_bg);
-    // Bottom hairline separating tabs from the terminal body.
     ui.painter().hline(
         rect.x_range(),
         rect.bottom() - 0.5_f32,
         egui::Stroke::new(1.0_f32, palette.chrome_border),
     );
 
+    // Right-side icon cluster reserves space so tabs don't collide.
+    let icons_w = CHROME_ICON_SIZE * 2.0_f32 + 10.0_f32;
+    let tabs_right = rect.right() - icons_w;
+    let cy = rect.center().y;
+
     let active_idx = leaf.active_surface_index();
     let surface_count = leaf.leaf_surfaces().len();
     let titles: Vec<String> = leaf.leaf_surfaces().iter().map(|s| s.display_title()).collect();
 
     let mut x = rect.left() + 4.0_f32;
-    let cy = rect.center().y;
 
     for (idx, title) in titles.iter().enumerate() {
+        if x >= tabs_right - 40.0_f32 {
+            break;
+        }
         let is_current = idx == active_idx;
-        let tab_w = measure_tab_width(ui, title);
-        let tab_rect =
-            Rect::from_min_size(egui::pos2(x, rect.top()), Vec2::new(tab_w, rect.height()));
+        let tab_w = measure_tab_width(ui, title).min(tabs_right - x);
+        let tab_rect = Rect::from_min_size(pos2(x, rect.top()), Vec2::new(tab_w, rect.height()));
 
         let resp = ui
-            .interact(tab_rect, ui.id().with(("surf_tab", idx)), egui::Sense::click())
+            .interact(tab_rect, ui.id().with(("surf_tab", pane_id.0, idx)), egui::Sense::click())
             .on_hover_cursor(egui::CursorIcon::PointingHand);
 
-        // Active: slightly lifted fill + accent underline (cmux).
-        // Inactive: transparent; hover lifts text.
         if is_current {
             ui.painter().rect_filled(
                 tab_rect.shrink2(Vec2::new(0.0_f32, 1.0_f32)),
@@ -271,9 +293,9 @@ fn render_tab_bar(
         let title_color =
             if is_current || resp.hovered() { palette.text_primary } else { palette.text_muted };
 
-        // Title (left-padded); reserve room for close ×.
         let text_left = tab_rect.left() + 8.0_f32;
-        let text_right = tab_rect.right() - TAB_CLOSE_SIZE - 4.0_f32;
+        let text_right =
+            tab_rect.right() - if surface_count > 1 { TAB_CLOSE_SIZE + 4.0_f32 } else { 4.0_f32 };
         let mut job = egui::text::LayoutJob::simple_singleline(
             title.clone(),
             egui::FontId::proportional(11.5_f32),
@@ -282,30 +304,26 @@ fn render_tab_bar(
         job.wrap =
             egui::text::TextWrapping::truncate_at_width((text_right - text_left).max(0.0_f32));
         let galley = ui.fonts(|f| f.layout_job(job));
-        ui.painter().galley(
-            egui::pos2(text_left, cy - galley.size().y / 2.0_f32),
-            galley,
-            title_color,
-        );
+        ui.painter().galley(pos2(text_left, cy - galley.size().y / 2.0_f32), galley, title_color);
 
-        // Close × — register hit target whenever multi-tab so the parent
-        // tab click cannot steal the event. Paint when active or hovered.
         let mut closed_this_tab = false;
         if surface_count > 1 {
-            let close_center =
-                egui::pos2(tab_rect.right() - TAB_CLOSE_SIZE / 2.0_f32 - 2.0_f32, cy);
+            let close_center = pos2(tab_rect.right() - TAB_CLOSE_SIZE / 2.0_f32 - 2.0_f32, cy);
             let close_rect = Rect::from_center_size(close_center, Vec2::splat(TAB_CLOSE_SIZE));
             let close = ui
-                .interact(close_rect, ui.id().with(("surf_close", idx)), egui::Sense::click())
+                .interact(
+                    close_rect,
+                    ui.id().with(("surf_close", pane_id.0, idx)),
+                    egui::Sense::click(),
+                )
                 .on_hover_cursor(egui::CursorIcon::PointingHand)
                 .on_hover_text("Close terminal");
             let click_in_close =
                 resp.interact_pointer_pos().is_some_and(|pos| close_rect.contains(pos));
             if close.clicked() || (resp.clicked() && click_in_close) {
-                actions.push(TabAction::Close(idx));
+                actions.push(ChromeAction::CloseSurface(idx));
                 closed_this_tab = true;
             }
-
             let show_close = is_current || resp.hovered() || close.hovered();
             if show_close {
                 let x_color = if close.hovered() {
@@ -315,55 +333,87 @@ fn render_tab_bar(
                 } else {
                     palette.text_disabled
                 };
-                if close.hovered() {
-                    ui.painter().circle_filled(
-                        close_center,
-                        TAB_CLOSE_SIZE / 2.0_f32 - 1.0_f32,
-                        palette.danger.gamma_multiply(0.2_f32),
-                    );
-                }
-                ui.painter().text(
-                    close_center,
-                    egui::Align2::CENTER_CENTER,
-                    "\u{00d7}",
-                    egui::FontId::proportional(12.0_f32),
-                    x_color,
-                );
+                icons::draw_close_x(ui.painter(), close_center, x_color);
             }
         }
 
         if resp.clicked() && !is_current && !closed_this_tab {
-            actions.push(TabAction::Select(idx));
+            actions.push(ChromeAction::SelectSurface(idx));
         }
 
         x += tab_w;
     }
 
-    // Subtle "+" to open another terminal tab (same as Cmd+T).
-    let plus_rect = Rect::from_center_size(
-        egui::pos2(x + 12.0_f32, cy),
-        Vec2::new(22.0_f32, TAB_BAR_HEIGHT - 6.0_f32),
-    );
-    let plus = ui
-        .interact(plus_rect, ui.id().with("surf_new"), egui::Sense::click())
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text("New terminal (\u{2318}T)");
-    let plus_color = if plus.hovered() { palette.text_primary } else { palette.text_muted };
-    if plus.hovered() {
-        ui.painter().rect_filled(plus_rect, egui::CornerRadius::same(3), palette.panel_active_bg);
-    }
-    ui.painter().text(
-        plus_rect.center(),
-        egui::Align2::CENTER_CENTER,
-        "+",
-        egui::FontId::proportional(14.0_f32),
-        plus_color,
-    );
-    if plus.clicked() {
-        actions.push(TabAction::New);
+    // "+" new terminal tab
+    if x + 24.0_f32 < tabs_right {
+        let plus_rect = Rect::from_center_size(
+            pos2(x + 12.0_f32, cy),
+            Vec2::new(22.0_f32, TAB_BAR_HEIGHT - 6.0_f32),
+        );
+        let plus = ui
+            .interact(plus_rect, ui.id().with(("surf_new", pane_id.0)), egui::Sense::click())
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text("New terminal (\u{2318}T)");
+        let plus_color = if plus.hovered() { palette.text_primary } else { palette.text_muted };
+        if plus.hovered() {
+            ui.painter().rect_filled(
+                plus_rect,
+                egui::CornerRadius::same(3),
+                palette.panel_active_bg,
+            );
+        }
+        ui.painter().text(
+            plus_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "+",
+            egui::FontId::proportional(14.0_f32),
+            plus_color,
+        );
+        if plus.clicked() {
+            actions.push(ChromeAction::NewTerminal);
+        }
     }
 
-    let _ = is_active; // pane-level active styling lives on the tab underline
+    // Right cluster: globe (open browser) then close-pane is intentionally
+    // omitted for terminals (surface × handles multi-tab; last pane stays).
+    let globe_center = pos2(rect.right() - CHROME_ICON_SIZE / 2.0_f32 - 6.0_f32, cy);
+    if chrome_icon_button(
+        ui,
+        globe_center,
+        ui.id().with(("globe", pane_id.0)),
+        "Open browser",
+        &palette,
+        icons::draw_globe,
+    ) {
+        actions.push(ChromeAction::OpenBrowser { from_pane: pane_id });
+    }
+
+    let _ = is_active;
+}
+
+fn chrome_icon_button(
+    ui: &mut egui::Ui,
+    center: egui::Pos2,
+    id: egui::Id,
+    tip: &str,
+    palette: &theme::Palette,
+    draw: impl FnOnce(&egui::Painter, egui::Pos2, egui::Color32),
+) -> bool {
+    let rect = Rect::from_center_size(center, Vec2::splat(CHROME_ICON_SIZE));
+    let resp = ui
+        .interact(rect, id, egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(tip);
+    let color = if resp.hovered() { palette.text_primary } else { palette.text_muted };
+    if resp.hovered() {
+        ui.painter().rect_filled(
+            rect.shrink(1.0_f32),
+            egui::CornerRadius::same(4),
+            palette.panel_active_bg,
+        );
+    }
+    draw(ui.painter(), center, color);
+    resp.clicked()
 }
 
 /// Width of a tab chip for `title` (clamped).
@@ -379,20 +429,117 @@ fn measure_tab_width(ui: &egui::Ui, title: &str) -> f32 {
 
 fn render_browser(
     ui: &mut egui::Ui,
+    pane_id: PaneId,
     browser: &mut crate::browser::BrowserPane,
     rect: Rect,
     is_active: bool,
     active_pane: &mut PaneId,
+    actions: &mut Vec<ChromeAction>,
 ) {
-    let pane_id = *active_pane;
+    // cmux-style tab chrome: globe + "New tab" / page title on the left, × on right.
+    let chrome_rect = Rect::from_min_size(rect.min, Vec2::new(rect.width(), TAB_BAR_HEIGHT));
+    render_browser_chrome(ui, pane_id, browser, chrome_rect, is_active, actions);
+
+    let body = Rect::from_min_size(
+        rect.min + Vec2::new(0.0_f32, TAB_BAR_HEIGHT),
+        Vec2::new(rect.width(), (rect.height() - TAB_BAR_HEIGHT).max(0.0_f32)),
+    );
     crate::browser::webview::render_browser_pane(
         ui,
         pane_id,
         browser,
-        rect,
+        body,
         is_active,
         active_pane,
     );
+}
+
+/// Browser pane tab strip — shows a single tab with globe icon like cmux "New tab".
+fn render_browser_chrome(
+    ui: &mut egui::Ui,
+    pane_id: PaneId,
+    browser: &crate::browser::BrowserPane,
+    rect: Rect,
+    is_active: bool,
+    actions: &mut Vec<ChromeAction>,
+) {
+    let palette = theme::palette();
+    let bar_bg = egui::Color32::from_rgb(
+        palette.app_bg.r().saturating_sub(6),
+        palette.app_bg.g().saturating_sub(6),
+        palette.app_bg.b().saturating_sub(6),
+    );
+    ui.painter().rect_filled(rect, 0.0_f32, bar_bg);
+    ui.painter().hline(
+        rect.x_range(),
+        rect.bottom() - 0.5_f32,
+        egui::Stroke::new(1.0_f32, palette.chrome_border),
+    );
+
+    let cy = rect.center().y;
+    let tab_title = browser.tab_title();
+    // Extra width for the leading globe glyph inside the tab chip.
+    let tab_w =
+        (measure_tab_width(ui, &tab_title) + 18.0_f32).min(rect.width() - 48.0_f32).max(72.0_f32);
+    let tab_rect = Rect::from_min_size(
+        pos2(rect.left() + 4.0_f32, rect.top()),
+        Vec2::new(tab_w, rect.height()),
+    );
+
+    // Active tab fill + accent underline
+    ui.painter().rect_filled(
+        tab_rect.shrink2(Vec2::new(0.0_f32, 1.0_f32)),
+        egui::CornerRadius::ZERO,
+        if is_active { palette.panel_active_bg } else { palette.panel_bg },
+    );
+    if is_active {
+        ui.painter().hline(
+            tab_rect.x_range(),
+            tab_rect.bottom() - 1.5_f32,
+            egui::Stroke::new(2.0_f32, palette.accent),
+        );
+    }
+
+    // Globe + title
+    let globe_c = pos2(tab_rect.left() + 12.0_f32, cy);
+    icons::draw_globe(ui.painter(), globe_c, palette.text_muted);
+    let title_color = if is_active { palette.text_primary } else { palette.text_muted };
+    let text_left = tab_rect.left() + 24.0_f32;
+    let text_right = tab_rect.right() - TAB_CLOSE_SIZE - 4.0_f32;
+    let mut job = egui::text::LayoutJob::simple_singleline(
+        tab_title,
+        egui::FontId::proportional(11.5_f32),
+        title_color,
+    );
+    job.wrap = egui::text::TextWrapping::truncate_at_width((text_right - text_left).max(0.0_f32));
+    let galley = ui.fonts(|f| f.layout_job(job));
+    ui.painter().galley(pos2(text_left, cy - galley.size().y / 2.0_f32), galley, title_color);
+
+    // Engine badge (os-webview vs chromium) — tiny, right of tab, before close.
+    let engine_label = browser.engine_kind().as_str();
+    let engine_galley = ui.painter().layout_no_wrap(
+        engine_label.to_owned(),
+        egui::FontId::proportional(9.5_f32),
+        palette.text_disabled,
+    );
+    let close_center = pos2(rect.right() - CHROME_ICON_SIZE / 2.0_f32 - 6.0_f32, cy);
+    let engine_pos = pos2(
+        close_center.x - CHROME_ICON_SIZE / 2.0_f32 - 6.0_f32 - engine_galley.size().x,
+        cy - engine_galley.size().y / 2.0_f32,
+    );
+    ui.painter().galley(engine_pos, engine_galley, palette.text_disabled);
+
+    // Close browser pane
+    if chrome_icon_button(
+        ui,
+        close_center,
+        ui.id().with(("browser_close", pane_id.0)),
+        "Close browser",
+        &palette,
+        icons::draw_close_x,
+    ) {
+        actions.push(ChromeAction::CloseBrowser { pane: pane_id });
+    }
 }
 
 fn render_split(
@@ -402,7 +549,7 @@ fn render_split(
     sizes: &[f32],
     rect: Rect,
     active_pane: &mut PaneId,
-    actions: &mut Vec<TabAction>,
+    actions: &mut Vec<ChromeAction>,
 ) -> Option<(usize, f32)> {
     let is_horizontal = direction.is_horizontal();
     let available_dimension = if is_horizontal { rect.width() } else { rect.height() };
@@ -505,29 +652,15 @@ fn render_split(
     resize_request
 }
 
-/// Decide whether the tab bar UI should be rendered above a leaf pane.
-///
-/// `pub(crate)` (not `pub`) so the test submodule can reach it without
-/// leaking it into the crate's public surface.
-pub(crate) fn should_render_tab_bar(surface_count: usize) -> bool {
-    surface_count > 1
-}
-
 #[cfg(test)]
 mod tests {
-    use super::should_render_tab_bar;
+    use super::*;
 
     #[test]
-    fn test_should_render_tab_bar_with_multiple_surfaces() {
-        assert!(should_render_tab_bar(2));
-        assert!(should_render_tab_bar(3));
-        assert!(should_render_tab_bar(10));
-        assert!(should_render_tab_bar(100));
-    }
-
-    #[test]
-    fn test_should_render_tab_bar_hidden_for_single_or_zero_surfaces() {
-        assert!(!should_render_tab_bar(0));
-        assert!(!should_render_tab_bar(1));
+    fn pane_tree_result_defaults_empty() {
+        let r = PaneTreeResult::default();
+        assert!(!r.new_terminal_tab);
+        assert!(r.open_browser_from.is_none());
+        assert!(r.close_browser.is_none());
     }
 }

@@ -1,4 +1,6 @@
-#![forbid(unsafe_code)]
+// CEF (browser-chromium) requires `unsafe` for OSR paint buffer copies and
+// library loading. Default OS-webview builds keep the forbid.
+#![cfg_attr(not(feature = "browser-chromium"), forbid(unsafe_code))]
 #![allow(unknown_lints)]
 #![allow(ambiguous_float_literals)]
 //! rmux — A cross-platform, memory-efficient terminal multiplexer GUI.
@@ -68,6 +70,12 @@ fn init_logging(verbose: bool) {
 const APP_ICON_PNG: &[u8] = include_bytes!("../assets/rmux_logo.png");
 
 fn main() -> Result<()> {
+    // Chromium/CEF relaunches the binary as helpers (`--type=renderer`, …).
+    // Exit before eframe when this process is a CEF subprocess (Phase E1.5).
+    if browser::try_run_cef_subprocess() {
+        return Ok(());
+    }
+
     let cli = Cli::parse();
     init_logging(cli.verbose);
 
@@ -77,6 +85,10 @@ fn main() -> Result<()> {
     } else {
         tracing::info!("rmux starting (version {} @ {})", env!("CARGO_PKG_VERSION"), sha);
     }
+    tracing::info!(
+        browser_engine = browser::EngineKind::compiled().as_str(),
+        "browser engine (compile-time)"
+    );
 
     let mut viewport =
         egui::ViewportBuilder::default().with_inner_size([1200.0, 800.0]).with_title("rmux");

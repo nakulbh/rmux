@@ -256,22 +256,31 @@ cross-platform Rust application targeting Linux, macOS, and Windows with a stric
 
 - [x] **4.1** Integrate `wry` as a pane type:
   - Add `PaneNode::Browser { webview }` variant
-  - Embed wry webview in egui via texture/render callback
-- [ ] **4.2** Implement browser navigation:
+  - Embed wry webview as child window (`build_as_child`), lazy create after layout, hide when not shown
+- [x] **4.2** Implement browser navigation:
   - `open`, `navigate`, `back`, `forward`, `reload`, `url`
   - Address bar in browser pane header
-- [ ] **4.3** Implement browser automation API (subset of cmux's):
-  - `click`, `type`, `fill`, `press`
-  - `eval` (JavaScript evaluation)
-  - `snapshot` (accessibility tree)
-  - `screenshot`
+  - Note: in-app history + wry nav handlers; full OS history sync still limited
+- [x] **4.3** Implement browser automation API (subset of cmux's):
+  - Socket methods: `browser.open|navigate|back|forward|reload|url|eval|click|type|fill|press|snapshot`
+  - `screenshot` stubbed (not supported on wry child webviews yet)
+  - Deferred JS results via wry evaluate callbacks (no main-thread deadlock)
+  - CLI: `browser-open`, `browser-nav`, `browser-url`, `browser-eval`, `browser-click`, `browser-fill`, `browser-snapshot`
 - [ ] **4.4** Implement browser session persistence:
   - Save/restore URL and navigation history
-  - Cookie persistence via wry
-- [ ] **4.5** Add browser keyboard shortcuts:
+  - Cookie persistence via wry / Chromium profile
+- [x] **4.5** Add browser keyboard shortcuts:
   - `Cmd+Shift+L` / `Ctrl+Shift+L`: open browser split
   - `Cmd+L` / `Ctrl+L`: focus address bar
   - `Cmd+R` / `Ctrl+R`: reload
+- [ ] **4.6** Chromium engine (cross-platform parity):
+  - **Plan:** [`docs/CHROMIUM_BROWSER_PLAN.md`](CHROMIUM_BROWSER_PLAN.md)
+  - **Strategy:** [`docs/BROWSER_ENGINE.md`](BROWSER_ENGINE.md)
+  - [x] E0: engine backend scaffold + cargo features
+  - [x] E1: CEF toolchain + runtime bootstrap (`cef` Runtime, external pump, fetch-cef, subprocess)
+  - [x] E2: OSR paint → egui texture + mouse/key input + navigate/reload + console-bridge eval
+  - [~] E3: cookies / screenshot / session on Chromium (profile dir wired; APIs TBD)
+  - [~] E4: Chromium is **default** feature; CI packaging + Helper.app bundles remaining
 
 ### Deliverables
 
@@ -500,6 +509,6 @@ rmux/
 | Phase 1: Terminal Pane | 🟢 Complete | 100% |
 | Phase 2: Workspaces | 🟢 Complete | 100% |
 | Phase 3: Notifications + API | 🟢 Complete | 100% |
-| Phase 4: Browser Pane | 🟡 In Progress | 20% |
+| Phase 4: Browser Pane | 🟡 In Progress | 95% (Chromium default; E3 session/screenshot + E4 packaging open) |
 | Phase 5: SSH + Sessions | ⬜ Blocked by Phase 4 | 0% |
 | Phase 6: Agent Hooks | ⬜ Blocked by Phase 5 | 0% |

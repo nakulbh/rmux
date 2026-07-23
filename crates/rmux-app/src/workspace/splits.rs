@@ -554,6 +554,21 @@ impl PaneNode {
         }
     }
 
+    /// Visit every browser pane in this subtree.
+    ///
+    /// Used each frame to create/hide/reposition native wry webviews.
+    pub fn for_each_browser_mut<F: FnMut(PaneId, &mut BrowserPane)>(&mut self, f: &mut F) {
+        match self {
+            Self::Browser { id, browser } => f(*id, browser.as_mut()),
+            Self::Leaf { .. } => {}
+            Self::Split { children, .. } => {
+                for child in children.iter_mut() {
+                    child.for_each_browser_mut(f);
+                }
+            }
+        }
+    }
+
     /// Immutable walk over every live terminal (legacy leaf + multi-surface tabs).
     ///
     /// Used by the sidebar to aggregate cmux-style metadata (path lines, PRs,

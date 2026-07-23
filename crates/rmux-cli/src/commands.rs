@@ -140,6 +140,101 @@ fn send_request(text: &str) -> (&'static str, Value) {
     ("surface.send_text", json!({ "text": interpret_escapes(text) }))
 }
 
+/// `rmux-cli browser-open` — open a browser pane (optional URL).
+pub fn browser_open(socket_path: &Path, url: Option<&str>) -> Result<()> {
+    let (method, params) = browser_open_request(url);
+    let result = socket::call(socket_path, method, params)?;
+    println!("{}", extract_id(&result));
+    Ok(())
+}
+
+/// `rmux-cli browser-nav` — navigate the active (or given) browser pane.
+pub fn browser_nav(socket_path: &Path, url: &str, pane_id: Option<u64>) -> Result<()> {
+    let (method, params) = browser_nav_request(url, pane_id);
+    let result = socket::call(socket_path, method, params)?;
+    if let Some(u) = result.get("url").and_then(Value::as_str) {
+        println!("{u}");
+    } else {
+        println!("{result}");
+    }
+    Ok(())
+}
+
+/// `rmux-cli browser-url` — print current URL / title JSON.
+pub fn browser_url(socket_path: &Path, pane_id: Option<u64>) -> Result<()> {
+    let (method, params) = browser_url_request(pane_id);
+    let result = socket::call(socket_path, method, params)?;
+    println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(())
+}
+
+/// `rmux-cli browser-eval` — evaluate a JS expression in the page.
+pub fn browser_eval(socket_path: &Path, script: &str, pane_id: Option<u64>) -> Result<()> {
+    let (method, params) = browser_eval_request(script, pane_id);
+    let result = socket::call(socket_path, method, params)?;
+    println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(())
+}
+
+/// `rmux-cli browser-click` — click a CSS selector.
+pub fn browser_click(socket_path: &Path, selector: &str, pane_id: Option<u64>) -> Result<()> {
+    let (method, params) = browser_click_request(selector, pane_id);
+    socket::call(socket_path, method, params)?;
+    Ok(())
+}
+
+/// `rmux-cli browser-fill` — fill an input matching a CSS selector.
+pub fn browser_fill(
+    socket_path: &Path,
+    selector: &str,
+    value: &str,
+    pane_id: Option<u64>,
+) -> Result<()> {
+    let (method, params) = browser_fill_request(selector, value, pane_id);
+    socket::call(socket_path, method, params)?;
+    Ok(())
+}
+
+/// `rmux-cli browser-snapshot` — dump a DOM/a11y snapshot as JSON.
+pub fn browser_snapshot(socket_path: &Path, pane_id: Option<u64>) -> Result<()> {
+    let (method, params) = browser_snapshot_request(pane_id);
+    let result = socket::call(socket_path, method, params)?;
+    println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(())
+}
+
+fn browser_open_request(url: Option<&str>) -> (&'static str, Value) {
+    ("browser.open", json!({ "url": url }))
+}
+
+fn browser_nav_request(url: &str, pane_id: Option<u64>) -> (&'static str, Value) {
+    ("browser.navigate", json!({ "url": url, "pane_id": pane_id }))
+}
+
+fn browser_url_request(pane_id: Option<u64>) -> (&'static str, Value) {
+    ("browser.url", json!({ "pane_id": pane_id }))
+}
+
+fn browser_eval_request(script: &str, pane_id: Option<u64>) -> (&'static str, Value) {
+    ("browser.eval", json!({ "script": script, "pane_id": pane_id }))
+}
+
+fn browser_click_request(selector: &str, pane_id: Option<u64>) -> (&'static str, Value) {
+    ("browser.click", json!({ "selector": selector, "pane_id": pane_id }))
+}
+
+fn browser_fill_request(
+    selector: &str,
+    value: &str,
+    pane_id: Option<u64>,
+) -> (&'static str, Value) {
+    ("browser.fill", json!({ "selector": selector, "value": value, "pane_id": pane_id }))
+}
+
+fn browser_snapshot_request(pane_id: Option<u64>) -> (&'static str, Value) {
+    ("browser.snapshot", json!({ "pane_id": pane_id }))
+}
+
 /// Interpret literal backslash escapes in CLI text arguments.
 ///
 /// Supported: `\n` (newline), `\r` (carriage return), `\t` (tab),
@@ -255,6 +350,27 @@ mod tests {
     fn new_workspace_request_passes_optional_name() {
         assert_eq!(new_workspace_request(Some("dev")).1, json!({ "name": "dev" }));
         assert_eq!(new_workspace_request(None), ("workspace.create", json!({ "name": null })));
+    }
+
+    #[test]
+    fn browser_open_request_shape() {
+        let (method, params) = browser_open_request(Some("https://example.com"));
+        assert_eq!(method, "browser.open");
+        assert_eq!(params, json!({ "url": "https://example.com" }));
+    }
+
+    #[test]
+    fn browser_eval_request_shape() {
+        let (method, params) = browser_eval_request("1+1", Some(3));
+        assert_eq!(method, "browser.eval");
+        assert_eq!(params, json!({ "script": "1+1", "pane_id": 3 }));
+    }
+
+    #[test]
+    fn browser_click_request_shape() {
+        let (method, params) = browser_click_request("#submit", None);
+        assert_eq!(method, "browser.click");
+        assert_eq!(params, json!({ "selector": "#submit", "pane_id": null }));
     }
 
     #[test]

@@ -478,3 +478,70 @@ fn test_workspace_close_other_surfaces_with_six_surfaces() {
     assert_eq!(surfaces[0].title, "T3");
     assert_eq!(ws.active_surface_index(), 0);
 }
+
+#[test]
+fn test_set_browser_replaces_leaf() {
+    use crate::browser::BrowserPane;
+
+    let mut pane_id = 1;
+    let mut split_id = 1;
+    let mut ws = make_workspace(1, "Test", &mut pane_id);
+    let p1 = ws.active_pane;
+    let p2 = ws.split_right(p1, &mut pane_id, &mut split_id).unwrap();
+
+    let mut browser = BrowserPane::new();
+    browser.navigate("example.com").unwrap();
+    ws.set_browser(p2, browser);
+
+    assert!(ws.root.is_browser_pane(p2));
+    assert!(!ws.root.is_browser_pane(p1));
+    assert_eq!(ws.pane_count(), 2);
+
+    let b = ws.root.find_browser_mut(p2).expect("browser pane");
+    assert_eq!(b.url(), "https://example.com");
+}
+
+#[test]
+fn test_browser_pane_split_and_close() {
+    use crate::browser::BrowserPane;
+
+    let mut pane_id = 1;
+    let mut split_id = 1;
+    let mut ws = make_workspace(1, "Test", &mut pane_id);
+    let p1 = ws.active_pane;
+    let p2 = ws.split_right(p1, &mut pane_id, &mut split_id).unwrap();
+    ws.set_browser(p2, BrowserPane::new());
+    ws.focus_pane(p2);
+
+    // Split the browser pane further — browser nodes are split targets.
+    let p3 = ws.split_down(p2, &mut pane_id, &mut split_id).unwrap();
+    assert_eq!(ws.pane_count(), 3);
+    assert!(ws.root.is_browser_pane(p2));
+    assert!(!ws.root.is_browser_pane(p3)); // new leaf is empty terminal slot
+
+    ws.close_pane(p2).unwrap();
+    assert_eq!(ws.pane_count(), 2);
+    assert!(!ws.root.is_browser_pane(p2));
+}
+
+#[test]
+fn test_for_each_browser_mut_visits_all() {
+    use crate::browser::BrowserPane;
+
+    let mut pane_id = 1;
+    let mut split_id = 1;
+    let mut ws = make_workspace(1, "Test", &mut pane_id);
+    let p1 = ws.active_pane;
+    let p2 = ws.split_right(p1, &mut pane_id, &mut split_id).unwrap();
+    let p3 = ws.split_down(p1, &mut pane_id, &mut split_id).unwrap();
+    ws.set_browser(p2, BrowserPane::new());
+    ws.set_browser(p3, BrowserPane::new());
+
+    let mut ids = Vec::new();
+    ws.root.for_each_browser_mut(&mut |id, b| {
+        ids.push(id);
+        b.mark_shown_this_frame();
+    });
+    ids.sort_by_key(|id| id.0);
+    assert_eq!(ids, vec![p2, p3]);
+}

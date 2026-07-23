@@ -9,6 +9,16 @@ build = "build.rs"
 name = "rmux"
 path = "src/main.rs"
 
+[features]
+## Chromium CEF OSR is the default engine (cross-platform). Requires CEF_PATH —
+## see `docs/BROWSER_ENGINE.md` and `./scripts/fetch-cef.sh`.
+default = ["browser-chromium"]
+## Chromium Embedded Framework (OSR → egui). Default.
+browser-chromium = ["dep:cef"]
+## Optional fallback: platform webview via `wry` (WKWebView / WebView2 / webkit2gtk).
+## Build with: `cargo run -p rmux-app --no-default-features --features browser-os-webview`
+browser-os-webview = ["dep:wry"]
+
 [dependencies]
 eframe = { workspace = true }
 egui = { workspace = true }
@@ -23,7 +33,12 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 rmux-terminal = { path = "../rmux-terminal" }
 rmux-api = { path = "../rmux-api" }
-wry = { workspace = true }
+# Window handle trait for engine attach (Chromium ignores the native child path).
+raw-window-handle = "0.6"
 arboard = "3"
 image = { version = "0.25", default-features = false, features = ["png"] }
 ureq = { workspace = true }
+# Optional CEF binding (tauri-apps/cef-rs) — default via browser-chromium.
+cef = { workspace = true, optional = true }
+# Optional OS webview — only with browser-os-webview.
+wry = { workspace = true, optional = true }
