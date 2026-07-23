@@ -90,7 +90,7 @@ Derives: `Debug, Error`
 | `ApiServer::socket_path()` → `&Path` | Bound socket path |
 | `ApiServer::shutdown(self)` | Stop accepting, remove socket file |
 
-### `methods.rs` — All 19 Method Names
+### `methods.rs` — All 30 Method Names
 
 | Constant | String | Description |
 |---|---|---|
@@ -101,9 +101,12 @@ Derives: `Debug, Error`
 | `WORKSPACE_CREATE` | `"workspace.create"` | Create named workspace |
 | `WORKSPACE_SELECT` | `"workspace.select"` | Select by index |
 | `WORKSPACE_CLOSE` | `"workspace.close"` | Close by id |
+| `WORKSPACE_RENAME` | `"workspace.rename"` | Rename workspace by id |
 | `SURFACE_LIST` | `"surface.list"` | List all panes |
 | `SURFACE_SPLIT` | `"surface.split"` | Split active pane (Right/Down) |
 | `SURFACE_FOCUS` | `"surface.focus"` | Focus specific pane |
+| `SURFACE_CLOSE` | `"surface.close"` | Close pane (active when id omitted) |
+| `SURFACE_NEW` | `"surface.new"` | New terminal tab/surface |
 | `SURFACE_SEND_TEXT` | `"surface.send_text"` | Type text into active pane |
 | `SURFACE_SEND_KEY` | `"surface.send_key"` | Send named key press |
 | `NOTIFICATION_CREATE` | `"notification.create"` | Create notification |
@@ -112,11 +115,19 @@ Derives: `Debug, Error`
 | `SIDEBAR_SET_STATUS` | `"sidebar.set_status"` | Set status text on workspace |
 | `SIDEBAR_CLEAR_STATUS` | `"sidebar.clear_status"` | Clear status text |
 | `SIDEBAR_SET_PROGRESS` | `"sidebar.set_progress"` | Set progress bar (0.0–1.0) |
+| `BROWSER_OPEN` | `"browser.open"` | Open browser pane split |
+| `BROWSER_NAVIGATE` | `"browser.navigate"` | Navigate active browser |
+| `BROWSER_BACK` | `"browser.back"` | Browser history back |
+| `BROWSER_FORWARD` | `"browser.forward"` | Browser history forward |
+| `BROWSER_RELOAD` | `"browser.reload"` | Reload active browser |
+| `BROWSER_URL` | `"browser.url"` | Read active browser URL |
+| `APP_SET_FONT_SIZE` | `"app.set_font_size"` | Change/reset font size |
+| `APP_SET_THEME` | `"app.set_theme"` | Set terminal color theme |
 | `EVENTS_STREAM` | `"events.stream"` | Event streaming mode |
 
 | Function | Returns |
 |---|---|
-| `all_methods()` | `&'static [&'static str]` — All 19 method names |
+| `all_methods()` | `&'static [&'static str]` — All 30 method names |
 
 **Request/Response types** (all derive `Debug, Clone, PartialEq, Eq, Serialize, Deserialize`):
 
@@ -131,12 +142,16 @@ Derives: `Debug, Error`
 | `WorkspaceCreateResult` | `id: u64` |
 | `WorkspaceSelectParams` | `index: usize` |
 | `WorkspaceCloseParams` | `id: u64` |
+| `WorkspaceRenameParams` | `id: u64, name: String` |
 | `SurfaceInfo` | `pane_id: u64, workspace_id: u64, active: bool` |
 | `SurfaceListResult` | `surfaces: Vec<SurfaceInfo>` |
 | `SplitDirection` | enum: `Right`, `Down` |
 | `SurfaceSplitParams` | `direction: SplitDirection` |
 | `SurfaceSplitResult` | `pane_id: u64` |
 | `SurfaceFocusParams` | `pane_id: u64` |
+| `SurfaceCloseParams` | `pane_id: Option<u64>` |
+| `SurfaceNewParams` | `title: Option<String>` |
+| `SurfaceNewResult` | `pane_id: u64` |
 | `SurfaceSendTextParams` | `text: String` |
 | `SurfaceSendKeyParams` | `key: String` |
 | `NotificationCreateParams` | `title: String, subtitle: Option<String>, body: Option<String>` |
@@ -146,6 +161,13 @@ Derives: `Debug, Error`
 | `SidebarSetStatusParams` | `workspace_id: Option<u64>, status: String` |
 | `SidebarClearStatusParams` | `workspace_id: Option<u64>` |
 | `SidebarSetProgressParams` | `value: f32` |
+| `BrowserOpenParams` | `url: Option<String>` |
+| `BrowserOpenResult` | `pane_id: u64` |
+| `BrowserNavigateParams` | `url: String` |
+| `BrowserUrlResult` | `url: String` |
+| `AppSetFontSizeParams` | `delta: Option<f32>, reset: bool` |
+| `AppSetFontSizeResult` | `font_size: f32` |
+| `AppSetThemeParams` | `theme: String` |
 
 ### `dispatch.rs`
 
