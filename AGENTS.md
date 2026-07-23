@@ -304,6 +304,8 @@ doc:
 | Notifications | `notify-rust` | Desktop notifications |
 | Browser | `wry` | OS webview embedding |
 | Config dirs | `dirs` | XDG/AppData paths |
+| Images | `image` (png/jpeg/webp/gif) | App icon + workspace wallpaper |
+| File dialog | `rfd` | Settings wallpaper picker |
 | Fuzzy match | `nucleo` | Command palette |
 | SSH | `thrussh` or `ssh2` | Remote sessions (Phase 5) |
 | Testing | `insta`, `criterion` | Snapshot + benchmark |

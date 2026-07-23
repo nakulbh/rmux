@@ -7,6 +7,7 @@
 //! request handling lives in [`crate::api_dispatch`].
 
 use rmux_api::ApiEvent;
+use rmux_config::{AppearanceConfig, Config};
 use serde_json::json;
 
 use crate::api;
@@ -14,7 +15,9 @@ use crate::browser::BrowserPane;
 use crate::notifications::NotificationManager;
 use crate::ui::DEFAULT_FONT_SIZE;
 use crate::ui::sidebar::SidebarView;
-use crate::ui::{HelpMenu, NotificationPanel, SettingsPanel, TerminalPane, workspace_view};
+use crate::ui::{
+    HelpMenu, NotificationPanel, SettingsPanel, TerminalPane, Wallpaper, workspace_view,
+};
 use crate::workspace::WorkspaceManager;
 use crate::workspace::splits::{PaneId, PaneTreeError, SplitDirection};
 
@@ -57,13 +60,28 @@ pub struct RmuxApp {
     last_active_workspace: u64,
     /// Cross-platform shortcut manager (`KeyboardShortcut` → `AppCommand`).
     pub(crate) shortcut_manager: crate::shortcut_manager::ShortcutManager,
+    /// Loaded/saved `rmux.json` (terminal + appearance).
+    pub(crate) config: Config,
+    /// Shared workspace wallpaper (one image behind every pane).
+    pub(crate) wallpaper: Wallpaper,
 }
 
 impl RmuxApp {
     /// Create a new application state with a default workspace and terminal pane.
-    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let channels = api::start_server();
-        let font_size = DEFAULT_FONT_SIZE;
+        let config = match rmux_config::load() {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to load config; using defaults");
+                Config::default()
+            }
+        };
+        let font_size = if config.terminal.font_size > 0.0 {
+            config.terminal.font_size
+        } else {
+            DEFAULT_FONT_SIZE
+        };
         let mut app = Self {
             workspace_manager: WorkspaceManager::new(),
             sidebar: SidebarView::new(),
@@ -78,18 +96,92 @@ impl RmuxApp {
             api_event_tx: channels.event_tx,
             last_active_workspace: 0,
             shortcut_manager: crate::shortcut_manager::ShortcutManager::with_defaults(),
+            config,
+            wallpaper: Wallpaper::new(),
         };
 
+        // Load wallpaper texture early if configured.
+        app.sync_wallpaper_from_config(&cc.egui_ctx);
+
         let pane_id = app.workspace_manager.active().active_pane;
-        attach_terminal(&mut app.workspace_manager, pane_id, font_size, app.terminal_theme, None);
+        let bg_opacity = app.effective_bg_opacity();
+        attach_terminal(
+            &mut app.workspace_manager,
+            pane_id,
+            font_size,
+            app.terminal_theme,
+            None,
+            bg_opacity,
+        );
         app.last_active_workspace = app.workspace_manager.active().id.0;
 
         tracing::info!(
             workspaces = app.workspace_manager.workspace_count(),
             panes = app.workspace_manager.total_pane_count(),
+            wallpaper = app.config.appearance.wallpaper_active(),
             "Application initialized"
         );
         app
+    }
+
+    /// Opacity applied to default terminal backgrounds (`1.0` when wallpaper off).
+    ///
+    /// Floored at `0.25` so text stays readable and the UI never "disappears"
+    /// into a pure wallpaper (users can still go quite transparent).
+    fn effective_bg_opacity(&self) -> f32 {
+        if self.config.appearance.wallpaper_active() {
+            self.config.appearance.clamped_opacity().max(0.25)
+        } else {
+            1.0
+        }
+    }
+
+    /// Load or clear the wallpaper texture from the current appearance config.
+    fn sync_wallpaper_from_config(&mut self, ctx: &egui::Context) {
+        if self.config.appearance.wallpaper_active() {
+            let path =
+                self.config.appearance.background_image.as_deref().map(rmux_config::expand_tilde);
+            self.wallpaper.ensure_loaded(ctx, path.as_deref());
+        } else {
+            self.wallpaper.clear();
+        }
+        self.propagate_bg_opacity();
+    }
+
+    /// Push background opacity to every terminal pane (all workspaces).
+    fn propagate_bg_opacity(&mut self) {
+        let opacity = self.effective_bg_opacity();
+        for workspace in self.workspace_manager.workspaces_mut() {
+            workspace.root.for_each_terminal_mut(&mut |t| t.set_bg_opacity(opacity));
+        }
+    }
+
+    /// Apply appearance changes from settings and persist to disk.
+    fn apply_appearance(
+        &mut self,
+        ctx: &egui::Context,
+        appearance: AppearanceConfig,
+        reload: bool,
+    ) {
+        self.config.appearance = appearance;
+        if reload {
+            if let Some(ref p) = self.config.appearance.background_image {
+                let path = rmux_config::expand_tilde(p);
+                self.wallpaper.reload(ctx, &path);
+            } else {
+                self.wallpaper.clear();
+            }
+            // Still respect enabled flag after reload.
+            if !self.config.appearance.wallpaper_active() {
+                self.wallpaper.clear();
+            }
+        } else {
+            self.sync_wallpaper_from_config(ctx);
+        }
+        self.propagate_bg_opacity();
+        if let Err(e) = rmux_config::save(&self.config) {
+            tracing::warn!(error = %e, "Failed to save config");
+        }
     }
 }
 
@@ -135,12 +227,16 @@ impl eframe::App for RmuxApp {
             {
                 self.workspace_manager.switch_to(idx);
             }
+            let bg_opacity = self.effective_bg_opacity();
+            let font_size = self.font_size;
+            let theme = self.terminal_theme;
             attach_terminal(
                 &mut self.workspace_manager,
                 crate::workspace::splits::PaneId(pane_id),
-                self.font_size,
-                self.terminal_theme,
+                font_size,
+                theme,
                 None,
+                bg_opacity,
             );
             tracing::info!(workspace_id, pane_id, "Respawned terminal after shell exit");
         }
@@ -165,15 +261,47 @@ impl eframe::App for RmuxApp {
         }
         crate::ui::status_bar::show(ctx, &self.workspace_manager, &self.notifications);
 
-        // Render the settings panel (floating window); apply any theme
-        // change picked this frame to every terminal pane.
-        if let Some(new_theme) = self.settings_panel.show(ctx, self.terminal_theme) {
+        // Keep wallpaper texture ready (painted only inside panels — never on a
+        // free-floating background layer that can cover top bar / chrome).
+        if self.config.appearance.wallpaper_active() {
+            let path =
+                self.config.appearance.background_image.as_deref().map(rmux_config::expand_tilde);
+            self.wallpaper.ensure_loaded(ctx, path.as_deref());
+        }
+
+        // Render the settings panel (theme + workspace wallpaper).
+        let wall_status = self.wallpaper.status_message().map(str::to_owned);
+        let settings_changes = self.settings_panel.show(
+            ctx,
+            self.terminal_theme,
+            &self.config.appearance,
+            wall_status.as_deref(),
+        );
+        if let Some(new_theme) = settings_changes.theme {
             self.set_terminal_theme(new_theme);
+        }
+        if let Some(appearance) = settings_changes.appearance {
+            self.apply_appearance(ctx, appearance, settings_changes.reload_wallpaper);
+        } else if settings_changes.reload_wallpaper {
+            self.sync_wallpaper_from_config(ctx);
         }
 
         // Render the sidebar (left panel). New workspaces are created from
         // the top-bar `+` button (or Cmd/Ctrl+N). Hover × closes a card.
         // Help circle-question sits in the footer bottom-left.
+        // Sidebar glass only when wallpaper is active; image is painted inside
+        // the panel so it never covers the top/status chrome.
+        let sidebar_opacity = if self.config.appearance.wallpaper_active() {
+            self.config.appearance.clamped_sidebar_opacity()
+        } else {
+            1.0
+        };
+        let sidebar_wall = if self.config.appearance.wallpaper_active() && self.wallpaper.is_ready()
+        {
+            Some(&self.wallpaper)
+        } else {
+            None
+        };
         let mut help_button_rect = None;
         if let Some(crate::ui::sidebar::SidebarAction::CloseWorkspace(id)) = self.sidebar.show(
             ctx,
@@ -181,6 +309,8 @@ impl eframe::App for RmuxApp {
             &self.notifications,
             &mut self.help_menu,
             &mut help_button_rect,
+            sidebar_opacity,
+            sidebar_wall,
         ) {
             match self.workspace_manager.close_workspace(id) {
                 Ok(()) => {
@@ -277,13 +407,10 @@ impl RmuxApp {
     pub(crate) fn create_workspace_with_terminal(&mut self, name: String) -> u64 {
         let ws = self.workspace_manager.create_workspace(name);
         let pane_id = self.workspace_manager.active().active_pane;
-        attach_terminal(
-            &mut self.workspace_manager,
-            pane_id,
-            self.font_size,
-            self.terminal_theme,
-            None,
-        );
+        let bg_opacity = self.effective_bg_opacity();
+        let font_size = self.font_size;
+        let theme = self.terminal_theme;
+        attach_terminal(&mut self.workspace_manager, pane_id, font_size, theme, None, bg_opacity);
         self.publish_event("workspace.created", json!({ "id": ws.0 }));
         self.publish_event("pane.created", json!({ "pane_id": pane_id.0, "workspace_id": ws.0 }));
         ws.0
@@ -311,6 +438,9 @@ impl RmuxApp {
             .find_pane(self.workspace_manager.active().active_pane)
             .and_then(|n| n.active_terminal())
             .and_then(|t| t.working_directory());
+        let bg_opacity = self.effective_bg_opacity();
+        let font_size = self.font_size;
+        let theme = self.terminal_theme;
         let new_id = match direction {
             SplitDirection::Horizontal => self.workspace_manager.split_active_right()?,
             SplitDirection::Vertical => self.workspace_manager.split_active_down()?,
@@ -318,9 +448,10 @@ impl RmuxApp {
         attach_terminal(
             &mut self.workspace_manager,
             new_id,
-            self.font_size,
-            self.terminal_theme,
+            font_size,
+            theme,
             cwd.as_deref(),
+            bg_opacity,
         );
         let workspace_id = self.workspace_manager.active().id.0;
         self.publish_event(
@@ -436,7 +567,7 @@ impl RmuxApp {
     }
 
     /// Create a new terminal tab (Cmd+T / tab-bar `+`) with the app's
-    /// current font size and color theme applied.
+    /// current font size, color theme, and wallpaper opacity applied.
     ///
     /// `Workspace::new_surface` alone would spawn with defaults and leave
     /// the tab on the default palette after a theme change.
@@ -447,9 +578,11 @@ impl RmuxApp {
         let id = self.workspace_manager.new_surface_in_active(title)?;
         let theme = rmux_terminal::TerminalTheme::default().named(self.terminal_theme);
         let font_size = self.font_size;
+        let bg_opacity = self.effective_bg_opacity();
         if let Some(term) = self.workspace_manager.active_mut().active_terminal() {
             term.set_font_size(font_size);
             term.set_theme(theme);
+            term.set_bg_opacity(bg_opacity);
         }
         let workspace_id = self.workspace_manager.active().id.0;
         self.publish_event(
@@ -478,14 +611,32 @@ impl RmuxApp {
 
     /// Render the workspace area in the central panel of the window.
     fn render_workspace(&mut self, ctx: &egui::Context) {
+        // Keep wallpaper texture in sync if path was set before ctx existed
+        // (already loaded in new) and ensure opacity is applied.
+        if self.config.appearance.wallpaper_active() {
+            let path =
+                self.config.appearance.background_image.as_deref().map(rmux_config::expand_tilde);
+            self.wallpaper.ensure_loaded(ctx, path.as_deref());
+        }
+
         let mut new_tab = false;
-        egui::CentralPanel::default().show(ctx, |ui| {
+        let wallpaper_on = self.config.appearance.wallpaper_active() && self.wallpaper.is_ready();
+        // Transparent panel fill so the shared wallpaper shows through the
+        // central area instead of egui's default opaque panel background.
+        let panel_frame =
+            if wallpaper_on { egui::Frame::NONE } else { egui::Frame::central_panel(&ctx.style()) };
+        egui::CentralPanel::default().frame(panel_frame).show(ctx, |ui| {
             // Snapshot the zoomed pane id with an immutable borrow, then
             // hand the manager (and the snapshot) to the renderer. The
             // renderer buffers tab-bar actions internally and replays
             // them after the tree-walk's `&mut Workspace` borrow ends.
             let zoomed = self.workspace_manager.active().zoomed_pane;
-            new_tab = workspace_view::render_pane_tree(ui, &mut self.workspace_manager, zoomed);
+            let bg = workspace_view::WorkspaceBackground {
+                wallpaper: &self.wallpaper,
+                active: wallpaper_on,
+            };
+            new_tab =
+                workspace_view::render_pane_tree(ui, &mut self.workspace_manager, zoomed, Some(bg));
         });
         // Tab-bar "+" — same path as Cmd+T so theme/font match.
         if new_tab && let Err(e) = self.new_surface_with_terminal(None) {
@@ -505,10 +656,12 @@ fn attach_terminal(
     font_size: f32,
     named_theme: rmux_terminal::NamedTheme,
     cwd: Option<&std::path::Path>,
+    bg_opacity: f32,
 ) {
     match TerminalPane::spawn_with_cwd(INITIAL_COLS, INITIAL_ROWS, font_size, cwd) {
         Ok(mut terminal) => {
             terminal.set_theme(rmux_terminal::TerminalTheme::default().named(named_theme));
+            terminal.set_bg_opacity(bg_opacity);
             manager.active_mut().set_terminal(pane_id, terminal);
         }
         Err(e) => tracing::error!(pane_id = pane_id.0, "Failed to spawn terminal pane: {e}"),

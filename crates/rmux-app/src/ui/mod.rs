@@ -21,9 +21,11 @@ mod terminal_pane;
 pub mod text_sink;
 pub mod theme;
 pub mod top_bar;
+pub mod wallpaper;
 pub mod workspace_view;
 
 pub use help_menu::HelpMenu;
 pub use notification_panel::NotificationPanel;
 pub use settings_panel::SettingsPanel;
 pub use terminal_pane::{DEFAULT_FONT_SIZE, TerminalPane, format_cwd_tab_title};
+pub use wallpaper::Wallpaper;
