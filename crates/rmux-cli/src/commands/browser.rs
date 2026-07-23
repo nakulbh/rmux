@@ -109,7 +109,15 @@ mod tests {
 
     #[test]
     fn request_builders() {
-        assert_eq!(open_request(Some("https://example.com")).0, methods::BROWSER_OPEN);
+        assert_eq!(
+            open_request(Some("https://example.com")),
+            (methods::BROWSER_OPEN, json!({ "url": "https://example.com" }))
+        );
+        assert_eq!(open_request(None).1, json!({ "url": null }));
         assert_eq!(navigate_request("https://x.ai").1, json!({ "url": "https://x.ai" }));
+        assert_eq!(back_request().0, methods::BROWSER_BACK);
+        assert_eq!(forward_request().0, methods::BROWSER_FORWARD);
+        assert_eq!(reload_request().0, methods::BROWSER_RELOAD);
+        assert_eq!(url_request().0, methods::BROWSER_URL);
     }
 }

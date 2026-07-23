@@ -100,10 +100,13 @@ mod tests {
 
     #[test]
     fn request_builders_use_expected_methods() {
-        assert_eq!(list_request().0, methods::WORKSPACE_LIST);
+        assert_eq!(list_request(), (methods::WORKSPACE_LIST, json!({})));
         assert_eq!(create_request(Some("dev")).1, json!({ "name": "dev" }));
+        assert_eq!(create_request(None).1, json!({ "name": null }));
         assert_eq!(select_request(2).1, json!({ "index": 2 }));
         assert_eq!(close_request(9).1, json!({ "id": 9 }));
         assert_eq!(rename_request(1, "main").1, json!({ "id": 1, "name": "main" }));
+        assert_eq!(create_request(None).0, methods::WORKSPACE_CREATE);
+        assert_eq!(rename_request(1, "main").0, methods::WORKSPACE_RENAME);
     }
 }

@@ -182,4 +182,30 @@ mod tests {
         assert!(table.contains("* 10"));
         assert!(table.contains("  11"));
     }
+
+    #[test]
+    fn workspace_table_falls_back_to_panes_array() {
+        let result = json!([{ "id": "a", "name": "n", "panes": ["p1", "p2"], "active": false }]);
+        let table = format_workspace_table(&result);
+        assert!(table.contains("2"));
+        assert!(table.contains("a"));
+    }
+
+    #[test]
+    fn notification_table_marks_unread() {
+        let result = json!({ "notifications": [
+            { "id": 1, "title": "Build", "body": "ok", "read": false },
+            { "id": 2, "title": "Done", "body": null, "read": true },
+        ]});
+        let table = format_notification_table(&result);
+        assert!(table.contains("* 1"));
+        assert!(table.contains("  2"));
+        assert!(table.contains("Build"));
+        assert_eq!(format_notification_table(&json!([])), "no notifications\n");
+    }
+
+    #[test]
+    fn empty_surface_list_message() {
+        assert_eq!(format_surface_table(&json!({ "surfaces": [] })), "no surfaces\n");
+    }
 }

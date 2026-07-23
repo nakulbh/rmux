@@ -77,8 +77,8 @@ mod tests {
 
     #[test]
     fn parameterless_requests_use_expected_methods() {
-        assert_eq!(ping_request().0, methods::SYSTEM_PING);
-        assert_eq!(capabilities_request().0, methods::SYSTEM_CAPABILITIES);
-        assert_eq!(identify_request().0, methods::SYSTEM_IDENTIFY);
+        assert_eq!(ping_request(), (methods::SYSTEM_PING, json!({})));
+        assert_eq!(capabilities_request(), (methods::SYSTEM_CAPABILITIES, json!({})));
+        assert_eq!(identify_request(), (methods::SYSTEM_IDENTIFY, json!({})));
     }
 }

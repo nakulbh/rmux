@@ -71,9 +71,13 @@ mod tests {
     #[test]
     fn request_builders() {
         assert_eq!(
-            set_font_size_request(Some(1.0), false).1,
-            json!({ "delta": 1.0, "reset": false })
+            set_font_size_request(Some(1.0), false),
+            (methods::APP_SET_FONT_SIZE, json!({ "delta": 1.0, "reset": false }))
         );
-        assert_eq!(set_theme_request("dracula").1, json!({ "theme": "dracula" }));
+        assert_eq!(set_font_size_request(None, true).1, json!({ "delta": null, "reset": true }));
+        assert_eq!(
+            set_theme_request("dracula"),
+            (methods::APP_SET_THEME, json!({ "theme": "dracula" }))
+        );
     }
 }

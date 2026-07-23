@@ -4,16 +4,16 @@
 //! subcommands, request builders, and run logic. The root [`Command`]
 //! enum only aggregates domains plus back-compat aliases.
 
-mod aliases;
-mod app_cmd;
-mod browser;
-mod call;
-mod events;
-mod notification;
-mod sidebar;
-mod surface;
-mod system;
-mod workspace;
+pub mod aliases;
+pub mod app_cmd;
+pub mod browser;
+pub mod call;
+pub mod events;
+pub mod notification;
+pub mod sidebar;
+pub mod surface;
+pub mod system;
+pub mod workspace;
 
 use std::path::Path;
 
@@ -22,14 +22,14 @@ use clap::Subcommand;
 
 use crate::output::OutputOpts;
 
-pub use aliases::AliasCommand;
+pub use aliases::{AliasCommand, AliasSplitDirection};
 pub use app_cmd::AppCommand;
 pub use browser::BrowserCommand;
 pub use call::CallCommand;
 pub use events::EventsCommand;
 pub use notification::NotificationCommand;
-pub use sidebar::SidebarCommand;
-pub use surface::SurfaceCommand;
+pub use sidebar::{SidebarCommand, StatusCommand};
+pub use surface::{SplitDirection, SurfaceCommand};
 pub use system::SystemCommand;
 pub use workspace::WorkspaceCommand;
 
