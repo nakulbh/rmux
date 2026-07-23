@@ -6,6 +6,9 @@
 //! Keyboard shortcut handling lives in [`crate::shortcuts`]; socket API
 //! request handling lives in [`crate::api_dispatch`].
 
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
+
 use rmux_api::ApiEvent;
 use serde_json::json;
 
@@ -16,6 +19,10 @@ use crate::ui::DEFAULT_FONT_SIZE;
 use crate::ui::sidebar::SidebarView;
 use crate::ui::{HelpMenu, NotificationPanel, SettingsPanel, TerminalPane, workspace_view};
 use crate::workspace::WorkspaceManager;
+use crate::workspace::session::{
+    self, CaptureUiState, DEFAULT_AUTOSAVE_SECS, LoadOutcome, RestoreOptions, SessionSnapshot,
+    SessionStore,
+};
 use crate::workspace::splits::{PaneId, PaneTreeError, SplitDirection};
 
 /// Terminal dimensions used when spawning a pane; the pane resizes to
@@ -57,6 +64,55 @@ pub struct RmuxApp {
     last_active_workspace: u64,
     /// Cross-platform shortcut manager (`KeyboardShortcut` → `AppCommand`).
     pub(crate) shortcut_manager: crate::shortcut_manager::ShortcutManager,
+    /// File-backed session store (primary + previous).
+    session_store: SessionStore,
+    /// Autosave interval.
+    session_autosave_secs: u64,
+    /// Last successful autosave fingerprint (skip unchanged writes).
+    last_session_fingerprint: Option<String>,
+    /// Instant of last autosave attempt.
+    last_session_save_at: Instant,
+    /// True while applying a session restore (skip nested saves).
+    is_applying_session_restore: bool,
+    /// Desired window size from the restored session (applied once).
+    pending_window_size: Option<[f32; 2]>,
+}
+
+/// Peek at the saved session's window size before the egui window opens.
+pub fn peek_session_window_size() -> Option<[f32; 2]> {
+    if !session::should_attempt_restore(cli_session_path().as_deref()) {
+        return None;
+    }
+    let store = session_store_for_launch();
+    match load_launch_snapshot(&store) {
+        Some(snap) => Some(snap.window.inner_size),
+        None => None,
+    }
+}
+
+fn cli_session_path() -> Option<String> {
+    crate::CLI_SESSION_PATH.get().cloned().flatten()
+}
+
+fn session_store_for_launch() -> SessionStore {
+    SessionStore::default_store()
+}
+
+fn load_launch_snapshot(store: &SessionStore) -> Option<SessionSnapshot> {
+    if let Some(path) = cli_session_path() {
+        match store.load_outcome(PathBuf::from(path).as_path()) {
+            LoadOutcome::Loaded(s) => return Some(s),
+            other => {
+                tracing::warn!(?other, "explicit --session path not usable");
+                return None;
+            }
+        }
+    }
+    match store.load_startup() {
+        LoadOutcome::Loaded(s) => Some(s),
+        LoadOutcome::Missing => None,
+        LoadOutcome::Unusable => None,
+    }
 }
 
 impl RmuxApp {
@@ -64,11 +120,52 @@ impl RmuxApp {
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         let channels = api::start_server();
         let font_size = DEFAULT_FONT_SIZE;
+        let session_store = session_store_for_launch();
+        let session_autosave_secs = DEFAULT_AUTOSAVE_SECS;
+
+        let restore_opts = RestoreOptions {
+            cols: INITIAL_COLS,
+            rows: INITIAL_ROWS,
+            font_size,
+            theme: rmux_terminal::NamedTheme::default(),
+        };
+
+        let mut pending_window_size = None;
+        let mut sidebar = SidebarView::new();
+        let mut notification_panel = NotificationPanel::new();
+
+        let (workspace_manager, restored) =
+            if session::should_attempt_restore(cli_session_path().as_deref()) {
+                match load_launch_snapshot(&session_store) {
+                    Some(snap) => match session::restore_session(&snap, &restore_opts) {
+                        Ok(manager) => {
+                            pending_window_size = Some(snap.window.inner_size);
+                            sidebar.visible = snap.window.sidebar_visible;
+                            sidebar.right_sidebar_visible = snap.window.right_sidebar_visible;
+                            notification_panel.visible = snap.window.notification_panel_visible;
+                            tracing::info!(
+                                workspaces = manager.workspace_count(),
+                                panes = manager.total_pane_count(),
+                                "Restored previous session"
+                            );
+                            (manager, true)
+                        }
+                        Err(err) => {
+                            tracing::error!(error = %err, "Session restore failed; starting fresh");
+                            (WorkspaceManager::new(), false)
+                        }
+                    },
+                    None => (WorkspaceManager::new(), false),
+                }
+            } else {
+                (WorkspaceManager::new(), false)
+            };
+
         let mut app = Self {
-            workspace_manager: WorkspaceManager::new(),
-            sidebar: SidebarView::new(),
+            workspace_manager,
+            sidebar,
             notifications: NotificationManager::with_system_notifier(),
-            notification_panel: NotificationPanel::new(),
+            notification_panel,
             settings_panel: SettingsPanel::new(),
             help_menu: HelpMenu::new(),
             font_size,
@@ -78,18 +175,151 @@ impl RmuxApp {
             api_event_tx: channels.event_tx,
             last_active_workspace: 0,
             shortcut_manager: crate::shortcut_manager::ShortcutManager::with_defaults(),
+            session_store,
+            session_autosave_secs,
+            last_session_fingerprint: None,
+            last_session_save_at: Instant::now(),
+            is_applying_session_restore: false,
+            pending_window_size,
         };
 
-        let pane_id = app.workspace_manager.active().active_pane;
-        attach_terminal(&mut app.workspace_manager, pane_id, font_size, app.terminal_theme, None);
+        if !restored {
+            let pane_id = app.workspace_manager.active().active_pane;
+            attach_terminal(
+                &mut app.workspace_manager,
+                pane_id,
+                font_size,
+                app.terminal_theme,
+                None,
+            );
+        }
         app.last_active_workspace = app.workspace_manager.active().id.0;
+
+        // Seed fingerprint so the first autosave is skipped until the user
+        // changes something (or quit forces a save).
+        let seed = session::capture_session(
+            &app.workspace_manager,
+            CaptureUiState {
+                inner_size: app.pending_window_size.unwrap_or([1200.0, 800.0]),
+                sidebar_visible: app.sidebar.visible,
+                right_sidebar_visible: app.sidebar.right_sidebar_visible,
+                notification_panel_visible: app.notification_panel.visible,
+            },
+        );
+        app.last_session_fingerprint = Some(seed.content_fingerprint());
 
         tracing::info!(
             workspaces = app.workspace_manager.workspace_count(),
             panes = app.workspace_manager.total_pane_count(),
+            restored,
             "Application initialized"
         );
         app
+    }
+
+    /// Capture + write the current session (used by autosave, quit, manual restore prep).
+    pub(crate) fn save_session_now(&mut self, ctx: Option<&egui::Context>) {
+        if self.is_applying_session_restore {
+            return;
+        }
+        let inner_size = ctx
+            .map(|c| {
+                let rect = c.input(|i| i.screen_rect());
+                [rect.width(), rect.height()]
+            })
+            .or(self.pending_window_size)
+            .unwrap_or([1200.0, 800.0]);
+        let snap = session::capture_session(
+            &self.workspace_manager,
+            CaptureUiState {
+                inner_size,
+                sidebar_visible: self.sidebar.visible,
+                right_sidebar_visible: self.sidebar.right_sidebar_visible,
+                notification_panel_visible: self.notification_panel.visible,
+            },
+        );
+        let fp = snap.content_fingerprint();
+        if self.last_session_fingerprint.as_ref() == Some(&fp) {
+            return;
+        }
+        match self.session_store.save(&snap) {
+            Ok(()) => {
+                self.last_session_fingerprint = Some(fp);
+                self.last_session_save_at = Instant::now();
+                tracing::debug!(
+                    workspaces = snap.workspaces.len(),
+                    path = %self.session_store.primary_path().display(),
+                    "Session saved"
+                );
+            }
+            Err(err) => tracing::warn!(error = %err, "Failed to save session"),
+        }
+    }
+
+    /// Force save even when fingerprint matches (quit path still wants a write
+    /// of timestamps; we keep skip-on-identical bytes inside the store).
+    pub(crate) fn save_session_on_exit(&mut self, ctx: Option<&egui::Context>) {
+        if self.is_applying_session_restore {
+            return;
+        }
+        // Clear fingerprint so quit always attempts a write of the latest tree.
+        self.last_session_fingerprint = None;
+        self.save_session_now(ctx);
+    }
+
+    /// Replace the live session with `session-previous.json` (⌘⇧O).
+    pub(crate) fn reopen_previous_session(&mut self) {
+        let Some(snap) = self.session_store.load_previous() else {
+            tracing::warn!("No previous session snapshot to restore");
+            return;
+        };
+        // Save current into primary first so the user can recover.
+        self.save_session_on_exit(None);
+        self.apply_session_snapshot(snap);
+    }
+
+    fn apply_session_snapshot(&mut self, snap: SessionSnapshot) {
+        let opts = RestoreOptions {
+            cols: INITIAL_COLS,
+            rows: INITIAL_ROWS,
+            font_size: self.font_size,
+            theme: self.terminal_theme,
+        };
+        self.is_applying_session_restore = true;
+        match session::restore_session(&snap, &opts) {
+            Ok(manager) => {
+                self.workspace_manager = manager;
+                self.sidebar.visible = snap.window.sidebar_visible;
+                self.sidebar.right_sidebar_visible = snap.window.right_sidebar_visible;
+                self.notification_panel.visible = snap.window.notification_panel_visible;
+                self.pending_window_size = Some(snap.window.inner_size);
+                self.last_active_workspace = self.workspace_manager.active().id.0;
+                let seed = session::capture_session(
+                    &self.workspace_manager,
+                    CaptureUiState {
+                        inner_size: snap.window.inner_size,
+                        sidebar_visible: self.sidebar.visible,
+                        right_sidebar_visible: self.sidebar.right_sidebar_visible,
+                        notification_panel_visible: self.notification_panel.visible,
+                    },
+                );
+                self.last_session_fingerprint = Some(seed.content_fingerprint());
+                tracing::info!(
+                    workspaces = self.workspace_manager.workspace_count(),
+                    "Applied session snapshot"
+                );
+            }
+            Err(err) => tracing::error!(error = %err, "Failed to apply session snapshot"),
+        }
+        self.is_applying_session_restore = false;
+    }
+
+    fn maybe_autosave_session(&mut self, ctx: &egui::Context) {
+        let interval = Duration::from_secs(self.session_autosave_secs.max(2));
+        if self.last_session_save_at.elapsed() < interval {
+            return;
+        }
+        self.save_session_now(Some(ctx));
     }
 }
 
@@ -98,6 +328,12 @@ impl eframe::App for RmuxApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Apply shadcn-inspired theme every frame
         crate::ui::theme::Theme::dark().apply(ctx);
+
+        // Apply restored window size once after the window exists.
+        if let Some(size) = self.pending_window_size.take() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(size[0], size[1])));
+        }
+
         // Process PTY output for all terminal panes (exit detection, grid).
         // OSC → notification generation is disabled for now.
         self.workspace_manager.process_all_panes();
@@ -217,6 +453,14 @@ impl eframe::App for RmuxApp {
         // Publish workspace.changed if the active workspace switched this
         // frame (keyboard, sidebar click, or API request).
         self.emit_workspace_change();
+
+        // Periodic session autosave (layout + cwd; no heavy scrollback).
+        self.maybe_autosave_session(ctx);
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        tracing::info!("Saving session on exit");
+        self.save_session_on_exit(None);
     }
 }
 

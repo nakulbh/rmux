@@ -13,11 +13,50 @@ use serde::{Deserialize, Serialize};
 /// - Linux: `~/.config/rmux/rmux.json`
 /// - macOS: `~/Library/Application Support/rmux/rmux.json`
 /// - Windows: `%APPDATA%\rmux\rmux.json`
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct Config {
     /// Terminal emulation settings.
     #[serde(default)]
     pub terminal: TerminalConfig,
+    /// Session save/restore (cmux-style workspace history).
+    #[serde(default)]
+    pub session: SessionConfig,
+}
+
+/// Session history configuration.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SessionConfig {
+    /// Restore the last session on launch (default true).
+    #[serde(default = "default_true")]
+    pub auto_restore: bool,
+    /// Autosave interval in seconds (default 8, matching cmux).
+    #[serde(default = "default_autosave_secs")]
+    pub autosave_secs: u64,
+    /// Include terminal scrollback on quit save (Phase B; currently unused).
+    #[serde(default)]
+    pub include_scrollback: bool,
+    /// Auto-run agent resume commands on restore (Phase C; currently unused).
+    #[serde(default = "default_true")]
+    pub auto_resume_agents: bool,
+}
+
+impl Default for SessionConfig {
+    fn default() -> Self {
+        Self {
+            auto_restore: true,
+            autosave_secs: default_autosave_secs(),
+            include_scrollback: false,
+            auto_resume_agents: true,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_autosave_secs() -> u64 {
+    8
 }
 
 /// Terminal emulation configuration.
@@ -81,5 +120,15 @@ mod tests {
         let json = r#"{"terminal":{}}"#;
         let config: Config = serde_json::from_str(json).expect("should deserialize");
         assert_eq!(config.terminal.font_family, "monospace");
+        assert!(config.session.auto_restore);
+        assert_eq!(config.session.autosave_secs, 8);
+    }
+
+    #[test]
+    fn test_session_config_defaults() {
+        let c = SessionConfig::default();
+        assert!(c.auto_restore);
+        assert!(c.auto_resume_agents);
+        assert!(!c.include_scrollback);
     }
 }

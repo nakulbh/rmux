@@ -10,6 +10,7 @@
 //! - `mod` (this file) — `WorkspaceManager` for multi-workspace management
 
 pub mod model;
+pub mod session;
 pub mod sidebar_snapshot;
 pub mod splits;
 pub mod surface;
@@ -108,6 +109,29 @@ impl WorkspaceManager {
         // cwd / process (see [`Self::refresh_auto_titles`]).
         manager.create_workspace("Terminal".to_string());
         manager
+    }
+
+    /// Build a manager from a restored session (no default workspace seeded).
+    ///
+    /// Used by [`session::restore_session`]. Callers must pass a non-empty
+    /// `workspaces` list and counters past the max restored ids.
+    pub(crate) fn from_restored(
+        workspaces: Vec<Workspace>,
+        active_index: usize,
+        next_workspace_id: u64,
+        next_pane_id: u64,
+        next_split_id: u64,
+    ) -> Self {
+        debug_assert!(!workspaces.is_empty(), "restored session must have workspaces");
+        let active_index = active_index.min(workspaces.len().saturating_sub(1));
+        Self {
+            workspaces,
+            active_index,
+            next_workspace_id,
+            next_pane_id,
+            next_split_id,
+            closed_tabs: VecDeque::new(),
+        }
     }
 
     /// Create a new workspace with the given seed name (auto-title until renamed).
@@ -645,10 +669,8 @@ fn collect_workspace_sidebar_meta(ws: &Workspace) -> WorkspaceSidebarMeta {
     });
 
     // Prefer focused terminal's PR when it has one; else first open PR; else any.
-    let pull_request = focused_term
-        .and_then(|t| t.cached_pull_request().cloned())
-        .or(open_pr)
-        .or(any_pr);
+    let pull_request =
+        focused_term.and_then(|t| t.cached_pull_request().cloned()).or(open_pr).or(any_pr);
 
     let path_lines = sidebar_snapshot::unique_path_lines(
         Some((focused_cwd.as_deref(), focused_branch_ref)),

@@ -316,6 +316,10 @@ impl RmuxApp {
             AppCommand::CloseWindow => {
                 tracing::warn!("Close window not yet implemented (multi-window support planned)");
             }
+
+            AppCommand::ReopenPreviousSession => {
+                self.reopen_previous_session();
+            }
         }
 
         false

@@ -298,17 +298,18 @@ cross-platform Rust application targeting Linux, macOS, and Windows with a stric
 - [ ] **5.2** Implement remote file transfer:
   - Drag-and-drop image → SCP upload
   - `rmux scp local remote`
-- [ ] **5.3** Implement session save:
-  - Save to `~/.config/rmux/session.json`:
+- [x] **5.3** Implement session save:
+  - Save to platform state dir `…/rmux/session.json` (+ `session-previous.json`):
     - Window/workspace/pane layout
     - Working directories per pane
-    - Scrollback (best effort, configurable max)
-    - Browser URL history
-  - Save on quit and periodically
-- [ ] **5.4** Implement session restore:
-  - `rmux restore-session` or `Cmd+Shift+O`
+    - Browser URL (history stack later)
+    - Scrollback deferred (Phase B / config flag)
+  - Save on quit (`on_exit`) and periodically (~8s autosave)
+- [x] **5.4** Implement session restore:
+  - Auto-restore on launch; `Cmd/Ctrl+Shift+O` reopens previous; `--session PATH`
   - Recreate layout, respawn shells in saved directories
   - Restore browser URLs
+  - Agent resume deferred to Phase 6 / 5.5
 - [ ] **5.5** Implement resume command bindings:
   - `rmux surface resume set --kind tmux --checkpoint work --shell "tmux attach -t work"`
   - Store approved resume prefixes in config

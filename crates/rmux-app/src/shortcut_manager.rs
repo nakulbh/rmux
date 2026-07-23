@@ -92,6 +92,8 @@ pub enum AppCommand {
     PrevWorkspaceAlt,
     NextWorkspaceAlt,
     PasteImage,
+    /// Reapply the last saved session from `session-previous.json` (cmux ⌘⇧O).
+    ReopenPreviousSession,
 }
 
 /// Options that gate context-sensitive bindings during a poll.
@@ -302,6 +304,12 @@ impl ShortcutManager {
         self.bind_chord(Modifiers::COMMAND | Modifiers::SHIFT, Key::N, AppCommand::NewWindow);
         self.bind_chord(Modifiers::COMMAND, Key::N, AppCommand::NewWorkspace);
         self.bind_chord(Modifiers::COMMAND | Modifiers::SHIFT, Key::W, AppCommand::CloseWorkspace);
+        // Reopen previous app launch (cmux History → Restore Previous Session)
+        self.bind_chord(
+            Modifiers::COMMAND | Modifiers::SHIFT,
+            Key::O,
+            AppCommand::ReopenPreviousSession,
+        );
 
         // macOS-only dual chord: physical Ctrl+⌘W → close window
         self.bind_chord(mac_ctrl_cmd(), Key::W, AppCommand::CloseWindow);
@@ -469,16 +477,46 @@ pub enum ActionTarget {
 pub fn action_target(command: AppCommand) -> ActionTarget {
     use AppCommand::*;
     match command {
-        NewSurface | NextSurface | PreviousSurface | SelectSurface(_) | CloseTab
-        | CloseOtherTabs | ReopenLastClosed | EqualizeSplitsAlt | PrevWorkspaceAlt
-        | NextWorkspaceAlt | Quit | Find | FindNext | FindPrev | UseSelectionForFind
-        | ClearScrollback | ClearScreen | FontSizeUp | FontSizeDown | FontSizeReset
-        | NewWorkspace | SplitRight | SplitDown | ClosePane | OpenBrowserSplit
-        | FocusBrowserUrlBar | ReloadBrowser | SwitchWorkspace(_) | CloseWorkspace
-        | RenameWorkspace | ToggleZoom | EqualizeSplits | PrevWorkspace | NextWorkspace
-        | FocusLeft | FocusRight | FocusUp | FocusDown | ToggleNotifications => {
-            ActionTarget::Workspace
-        }
+        NewSurface
+        | NextSurface
+        | PreviousSurface
+        | SelectSurface(_)
+        | CloseTab
+        | CloseOtherTabs
+        | ReopenLastClosed
+        | ReopenPreviousSession
+        | EqualizeSplitsAlt
+        | PrevWorkspaceAlt
+        | NextWorkspaceAlt
+        | Quit
+        | Find
+        | FindNext
+        | FindPrev
+        | UseSelectionForFind
+        | ClearScrollback
+        | ClearScreen
+        | FontSizeUp
+        | FontSizeDown
+        | FontSizeReset
+        | NewWorkspace
+        | SplitRight
+        | SplitDown
+        | ClosePane
+        | OpenBrowserSplit
+        | FocusBrowserUrlBar
+        | ReloadBrowser
+        | SwitchWorkspace(_)
+        | CloseWorkspace
+        | RenameWorkspace
+        | ToggleZoom
+        | EqualizeSplits
+        | PrevWorkspace
+        | NextWorkspace
+        | FocusLeft
+        | FocusRight
+        | FocusUp
+        | FocusDown
+        | ToggleNotifications => ActionTarget::Workspace,
         Copy | Paste | ToggleCopyMode | PasteImage => ActionTarget::Terminal,
         ToggleRightSidebar | ToggleSidebar => ActionTarget::Sidebar,
         SplitBrowserRight | SplitBrowserDown => ActionTarget::Browser,

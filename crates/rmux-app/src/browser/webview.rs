@@ -40,7 +40,6 @@ impl BrowserPane {
         self.is_open
     }
 
-    #[allow(dead_code)]
     pub fn set_open(&mut self, open: bool) {
         self.is_open = open;
     }
@@ -49,7 +48,6 @@ impl BrowserPane {
         &self.url
     }
 
-    #[allow(dead_code)]
     pub fn title(&self) -> &str {
         &self.page_title
     }
