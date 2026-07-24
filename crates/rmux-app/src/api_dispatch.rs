@@ -6,9 +6,11 @@
 
 use rmux_api::JsonRpcError;
 use rmux_api::methods::{
-    self, NotificationCreateParams, SidebarClearStatusParams, SidebarSetProgressParams,
-    SidebarSetStatusParams, SurfaceFocusParams, SurfaceSendKeyParams, SurfaceSendTextParams,
-    SurfaceSplitParams, WorkspaceCloseParams, WorkspaceCreateParams, WorkspaceSelectParams,
+    self, AppSetFontSizeParams, AppSetThemeParams, BrowserNavigateParams, BrowserOpenParams,
+    NotificationCreateParams, SidebarClearStatusParams, SidebarSetProgressParams,
+    SidebarSetStatusParams, SurfaceCloseParams, SurfaceFocusParams, SurfaceNewParams,
+    SurfaceSendKeyParams, SurfaceSendTextParams, SurfaceSplitParams, WorkspaceCloseParams,
+    WorkspaceCreateParams, WorkspaceRenameParams, WorkspaceSelectParams,
 };
 use serde_json::{Value, json};
 
@@ -39,9 +41,12 @@ pub fn dispatch(app: &mut RmuxApp, method: &str, params: Value) -> Result<Value,
         methods::WORKSPACE_CREATE => workspace_create(app, params),
         methods::WORKSPACE_SELECT => workspace_select(app, params),
         methods::WORKSPACE_CLOSE => workspace_close(app, params),
+        methods::WORKSPACE_RENAME => workspace_rename(app, params),
         methods::SURFACE_LIST => Ok(surface_list(app)),
         methods::SURFACE_SPLIT => surface_split(app, params),
         methods::SURFACE_FOCUS => surface_focus(app, params),
+        methods::SURFACE_CLOSE => surface_close(app, params),
+        methods::SURFACE_NEW => surface_new(app, params),
         methods::SURFACE_SEND_TEXT => surface_send_text(app, params),
         methods::SURFACE_SEND_KEY => surface_send_key(app, params),
         methods::NOTIFICATION_CREATE => notification_create(app, params),
@@ -53,6 +58,14 @@ pub fn dispatch(app: &mut RmuxApp, method: &str, params: Value) -> Result<Value,
         methods::SIDEBAR_SET_STATUS => sidebar_set_status(app, params),
         methods::SIDEBAR_CLEAR_STATUS => sidebar_clear_status(app, params),
         methods::SIDEBAR_SET_PROGRESS => sidebar_set_progress(app, params),
+        methods::BROWSER_OPEN => browser_open(app, params),
+        methods::BROWSER_NAVIGATE => browser_navigate(app, params),
+        methods::BROWSER_BACK => browser_back(app),
+        methods::BROWSER_FORWARD => browser_forward(app),
+        methods::BROWSER_RELOAD => browser_reload(app),
+        methods::BROWSER_URL => browser_url(app),
+        methods::APP_SET_FONT_SIZE => app_set_font_size(app, params),
+        methods::APP_SET_THEME => app_set_theme(app, params),
         other => Err(JsonRpcError::method_not_found(other)),
     }
 }
@@ -91,7 +104,7 @@ fn workspace_create(app: &mut RmuxApp, params: Value) -> Result<Value, JsonRpcEr
     let id = app.create_workspace_with_terminal(seed);
     if let Some(name) = custom_name {
         // Explicit API name is a user custom title (won't auto-update).
-        app.workspace_manager.rename_workspace(crate::workspace::model::WorkspaceId(id), name);
+        app.workspace_manager.rename_workspace(WorkspaceId(id), name);
     }
     Ok(json!({ "id": id }))
 }
@@ -116,6 +129,19 @@ fn workspace_close(app: &mut RmuxApp, params: Value) -> Result<Value, JsonRpcErr
         .close_workspace(WorkspaceId(params.id))
         .map_err(|err| JsonRpcError::internal(err.to_string()))?;
     app.publish_event("workspace.closed", json!({ "id": params.id }));
+    Ok(json!({}))
+}
+
+/// `workspace.rename` — rename a workspace by id.
+fn workspace_rename(app: &mut RmuxApp, params: Value) -> Result<Value, JsonRpcError> {
+    let params: WorkspaceRenameParams = parse_params(params)?;
+    if app.workspace_manager.workspace_mut(WorkspaceId(params.id)).is_none() {
+        return Err(JsonRpcError::new(
+            INVALID_PARAMS,
+            format!("workspace not found: {}", params.id),
+        ));
+    }
+    app.workspace_manager.rename_workspace(WorkspaceId(params.id), params.name);
     Ok(json!({}))
 }
 
@@ -156,6 +182,27 @@ fn surface_focus(app: &mut RmuxApp, params: Value) -> Result<Value, JsonRpcError
     } else {
         Err(JsonRpcError::new(INVALID_PARAMS, format!("pane not found: {}", params.pane_id)))
     }
+}
+
+/// `surface.close` — close a pane (optional id; defaults to active).
+fn surface_close(app: &mut RmuxApp, params: Value) -> Result<Value, JsonRpcError> {
+    let params: SurfaceCloseParams = parse_params(params)?;
+    if let Some(pane_id) = params.pane_id
+        && !app.workspace_manager.focus_pane_global(PaneId(pane_id))
+    {
+        return Err(JsonRpcError::new(INVALID_PARAMS, format!("pane not found: {pane_id}")));
+    }
+    app.close_active_pane_with_event().map_err(|err| JsonRpcError::internal(err.to_string()))?;
+    Ok(json!({}))
+}
+
+/// `surface.new` — create a new terminal tab/surface in the active workspace.
+fn surface_new(app: &mut RmuxApp, params: Value) -> Result<Value, JsonRpcError> {
+    let params: SurfaceNewParams = parse_params(params)?;
+    let pane_id = app
+        .new_surface_with_terminal(params.title)
+        .map_err(|err| JsonRpcError::internal(err.to_string()))?;
+    Ok(json!({ "pane_id": pane_id }))
 }
 
 /// `surface.send_text` — type raw text into the active pane's PTY.
@@ -256,6 +303,107 @@ fn sidebar_set_progress(app: &mut RmuxApp, params: Value) -> Result<Value, JsonR
     let safe = if params.value.is_finite() { params.value.clamp(0.0, 1.0) } else { 0.0 };
     app.workspace_manager.active_mut().progress = Some(safe);
     Ok(json!({}))
+}
+
+/// `browser.open` — open a browser pane split, optionally at a URL.
+fn browser_open(app: &mut RmuxApp, params: Value) -> Result<Value, JsonRpcError> {
+    let params: BrowserOpenParams = parse_params(params)?;
+    let pane_id = app
+        .open_browser_split(params.url.as_deref())
+        .map_err(|err| JsonRpcError::internal(err.to_string()))?;
+    Ok(json!({ "pane_id": pane_id }))
+}
+
+/// `browser.navigate` — navigate the active browser pane.
+fn browser_navigate(app: &mut RmuxApp, params: Value) -> Result<Value, JsonRpcError> {
+    let params: BrowserNavigateParams = parse_params(params)?;
+    let browser = require_active_browser(app)?;
+    browser.navigate(&params.url).map_err(|err| JsonRpcError::internal(err.to_string()))?;
+    Ok(json!({}))
+}
+
+/// `browser.back` — go back in browser history.
+fn browser_back(app: &mut RmuxApp) -> Result<Value, JsonRpcError> {
+    let browser = require_active_browser(app)?;
+    browser.go_back().map_err(|err| JsonRpcError::internal(err.to_string()))?;
+    Ok(json!({}))
+}
+
+/// `browser.forward` — go forward in browser history.
+fn browser_forward(app: &mut RmuxApp) -> Result<Value, JsonRpcError> {
+    let browser = require_active_browser(app)?;
+    browser.go_forward().map_err(|err| JsonRpcError::internal(err.to_string()))?;
+    Ok(json!({}))
+}
+
+/// `browser.reload` — reload the current page.
+fn browser_reload(app: &mut RmuxApp) -> Result<Value, JsonRpcError> {
+    let browser = require_active_browser(app)?;
+    browser.reload().map_err(|err| JsonRpcError::internal(err.to_string()))?;
+    Ok(json!({}))
+}
+
+/// `browser.url` — read the current URL of the active browser pane.
+fn browser_url(app: &mut RmuxApp) -> Result<Value, JsonRpcError> {
+    let browser = require_active_browser(app)?;
+    Ok(json!({ "url": browser.url() }))
+}
+
+/// `app.set_font_size` — change or reset the terminal font size.
+fn app_set_font_size(app: &mut RmuxApp, params: Value) -> Result<Value, JsonRpcError> {
+    let params: AppSetFontSizeParams = parse_params(params)?;
+    if params.reset {
+        app.set_font_size(0.0);
+    } else if let Some(delta) = params.delta {
+        app.set_font_size(delta);
+    } else {
+        return Err(JsonRpcError::new(
+            INVALID_PARAMS,
+            "app.set_font_size requires `delta` or `reset: true`",
+        ));
+    }
+    Ok(json!({ "font_size": app.font_size }))
+}
+
+/// `app.set_theme` — change the terminal color theme.
+fn app_set_theme(app: &mut RmuxApp, params: Value) -> Result<Value, JsonRpcError> {
+    let params: AppSetThemeParams = parse_params(params)?;
+    let theme = parse_named_theme(&params.theme).ok_or_else(|| {
+        JsonRpcError::new(
+            INVALID_PARAMS,
+            format!(
+                "unknown theme: {} (expected onedark, dracula, solarized-dark, solarized-light, gruvbox-dark, catppuccin-mocha, tokyo-night)",
+                params.theme
+            ),
+        )
+    })?;
+    app.set_terminal_theme(theme);
+    Ok(json!({}))
+}
+
+/// Resolve the active browser pane or return an invalid-params error.
+fn require_active_browser(
+    app: &mut RmuxApp,
+) -> Result<&mut crate::browser::BrowserPane, JsonRpcError> {
+    app.active_browser_mut()
+        .ok_or_else(|| JsonRpcError::new(INVALID_PARAMS, "active pane is not a browser pane"))
+}
+
+/// Parse a theme name from CLI/API wire strings.
+fn parse_named_theme(name: &str) -> Option<rmux_terminal::NamedTheme> {
+    let key = name.to_ascii_lowercase().replace('_', "-");
+    match key.as_str() {
+        "onedark" | "one-dark" | "dark" => Some(rmux_terminal::NamedTheme::OneDark),
+        "dracula" => Some(rmux_terminal::NamedTheme::Dracula),
+        "solarized-dark" | "solarizeddark" => Some(rmux_terminal::NamedTheme::SolarizedDark),
+        "solarized-light" | "solarizedlight" => Some(rmux_terminal::NamedTheme::SolarizedLight),
+        "gruvbox-dark" | "gruvboxdark" | "gruvbox" => Some(rmux_terminal::NamedTheme::GruvboxDark),
+        "catppuccin-mocha" | "catppuccinmocha" | "catppuccin" | "mocha" => {
+            Some(rmux_terminal::NamedTheme::CatppuccinMocha)
+        }
+        "tokyo-night" | "tokyonight" => Some(rmux_terminal::NamedTheme::TokyoNight),
+        _ => None,
+    }
 }
 
 /// Resolve an optional workspace id to a workspace (`None` = active).

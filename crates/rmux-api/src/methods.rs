@@ -21,12 +21,18 @@ pub const WORKSPACE_CREATE: &str = "workspace.create";
 pub const WORKSPACE_SELECT: &str = "workspace.select";
 /// Close a workspace by id; params [`WorkspaceCloseParams`].
 pub const WORKSPACE_CLOSE: &str = "workspace.close";
+/// Rename a workspace; params [`WorkspaceRenameParams`].
+pub const WORKSPACE_RENAME: &str = "workspace.rename";
 /// List panes across workspaces; result is [`SurfaceListResult`].
 pub const SURFACE_LIST: &str = "surface.list";
 /// Split the active pane; params [`SurfaceSplitParams`], result [`SurfaceSplitResult`].
 pub const SURFACE_SPLIT: &str = "surface.split";
 /// Focus a pane; params [`SurfaceFocusParams`].
 pub const SURFACE_FOCUS: &str = "surface.focus";
+/// Close a pane; params [`SurfaceCloseParams`].
+pub const SURFACE_CLOSE: &str = "surface.close";
+/// Create a new terminal tab/surface; params [`SurfaceNewParams`], result [`SurfaceNewResult`].
+pub const SURFACE_NEW: &str = "surface.new";
 /// Type text into the active pane; params [`SurfaceSendTextParams`].
 pub const SURFACE_SEND_TEXT: &str = "surface.send_text";
 /// Send a named key to the active pane; params [`SurfaceSendKeyParams`].
@@ -44,10 +50,26 @@ pub const SIDEBAR_SET_STATUS: &str = "sidebar.set_status";
 pub const SIDEBAR_CLEAR_STATUS: &str = "sidebar.clear_status";
 /// Set the sidebar progress indicator; params [`SidebarSetProgressParams`].
 pub const SIDEBAR_SET_PROGRESS: &str = "sidebar.set_progress";
+/// Open a browser pane split; params [`BrowserOpenParams`], result [`BrowserOpenResult`].
+pub const BROWSER_OPEN: &str = "browser.open";
+/// Navigate the active browser pane; params [`BrowserNavigateParams`].
+pub const BROWSER_NAVIGATE: &str = "browser.navigate";
+/// Go back in the active browser history.
+pub const BROWSER_BACK: &str = "browser.back";
+/// Go forward in the active browser history.
+pub const BROWSER_FORWARD: &str = "browser.forward";
+/// Reload the active browser page.
+pub const BROWSER_RELOAD: &str = "browser.reload";
+/// Read the active browser URL; result is [`BrowserUrlResult`].
+pub const BROWSER_URL: &str = "browser.url";
+/// Change terminal font size; params [`AppSetFontSizeParams`], result [`AppSetFontSizeResult`].
+pub const APP_SET_FONT_SIZE: &str = "app.set_font_size";
+/// Change terminal color theme; params [`AppSetThemeParams`].
+pub const APP_SET_THEME: &str = "app.set_theme";
 /// Switch the connection to event-streaming mode (handled by the server).
 pub const EVENTS_STREAM: &str = "events.stream";
 
-/// All method names supported by the Phase 3 protocol.
+/// All method names supported by the socket protocol.
 ///
 /// # Examples
 ///
@@ -64,9 +86,12 @@ pub fn all_methods() -> &'static [&'static str] {
         WORKSPACE_CREATE,
         WORKSPACE_SELECT,
         WORKSPACE_CLOSE,
+        WORKSPACE_RENAME,
         SURFACE_LIST,
         SURFACE_SPLIT,
         SURFACE_FOCUS,
+        SURFACE_CLOSE,
+        SURFACE_NEW,
         SURFACE_SEND_TEXT,
         SURFACE_SEND_KEY,
         NOTIFICATION_CREATE,
@@ -75,6 +100,14 @@ pub fn all_methods() -> &'static [&'static str] {
         SIDEBAR_SET_STATUS,
         SIDEBAR_CLEAR_STATUS,
         SIDEBAR_SET_PROGRESS,
+        BROWSER_OPEN,
+        BROWSER_NAVIGATE,
+        BROWSER_BACK,
+        BROWSER_FORWARD,
+        BROWSER_RELOAD,
+        BROWSER_URL,
+        APP_SET_FONT_SIZE,
+        APP_SET_THEME,
         EVENTS_STREAM,
     ]
 }
@@ -155,6 +188,15 @@ pub struct WorkspaceCloseParams {
     pub id: u64,
 }
 
+/// Parameters of [`WORKSPACE_RENAME`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceRenameParams {
+    /// Id of the workspace to rename.
+    pub id: u64,
+    /// New display name.
+    pub name: String,
+}
+
 /// One pane entry in [`SurfaceListResult`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SurfaceInfo {
@@ -201,6 +243,29 @@ pub struct SurfaceSplitResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SurfaceFocusParams {
     /// Id of the pane to focus.
+    pub pane_id: u64,
+}
+
+/// Parameters of [`SURFACE_CLOSE`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SurfaceCloseParams {
+    /// Pane to close; the active pane when omitted.
+    #[serde(default)]
+    pub pane_id: Option<u64>,
+}
+
+/// Parameters of [`SURFACE_NEW`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SurfaceNewParams {
+    /// Optional tab title.
+    #[serde(default)]
+    pub title: Option<String>,
+}
+
+/// Result of [`SURFACE_NEW`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SurfaceNewResult {
+    /// Id of the newly created pane/surface.
     pub pane_id: u64,
 }
 
@@ -283,4 +348,58 @@ pub struct SidebarClearStatusParams {
 pub struct SidebarSetProgressParams {
     /// Progress value in `0.0..=1.0`.
     pub value: f32,
+}
+
+/// Parameters of [`BROWSER_OPEN`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserOpenParams {
+    /// Optional initial URL for the new browser pane.
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
+/// Result of [`BROWSER_OPEN`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserOpenResult {
+    /// Id of the newly created browser pane.
+    pub pane_id: u64,
+}
+
+/// Parameters of [`BROWSER_NAVIGATE`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserNavigateParams {
+    /// Destination URL.
+    pub url: String,
+}
+
+/// Result of [`BROWSER_URL`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserUrlResult {
+    /// Current URL of the active browser pane.
+    pub url: String,
+}
+
+/// Parameters of [`APP_SET_FONT_SIZE`].
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct AppSetFontSizeParams {
+    /// Delta in points to add to the current font size.
+    #[serde(default)]
+    pub delta: Option<f32>,
+    /// When true, reset to the application default (ignores `delta`).
+    #[serde(default)]
+    pub reset: bool,
+}
+
+/// Result of [`APP_SET_FONT_SIZE`].
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct AppSetFontSizeResult {
+    /// Effective font size after the change.
+    pub font_size: f32,
+}
+
+/// Parameters of [`APP_SET_THEME`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppSetThemeParams {
+    /// Theme name (e.g. `"onedark"`, `"dracula"`, `"tokyo-night"`).
+    pub theme: String,
 }
