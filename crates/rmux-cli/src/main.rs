@@ -16,7 +16,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
 
-use rmux_cli::{commands, socket};
+use rmux_cli::{commands, launchers, socket, tmux_compat};
 
 /// Command-line arguments for `rmux-cli`.
 #[derive(Parser, Debug)]
@@ -87,6 +87,20 @@ enum Command {
     Hooks {
         #[command(subcommand)]
         action: HooksCommand,
+    },
+    /// Launch Claude Code with agent teams (tmux shim → native splits)
+    #[command(name = "claude-teams")]
+    ClaudeTeams {
+        /// Arguments forwarded to `claude`
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Translate tmux CLI invocations into rmux socket calls (agent PATH shim)
+    #[command(name = "__tmux-compat", hide = true)]
+    TmuxCompat {
+        /// Full tmux argv (command + flags)
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
 }
 
@@ -163,6 +177,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             HooksCommand::Claude { event } => commands::hooks_claude(&socket_path, &event),
             HooksCommand::Opencode { event } => commands::hooks_opencode(&socket_path, &event),
         },
+        Command::ClaudeTeams { args } => launchers::claude_teams::run(&args),
+        Command::TmuxCompat { args } => tmux_compat::run(&socket_path, &args),
     }
 }
 
@@ -228,6 +244,29 @@ mod tests {
         match cli.command {
             Command::Hooks { action: HooksCommand::Claude { event } } => {
                 assert_eq!(event, "stop");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tmux_compat_parses_trailing() {
+        let cli =
+            Cli::parse_from(["rmux-cli", "__tmux-compat", "split-window", "-h", "-c", "/tmp"]);
+        match cli.command {
+            Command::TmuxCompat { args } => {
+                assert_eq!(args, vec!["split-window", "-h", "-c", "/tmp"]);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn claude_teams_parses() {
+        let cli = Cli::parse_from(["rmux-cli", "claude-teams", "--model", "sonnet"]);
+        match cli.command {
+            Command::ClaudeTeams { args } => {
+                assert_eq!(args, vec!["--model", "sonnet"]);
             }
             other => panic!("unexpected {other:?}"),
         }

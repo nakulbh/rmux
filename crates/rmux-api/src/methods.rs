@@ -27,10 +27,12 @@ pub const SURFACE_LIST: &str = "surface.list";
 pub const SURFACE_SPLIT: &str = "surface.split";
 /// Focus a pane; params [`SurfaceFocusParams`].
 pub const SURFACE_FOCUS: &str = "surface.focus";
-/// Type text into the active pane; params [`SurfaceSendTextParams`].
+/// Type text into a pane; params [`SurfaceSendTextParams`].
 pub const SURFACE_SEND_TEXT: &str = "surface.send_text";
 /// Send a named key to the active pane; params [`SurfaceSendKeyParams`].
 pub const SURFACE_SEND_KEY: &str = "surface.send_key";
+/// Close a pane; params [`SurfaceCloseParams`].
+pub const SURFACE_CLOSE: &str = "surface.close";
 /// Create a notification; params [`NotificationCreateParams`], result
 /// [`NotificationCreateResult`].
 pub const NOTIFICATION_CREATE: &str = "notification.create";
@@ -69,6 +71,7 @@ pub fn all_methods() -> &'static [&'static str] {
         SURFACE_FOCUS,
         SURFACE_SEND_TEXT,
         SURFACE_SEND_KEY,
+        SURFACE_CLOSE,
         NOTIFICATION_CREATE,
         NOTIFICATION_LIST,
         NOTIFICATION_CLEAR,
@@ -207,8 +210,11 @@ pub struct SurfaceFocusParams {
 /// Parameters of [`SURFACE_SEND_TEXT`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SurfaceSendTextParams {
-    /// Literal text to type into the active pane.
+    /// Literal text to type into the pane.
     pub text: String,
+    /// Target pane; the focused pane when omitted.
+    #[serde(default)]
+    pub pane_id: Option<u64>,
 }
 
 /// Parameters of [`SURFACE_SEND_KEY`].
@@ -216,6 +222,16 @@ pub struct SurfaceSendTextParams {
 pub struct SurfaceSendKeyParams {
     /// Named key to send, e.g. `"enter"` or `"ctrl+c"`.
     pub key: String,
+    /// Target pane; the focused pane when omitted.
+    #[serde(default)]
+    pub pane_id: Option<u64>,
+}
+
+/// Parameters of [`SURFACE_CLOSE`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SurfaceCloseParams {
+    /// Id of the pane to close.
+    pub pane_id: u64,
 }
 
 /// Parameters of [`NOTIFICATION_CREATE`].

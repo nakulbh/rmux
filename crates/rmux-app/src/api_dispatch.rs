@@ -7,8 +7,9 @@
 use rmux_api::JsonRpcError;
 use rmux_api::methods::{
     self, NotificationCreateParams, SidebarClearStatusParams, SidebarSetProgressParams,
-    SidebarSetStatusParams, SurfaceFocusParams, SurfaceSendKeyParams, SurfaceSendTextParams,
-    SurfaceSplitParams, WorkspaceCloseParams, WorkspaceCreateParams, WorkspaceSelectParams,
+    SidebarSetStatusParams, SurfaceCloseParams, SurfaceFocusParams, SurfaceSendKeyParams,
+    SurfaceSendTextParams, SurfaceSplitParams, WorkspaceCloseParams, WorkspaceCreateParams,
+    WorkspaceSelectParams,
 };
 use serde_json::{Value, json};
 
@@ -44,6 +45,7 @@ pub fn dispatch(app: &mut RmuxApp, method: &str, params: Value) -> Result<Value,
         methods::SURFACE_FOCUS => surface_focus(app, params),
         methods::SURFACE_SEND_TEXT => surface_send_text(app, params),
         methods::SURFACE_SEND_KEY => surface_send_key(app, params),
+        methods::SURFACE_CLOSE => surface_close(app, params),
         methods::NOTIFICATION_CREATE => notification_create(app, params),
         methods::NOTIFICATION_LIST => Ok(notification_list(app)),
         methods::NOTIFICATION_CLEAR => {
@@ -158,13 +160,13 @@ fn surface_focus(app: &mut RmuxApp, params: Value) -> Result<Value, JsonRpcError
     }
 }
 
-/// `surface.send_text` — type raw text into the active pane's PTY.
+/// `surface.send_text` — type raw text into a pane's PTY (active if no id).
 fn surface_send_text(app: &mut RmuxApp, params: Value) -> Result<Value, JsonRpcError> {
     let params: SurfaceSendTextParams = parse_params(params)?;
-    send_to_active_terminal(app, &params.text)
+    send_to_pane(app, params.pane_id, &params.text)
 }
 
-/// `surface.send_key` — send a named key to the active pane's PTY.
+/// `surface.send_key` — send a named key to a pane's PTY (active if no id).
 fn surface_send_key(app: &mut RmuxApp, params: Value) -> Result<Value, JsonRpcError> {
     let params: SurfaceSendKeyParams = parse_params(params)?;
     let text = match params.key.as_str() {
@@ -177,11 +179,38 @@ fn surface_send_key(app: &mut RmuxApp, params: Value) -> Result<Value, JsonRpcEr
             return Err(JsonRpcError::new(INVALID_PARAMS, format!("unsupported key: {other}")));
         }
     };
-    send_to_active_terminal(app, text)
+    send_to_pane(app, params.pane_id, text)
 }
 
-/// Write text to the active pane's terminal, erroring if there is none.
-fn send_to_active_terminal(app: &mut RmuxApp, text: &str) -> Result<Value, JsonRpcError> {
+/// `surface.close` — close a pane by id (used by tmux-compat kill-pane).
+fn surface_close(app: &mut RmuxApp, params: Value) -> Result<Value, JsonRpcError> {
+    let params: SurfaceCloseParams = parse_params(params)?;
+    let pane_id = PaneId(params.pane_id);
+    app.workspace_manager
+        .close_pane_global(pane_id)
+        .map_err(|err| JsonRpcError::internal(err.to_string()))?;
+    app.publish_event("pane.closed", json!({ "pane_id": params.pane_id }));
+    Ok(json!({}))
+}
+
+/// Write text to a specific pane (or the active pane when `pane_id` is `None`).
+fn send_to_pane(
+    app: &mut RmuxApp,
+    pane_id: Option<u64>,
+    text: &str,
+) -> Result<Value, JsonRpcError> {
+    if let Some(id) = pane_id {
+        let target = PaneId(id);
+        for workspace in app.workspace_manager.workspaces_mut() {
+            if let Some(node) = workspace.root.find_pane_mut(target)
+                && let Some(terminal) = node.active_terminal_mut()
+            {
+                terminal.send_text(text);
+                return Ok(json!({}));
+            }
+        }
+        return Err(JsonRpcError::new(INVALID_PARAMS, format!("pane not found: {id}")));
+    }
     match app.workspace_manager.active_mut().active_terminal() {
         Some(terminal) => {
             terminal.send_text(text);

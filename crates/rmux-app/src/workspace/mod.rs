@@ -297,6 +297,17 @@ impl WorkspaceManager {
         ws.close_pane(active)
     }
 
+    /// Close a pane by id in whichever workspace contains it.
+    ///
+    /// Used by the socket API (`surface.close`) and tmux-compat `kill-pane`.
+    pub fn close_pane_global(&mut self, pane: PaneId) -> Result<(), splits::PaneTreeError> {
+        let Some(index) = self.workspaces.iter().position(|w| w.root.find_leaf(pane).is_some())
+        else {
+            return Err(splits::PaneTreeError::PaneNotFound(pane));
+        };
+        self.workspaces[index].close_pane(pane)
+    }
+
     /// Process PTY output for all panes across all workspaces.
     pub fn process_all_panes(&mut self) {
         for workspace in &mut self.workspaces {
