@@ -219,7 +219,7 @@ Font size change triggers PTY resize for all panes (recalculates grid cols/rows)
 
 | cmux Shortcut | Action | Status |
 |---------------|--------|--------|
-| `Cmd+Shift+O` | Reopen previous session | Not implemented |
+| `Cmd+Shift+O` | Reopen previous session | Restores `session-previous.json` (layout + cwd) |
 
 ### Requires Diff Viewer (Future)
 

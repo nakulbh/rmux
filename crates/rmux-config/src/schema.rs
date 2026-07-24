@@ -1,7 +1,8 @@
 //! Configuration schema types for rmux.
 //!
 //! Defines the structure of `rmux.json` configuration files,
-//! including terminal, appearance (wallpaper / transparency), and related settings.
+//! including terminal, appearance (wallpaper / transparency), session
+//! restore, and related settings.
 
 use serde::{Deserialize, Serialize};
 
@@ -20,6 +21,46 @@ pub struct Config {
     /// Appearance: wallpaper image and terminal background opacity.
     #[serde(default)]
     pub appearance: AppearanceConfig,
+
+    /// Session save/restore (cmux-style workspace history).
+    #[serde(default)]
+    pub session: SessionConfig,
+}
+
+/// Session history configuration.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SessionConfig {
+    /// Restore the last session on launch (default true).
+    #[serde(default = "default_true")]
+    pub auto_restore: bool,
+    /// Autosave interval in seconds (default 8, matching cmux).
+    #[serde(default = "default_autosave_secs")]
+    pub autosave_secs: u64,
+    /// Include terminal scrollback on quit save (Phase B; currently unused).
+    #[serde(default)]
+    pub include_scrollback: bool,
+    /// Auto-run agent resume commands on restore (Phase C; currently unused).
+    #[serde(default = "default_true")]
+    pub auto_resume_agents: bool,
+}
+
+impl Default for SessionConfig {
+    fn default() -> Self {
+        Self {
+            auto_restore: true,
+            autosave_secs: default_autosave_secs(),
+            include_scrollback: false,
+            auto_resume_agents: true,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_autosave_secs() -> u64 {
+    8
 }
 
 /// Terminal emulation configuration.
@@ -161,6 +202,16 @@ mod tests {
         assert!(config.appearance.background_image.is_none());
         assert!((config.appearance.background_opacity - 0.72).abs() < f32::EPSILON);
         assert!((config.appearance.sidebar_opacity - 1.0).abs() < f32::EPSILON);
+        assert!(config.session.auto_restore);
+        assert_eq!(config.session.autosave_secs, 8);
+    }
+
+    #[test]
+    fn test_session_config_defaults() {
+        let c = SessionConfig::default();
+        assert!(c.auto_restore);
+        assert!(c.auto_resume_agents);
+        assert!(!c.include_scrollback);
     }
 
     #[test]
@@ -185,6 +236,7 @@ mod tests {
                 background_opacity: 0.65,
                 sidebar_opacity: 0.55,
             },
+            session: SessionConfig::default(),
         };
         let json = serde_json::to_string(&cfg).expect("serialize");
         let back: Config = serde_json::from_str(&json).expect("deserialize");
@@ -195,6 +247,7 @@ mod tests {
         );
         assert!((back.appearance.background_opacity - 0.65).abs() < f32::EPSILON);
         assert!((back.appearance.sidebar_opacity - 0.55).abs() < f32::EPSILON);
+        assert!(back.session.auto_restore);
     }
 
     #[test]

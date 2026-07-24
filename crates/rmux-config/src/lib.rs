@@ -10,7 +10,7 @@
 
 pub mod schema;
 
-pub use schema::{AppearanceConfig, Config, TerminalConfig};
+pub use schema::{AppearanceConfig, Config, SessionConfig, TerminalConfig};
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -145,6 +145,7 @@ mod tests {
                 background_opacity: 0.6,
                 sidebar_opacity: 0.5,
             },
+            session: SessionConfig::default(),
         };
         save_to(&cfg, &path).expect("save");
         let loaded = load_from(&path).expect("load");

@@ -15,9 +15,14 @@
 //! The main entry point parses CLI arguments, initializes logging,
 //! creates the egui/eframe window, and runs the main event loop.
 
+use std::sync::OnceLock;
+
 use anyhow::Result;
 use clap::Parser;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
+
+/// Optional `--session PATH` from CLI, read once during `RmuxApp::new`.
+pub(crate) static CLI_SESSION_PATH: OnceLock<Option<String>> = OnceLock::new();
 
 mod api;
 mod api_dispatch;
@@ -78,8 +83,14 @@ fn main() -> Result<()> {
         tracing::info!("rmux starting (version {} @ {})", env!("CARGO_PKG_VERSION"), sha);
     }
 
+    let _ = CLI_SESSION_PATH.set(cli.session.clone());
+
+    // Prefer restored window size when a session is available (best-effort
+    // peek before the window opens).
+    let initial_size = app::peek_session_window_size().unwrap_or([1200.0, 800.0]);
+
     let mut viewport =
-        egui::ViewportBuilder::default().with_inner_size([1200.0, 800.0]).with_title("rmux");
+        egui::ViewportBuilder::default().with_inner_size(initial_size).with_title("rmux");
     if let Some(icon) = load_app_icon() {
         viewport = viewport.with_icon(std::sync::Arc::new(icon));
     }
