@@ -554,6 +554,19 @@ impl PaneNode {
         }
     }
 
+    /// Visit every browser pane in this subtree (immutable).
+    pub fn for_each_browser<F: FnMut(PaneId, &BrowserPane)>(&self, f: &mut F) {
+        match self {
+            Self::Browser { id, browser } => f(*id, browser.as_ref()),
+            Self::Leaf { .. } => {}
+            Self::Split { children, .. } => {
+                for child in children.iter() {
+                    child.for_each_browser(f);
+                }
+            }
+        }
+    }
+
     /// Visit every browser pane in this subtree.
     ///
     /// Used each frame to create/hide/reposition native wry webviews.

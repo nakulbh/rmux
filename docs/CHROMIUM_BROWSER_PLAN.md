@@ -240,18 +240,18 @@ Requirements:
 
 | ID | Task | Notes |
 |---|---|---|
-| E3.1 | Persistent profile / cookies | Map to Phase 4.4 session restore |
-| E3.2 | Save/restore last URL + history per pane | Workspace session JSON |
-| E3.3 | Screenshot via CEF bitmap API | Unblocks `browser.screenshot` |
+| E3.1 | Persistent profile / cookies | **Done** — CEF profile dir + `persist_session_cookies` |
+| E3.2 | Save/restore last URL + history per pane | **Done** — `browser/session.rs` on exit/startup |
+| E3.3 | Screenshot via CEF bitmap API | **Done** — OSR last-frame PNG + `browser.screenshot` |
 | E3.4 | DevTools toggle (debug builds) | Optional shortcut |
 | E3.5 | Download handling (optional) | Policy: deny or download folder |
 | E3.6 | Popup / new window policy | Open as new browser pane or block |
-| E3.7 | Performance check | Memory with 1 browser + 20 terminals vs budget |
+| E3.7 | Performance check | Cap DPR + buffer reuse shipped; formal budget TBD |
 
 #### Acceptance criteria
 
-- [ ] Restart restores browser URL (with 4.4).
-- [ ] `browser.screenshot` returns PNG bytes or file path.
+- [x] Restart restores browser URL (with 4.4).
+- [x] `browser.screenshot` returns PNG bytes or file path.
 - [ ] Memory target from PLAN still documented (adjust if CEF requires higher baseline).
 
 **Estimated effort:** 1–2 weeks.

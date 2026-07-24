@@ -7,8 +7,77 @@ use std::sync::{Arc, Mutex};
 use cef::rc::Rc;
 use cef::*;
 
-/// Shared OSR frame buffer: (width, height, rgba bytes).
-pub type FrameBuffer = Arc<Mutex<Option<(u32, u32, Vec<u8>)>>>;
+/// Shared OSR frame store — reusable RGBA buffer + dirty flag (no per-paint alloc storm).
+pub type FrameBuffer = Arc<Mutex<OsrFrameStore>>;
+
+/// Latest CEF OSR paint, converted to RGBA for egui.
+#[derive(Default)]
+pub struct OsrFrameStore {
+    pub width: u32,
+    pub height: u32,
+    /// RGBA8 length = width * height * 4 (capacity may be larger).
+    pub rgba: Vec<u8>,
+    /// Set by `on_paint`; cleared when the UI uploads the texture.
+    pub dirty: bool,
+    /// Scratch for BGRA→RGBA without allocating each paint (swap with `rgba`).
+    scratch: Vec<u8>,
+}
+
+impl OsrFrameStore {
+    /// Copy CEF BGRA buffer into the store as RGBA, reusing capacity.
+    pub fn write_bgra(&mut self, width: u32, height: u32, bgra: &[u8]) {
+        let len = (width as usize).saturating_mul(height as usize).saturating_mul(4);
+        if bgra.len() < len || width == 0 || height == 0 {
+            return;
+        }
+        // Grow scratch to exact length (reuses capacity).
+        self.scratch.resize(len, 0);
+        bgra_to_rgba(&mut self.scratch, &bgra[..len]);
+        // Publish via swap — next paint reuses the previous `rgba` as scratch.
+        std::mem::swap(&mut self.rgba, &mut self.scratch);
+        self.width = width;
+        self.height = height;
+        self.dirty = true;
+    }
+
+    /// Take a snapshot for texture upload if dirty. Leaves store non-dirty.
+    pub fn take_if_dirty(&mut self) -> Option<(u32, u32, Vec<u8>)> {
+        if !self.dirty || self.width == 0 || self.height == 0 {
+            return None;
+        }
+        self.dirty = false;
+        // Clone only when uploading (GPU path needs owned ColorImage data).
+        let len = (self.width as usize) * (self.height as usize) * 4;
+        Some((self.width, self.height, self.rgba.get(..len)?.to_vec()))
+    }
+}
+
+/// BGRA (CEF) → RGBA (egui). Tight loop, no per-pixel `push`.
+#[inline]
+fn bgra_to_rgba(dst: &mut [u8], src: &[u8]) {
+    debug_assert_eq!(dst.len(), src.len());
+    let n = dst.len() / 4;
+    let mut i = 0usize;
+    // Process 4 pixels at a time when possible for better ILP.
+    while i + 4 <= n {
+        for k in 0..4 {
+            let o = (i + k) * 4;
+            dst[o] = src[o + 2];
+            dst[o + 1] = src[o + 1];
+            dst[o + 2] = src[o];
+            dst[o + 3] = src[o + 3];
+        }
+        i += 4;
+    }
+    while i < n {
+        let o = i * 4;
+        dst[o] = src[o + 2];
+        dst[o + 1] = src[o + 1];
+        dst[o + 2] = src[o];
+        dst[o + 3] = src[o + 3];
+        i += 1;
+    }
+}
 
 /// Navigation / chrome events pushed to the UI thread via channels.
 pub struct NavChannels {
@@ -57,6 +126,9 @@ wrap_app! {
             command_line.append_switch(Some(&"single-process".into()));
             command_line.append_switch(Some(&"no-sandbox".into()));
             command_line.append_switch(Some(&"enable-begin-frame-scheduling".into()));
+            // Slightly lighter compositing for OSR software path.
+            command_line.append_switch(Some(&"disable-threaded-scrolling".into()));
+            command_line.append_switch(Some(&"disable-smooth-scrolling".into()));
         }
 
         fn browser_process_handler(&self) -> Option<BrowserProcessHandler> {
@@ -140,14 +212,13 @@ wrap_render_handler! {
         fn view_rect(&self, _browser: Option<&mut Browser>, rect: Option<&mut Rect>) {
             if let Some(rect) = rect {
                 let size = self.handler.size.lock().unwrap_or_else(|e| e.into_inner());
-                if size.width > 0.0 && size.height > 0.0 {
-                    rect.width = size.width as i32;
-                    rect.height = size.height as i32;
-                } else {
-                    // CEF requires non-zero view_rect.
-                    rect.width = 1;
-                    rect.height = 1;
-                }
+                // Cap OSR scale so Retina (2×/3×) does not explode CPU on
+                // BGRA→RGBA + egui texture upload while scrolling.
+                let scale = osr_paint_scale(size.device_scale_factor);
+                let w = (size.width * scale).round().max(1.0) as i32;
+                let h = (size.height * scale).round().max(1.0) as i32;
+                rect.width = w;
+                rect.height = h;
             }
         }
 
@@ -157,8 +228,9 @@ wrap_render_handler! {
             screen_info: Option<&mut ScreenInfo>,
         ) -> ::std::os::raw::c_int {
             if let Some(screen_info) = screen_info {
-                let size = self.handler.size.lock().unwrap_or_else(|e| e.into_inner());
-                screen_info.device_scale_factor = size.device_scale_factor;
+                // view_rect is already in "paint pixels"; report scale 1 so CEF
+                // does not multiply again.
+                screen_info.device_scale_factor = 1.0;
                 return true as _;
             }
             false as _
@@ -197,19 +269,21 @@ wrap_render_handler! {
             // SAFETY: CEF guarantees `buffer` points to `width*height*4` BGRA bytes for this call.
             let bgra = unsafe { std::slice::from_raw_parts(buffer, src_len) };
 
-            // Convert BGRA → RGBA for egui ColorImage.
-            let mut rgba = Vec::with_capacity(src_len);
-            for chunk in bgra.chunks_exact(4) {
-                rgba.push(chunk[2]); // R
-                rgba.push(chunk[1]); // G
-                rgba.push(chunk[0]); // B
-                rgba.push(chunk[3]); // A
-            }
-
-            if let Ok(mut slot) = self.handler.frame.lock() {
-                *slot = Some((w, h, rgba));
+            if let Ok(mut store) = self.handler.frame.lock() {
+                store.write_bgra(w, h, bgra);
             }
         }
+    }
+}
+
+/// Cap device scale for OSR paints (Retina 2× is 4× pixels → heavy CPU).
+#[inline]
+fn osr_paint_scale(device_scale_factor: f32) -> f32 {
+    if !device_scale_factor.is_finite() || device_scale_factor <= 1.0 {
+        1.0
+    } else {
+        // 1.5× is a good quality/speed tradeoff on 2× displays.
+        device_scale_factor.clamp(1.0, 1.5)
     }
 }
 

@@ -73,7 +73,7 @@ pub const BROWSER_FILL: &str = "browser.fill";
 pub const BROWSER_PRESS: &str = "browser.press";
 /// Accessibility / DOM snapshot; params [`BrowserSnapshotParams`], result JSON tree.
 pub const BROWSER_SNAPSHOT: &str = "browser.snapshot";
-/// Capture a screenshot; params [`BrowserPaneParams`] (not yet implemented on wry).
+/// Capture a screenshot; params [`BrowserScreenshotParams`], result PNG path / base64.
 pub const BROWSER_SCREENSHOT: &str = "browser.screenshot";
 
 /// All method names supported by the protocol (Phase 3 + Phase 4 browser).
@@ -456,4 +456,33 @@ pub struct BrowserSnapshotParams {
     /// Max children per node (default 40).
     #[serde(default)]
     pub max_children: Option<u32>,
+}
+
+/// Parameters of [`BROWSER_SCREENSHOT`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct BrowserScreenshotParams {
+    /// Target browser pane; active browser when omitted.
+    #[serde(default)]
+    pub pane_id: Option<u64>,
+    /// Optional filesystem path to write the PNG. When omitted, a temp file is used
+    /// and/or `png_base64` is returned depending on `include_base64`.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Include base64-encoded PNG in the result (default true when `path` is omitted).
+    #[serde(default)]
+    pub include_base64: Option<bool>,
+}
+
+/// Result of [`BROWSER_SCREENSHOT`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowserScreenshotResult {
+    /// Written file path when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// Base64 PNG payload when requested.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub png_base64: Option<String>,
+    pub width: u32,
+    pub height: u32,
+    pub pane_id: u64,
 }

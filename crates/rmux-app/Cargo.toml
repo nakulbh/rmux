@@ -37,6 +37,7 @@ rmux-api = { path = "../rmux-api" }
 raw-window-handle = "0.6"
 arboard = "3"
 image = { version = "0.25", default-features = false, features = ["png"] }
+base64 = "0.22"
 ureq = { workspace = true }
 # Optional CEF binding (tauri-apps/cef-rs) — default via browser-chromium.
 cef = { workspace = true, optional = true }

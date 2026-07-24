@@ -42,7 +42,7 @@ impl ChromiumEngine {
                 height: 1.0,
                 device_scale_factor: 1.0,
             })),
-            frame: Arc::new(Mutex::new(None)),
+            frame: Arc::new(Mutex::new(super::handlers::OsrFrameStore::default())),
             eval_rx: None,
             pending_eval_tx: None,
             last_mouse: None,
@@ -75,7 +75,10 @@ impl ChromiumEngine {
         let Some(frame) = browser.main_frame() else {
             bail!("Chromium main frame missing");
         };
-        frame.load_url(Some(&url.into()));
+        // Keep CefString alive for the FFI call (do not pass a temporary).
+        let cef_url = cef::CefString::from(url);
+        frame.load_url(Some(&cef_url));
+        info!(%url, "Chromium load_url issued");
         Ok(())
     }
 
@@ -224,7 +227,8 @@ impl ChromiumEngine {
         };
 
         let browser_settings = cef::BrowserSettings {
-            windowless_frame_rate: 60,
+            // 30–45 fps is enough for OSR→egui; 60 burns CPU on conversion/upload.
+            windowless_frame_rate: 45,
             background_color: 0xFF_0C_0C_0C, // ARGB dark
             ..Default::default()
         };
@@ -278,7 +282,7 @@ impl ChromiumEngine {
         self.eval_rx = None;
         self.pending_eval_tx = None;
         if let Ok(mut frame) = self.frame.lock() {
-            *frame = None;
+            *frame = super::handlers::OsrFrameStore::default();
         }
         debug!("Chromium browser destroyed");
     }
@@ -346,48 +350,56 @@ impl ChromiumEngine {
     }
 
     pub fn take_frame_rgba(&mut self) -> Option<(u32, u32, Vec<u8>)> {
-        self.frame.lock().ok().and_then(|mut g| g.take())
+        self.frame.lock().ok().and_then(|mut g| g.take_if_dirty())
     }
 
     // ── Input forwarding (egui → CEF) ──────────────────────────────────
 
-    /// Forward a pointer move/down/up in **view** coordinates (top-left of content rect).
+    /// Forward a pointer move in **view** coordinates (content rect, top-left).
+    ///
+    /// Coordinates are scaled to the OSR paint pixel space (capped DPR).
     pub fn send_mouse_move(&mut self, x: f32, y: f32, modifiers: u32) {
         if !self.ready {
             return;
         }
-        let ix = x.round() as i32;
-        let iy = y.round() as i32;
+        let (ix, iy) = self.to_paint_coords(x, y);
+        // Skip no-op moves — CEF move storms during hover are expensive.
+        if self.last_mouse == Some((ix, iy)) {
+            return;
+        }
         self.last_mouse = Some((ix, iy));
         if let Ok(browser) = self.browser.lock()
             && let Some(browser) = browser.as_ref()
             && let Some(host) = browser.host()
         {
-            let event = cef::MouseEvent {
-                x: ix,
-                y: iy,
-                modifiers,
-            };
+            let event = cef::MouseEvent { x: ix, y: iy, modifiers };
             host.send_mouse_move_event(Some(&event), false as i32);
         }
+    }
+
+    fn to_paint_coords(&self, x: f32, y: f32) -> (i32, i32) {
+        let scale = {
+            let ppp = self.pixels_per_point;
+            if !ppp.is_finite() || ppp <= 1.0 {
+                1.0
+            } else {
+                ppp.clamp(1.0, 1.5)
+            }
+        };
+        ((x * scale).round() as i32, (y * scale).round() as i32)
     }
 
     pub fn send_mouse_click(&mut self, x: f32, y: f32, button: MouseBtn, down: bool, modifiers: u32) {
         if !self.ready {
             return;
         }
-        let ix = x.round() as i32;
-        let iy = y.round() as i32;
+        let (ix, iy) = self.to_paint_coords(x, y);
         self.last_mouse = Some((ix, iy));
         if let Ok(browser) = self.browser.lock()
             && let Some(browser) = browser.as_ref()
             && let Some(host) = browser.host()
         {
-            let event = cef::MouseEvent {
-                x: ix,
-                y: iy,
-                modifiers,
-            };
+            let event = cef::MouseEvent { x: ix, y: iy, modifiers };
             let btn = match button {
                 MouseBtn::Left => cef::MouseButtonType::from(cef::sys::cef_mouse_button_type_t::MBT_LEFT),
                 MouseBtn::Right => {
@@ -405,21 +417,19 @@ impl ChromiumEngine {
         if !self.ready {
             return;
         }
-        let ix = x.round() as i32;
-        let iy = y.round() as i32;
+        let (ix, iy) = self.to_paint_coords(x, y);
         if let Ok(browser) = self.browser.lock()
             && let Some(browser) = browser.as_ref()
             && let Some(host) = browser.host()
         {
-            let event = cef::MouseEvent {
-                x: ix,
-                y: iy,
-                modifiers,
-            };
+            let event = cef::MouseEvent { x: ix, y: iy, modifiers };
+            // egui deltas are in points; CEF expects pixels. Amplify slightly so
+            // trackpads feel responsive without flooding paints.
+            let scale = self.pixels_per_point.clamp(1.0, 2.0);
             host.send_mouse_wheel_event(
                 Some(&event),
-                delta_x.round() as i32,
-                delta_y.round() as i32,
+                (delta_x * scale).round() as i32,
+                (delta_y * scale).round() as i32,
             );
         }
     }

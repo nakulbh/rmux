@@ -266,9 +266,9 @@ cross-platform Rust application targeting Linux, macOS, and Windows with a stric
   - `screenshot` stubbed (not supported on wry child webviews yet)
   - Deferred JS results via wry evaluate callbacks (no main-thread deadlock)
   - CLI: `browser-open`, `browser-nav`, `browser-url`, `browser-eval`, `browser-click`, `browser-fill`, `browser-snapshot`
-- [ ] **4.4** Implement browser session persistence:
-  - Save/restore URL and navigation history
-  - Cookie persistence via wry / Chromium profile
+- [x] **4.4** Implement browser session persistence:
+  - Save/restore URL and navigation history (`browser/session.rs` on exit + startup)
+  - Cookie persistence via Chromium profile dir (CEF `cache_path` / `persist_session_cookies`)
 - [x] **4.5** Add browser keyboard shortcuts:
   - `Cmd+Shift+L` / `Ctrl+Shift+L`: open browser split
   - `Cmd+L` / `Ctrl+L`: focus address bar
@@ -279,7 +279,7 @@ cross-platform Rust application targeting Linux, macOS, and Windows with a stric
   - [x] E0: engine backend scaffold + cargo features
   - [x] E1: CEF toolchain + runtime bootstrap (`cef` Runtime, external pump, fetch-cef, subprocess)
   - [x] E2: OSR paint → egui texture + mouse/key input + navigate/reload + console-bridge eval
-  - [~] E3: cookies / screenshot / session on Chromium (profile dir wired; APIs TBD)
+  - [x] E3: profile cookies + `browser.screenshot` (OSR PNG) + session URL/history restore
   - [~] E4: Chromium is **default** feature; CI packaging + Helper.app bundles remaining
 
 ### Deliverables

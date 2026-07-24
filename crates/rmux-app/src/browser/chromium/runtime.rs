@@ -424,7 +424,15 @@ fn locales_path_for(cef: &Path) -> Option<PathBuf> {
 static PUMPING: AtomicBool = AtomicBool::new(false);
 
 /// Pump CEF tasks — call once per egui frame when Chromium is enabled.
+///
+/// Runs several work slices so OSR paints catch up during scroll (external
+/// message pump can lag if only one slice runs per 16 ms UI frame).
 pub fn pump_message_loop() {
+    pump_message_loop_n(3);
+}
+
+/// Pump CEF up to `n` work slices (reentrancy-safe).
+pub fn pump_message_loop_n(n: u32) {
     if !RUNTIME_READY.load(Ordering::Acquire) {
         return;
     }
@@ -433,7 +441,9 @@ pub fn pump_message_loop() {
     }
     // Never let a CEF panic take down the whole terminal UI.
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        cef::do_message_loop_work();
+        for _ in 0..n.max(1) {
+            cef::do_message_loop_work();
+        }
     }));
     PUMPING.store(false, Ordering::Release);
 }

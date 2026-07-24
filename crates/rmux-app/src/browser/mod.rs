@@ -6,6 +6,7 @@
 
 pub(crate) mod automation;
 pub(crate) mod engine;
+pub(crate) mod session;
 pub(crate) mod webview;
 
 #[cfg(feature = "browser-chromium")]

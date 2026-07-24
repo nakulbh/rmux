@@ -88,6 +88,8 @@ impl RmuxApp {
         attach_terminal(&mut app.workspace_manager, pane_id, font_size, app.terminal_theme, None);
         app.last_active_workspace = app.workspace_manager.active().id.0;
 
+        app.restore_browser_session();
+
         tracing::info!(
             workspaces = app.workspace_manager.workspace_count(),
             panes = app.workspace_manager.total_pane_count(),
@@ -96,9 +98,59 @@ impl RmuxApp {
         );
         app
     }
+
+    /// Reopen browser panes from the last session (URL + history). Cookies live
+    /// in the Chromium profile directory independently.
+    fn restore_browser_session(&mut self) {
+        let Ok(Some(file)) = crate::browser::session::load() else {
+            return;
+        };
+        let snaps = crate::browser::session::filter_restorable(file.browsers);
+        if snaps.is_empty() {
+            return;
+        }
+        for snap in snaps {
+            let url = snap.url.clone();
+            match self.open_browser_split(Some(&url)) {
+                Ok(id) => {
+                    if let Some(b) = self
+                        .workspace_manager
+                        .active_mut()
+                        .root
+                        .find_browser_mut(crate::workspace::splits::PaneId(id))
+                    {
+                        b.apply_session_snapshot(snap);
+                        // Re-navigate so engine loads after snapshot applied.
+                        let _ = b.navigate(&url);
+                    }
+                    tracing::info!(pane_id = id, %url, "Restored browser pane from session");
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, %url, "Failed to restore browser pane");
+                }
+            }
+        }
+    }
+
+    /// Collect browser snapshots and write the session file.
+    pub(crate) fn save_browser_session(&self) {
+        let mut snaps = Vec::new();
+        for ws in self.workspace_manager.workspaces() {
+            ws.root.for_each_browser(&mut |_id, browser| {
+                snaps.push(browser.session_snapshot());
+            });
+        }
+        if let Err(e) = crate::browser::session::save(&snaps) {
+            tracing::warn!(error = %e, "Failed to save browser session");
+        }
+    }
 }
 
 impl eframe::App for RmuxApp {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.save_browser_session();
+    }
+
     /// Called each frame to update the UI.
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         // Chromium CEF external message pump (no-op unless browser-chromium).

@@ -120,6 +120,14 @@ enum Command {
         #[arg(long)]
         pane: Option<u64>,
     },
+    /// Capture a PNG screenshot of the browser content (Chromium OSR)
+    BrowserScreenshot {
+        /// Output PNG path (default: temp file)
+        #[arg(long, short = 'o')]
+        out: Option<String>,
+        #[arg(long)]
+        pane: Option<u64>,
+    },
 }
 
 /// Split direction accepted by `new-split`.
@@ -167,6 +175,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             commands::browser_fill(&socket_path, &selector, &value, pane)
         }
         Command::BrowserSnapshot { pane } => commands::browser_snapshot(&socket_path, pane),
+        Command::BrowserScreenshot { out, pane } => {
+            commands::browser_screenshot(&socket_path, out.as_deref(), pane)
+        }
     }
 }
 

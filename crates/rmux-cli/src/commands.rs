@@ -203,6 +203,18 @@ pub fn browser_snapshot(socket_path: &Path, pane_id: Option<u64>) -> Result<()> 
     Ok(())
 }
 
+/// `rmux-cli browser-screenshot` — PNG of the browser content (Chromium OSR).
+pub fn browser_screenshot(
+    socket_path: &Path,
+    out: Option<&str>,
+    pane_id: Option<u64>,
+) -> Result<()> {
+    let (method, params) = browser_screenshot_request(out, pane_id);
+    let result = socket::call(socket_path, method, params)?;
+    println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(())
+}
+
 fn browser_open_request(url: Option<&str>) -> (&'static str, Value) {
     ("browser.open", json!({ "url": url }))
 }
@@ -233,6 +245,17 @@ fn browser_fill_request(
 
 fn browser_snapshot_request(pane_id: Option<u64>) -> (&'static str, Value) {
     ("browser.snapshot", json!({ "pane_id": pane_id }))
+}
+
+fn browser_screenshot_request(path: Option<&str>, pane_id: Option<u64>) -> (&'static str, Value) {
+    (
+        "browser.screenshot",
+        json!({
+            "pane_id": pane_id,
+            "path": path,
+            "include_base64": path.is_none(),
+        }),
+    )
 }
 
 /// Interpret literal backslash escapes in CLI text arguments.

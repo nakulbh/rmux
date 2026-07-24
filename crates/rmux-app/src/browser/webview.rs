@@ -4,6 +4,24 @@ use anyhow::{Context, Result};
 use egui::Rect;
 use tracing::{debug, info};
 
+/// Minimal query-string encoder for search URLs (no extra dependency).
+fn urlencoding_lite(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 3);
+    for b in s.as_bytes() {
+        match *b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*b as char);
+            }
+            b' ' => out.push('+'),
+            _ => {
+                use std::fmt::Write;
+                let _ = write!(out, "%{b:02X}");
+            }
+        }
+    }
+    out
+}
+
 use super::engine::{EngineBackend, EngineNavHooks};
 
 /// Empty new-tab page (dark, matches app chrome — avoids white `about:blank`).
@@ -22,6 +40,9 @@ pub struct BrowserPane {
     is_open: bool,
     /// Set by Cmd/Ctrl+L to request keyboard focus on the URL bar.
     pub focus_url_bar: bool,
+    /// Draft text for the address bar (persists across frames while editing).
+    /// Bound to the TextEdit — never rebuild this from `url` while focused.
+    url_bar_text: String,
     shown_this_frame: bool,
     /// After a failed attach, skip retries until bounds change (avoids log flood).
     attach_failed: bool,
@@ -33,6 +54,8 @@ pub struct BrowserPane {
     /// Chromium OSR: last uploaded egui texture (reused when size matches).
     osr_texture: Option<egui::TextureHandle>,
     osr_texture_size: (u32, u32),
+    /// Last painted RGBA frame for `browser.screenshot` (Chromium OSR).
+    last_frame_rgba: Option<(u32, u32, Vec<u8>)>,
 }
 
 impl BrowserPane {
@@ -48,6 +71,7 @@ impl BrowserPane {
             page_title: String::new(),
             is_open: false,
             focus_url_bar: false,
+            url_bar_text: String::new(),
             shown_this_frame: false,
             attach_failed: false,
             last_attach_bounds: Rect::ZERO,
@@ -56,6 +80,7 @@ impl BrowserPane {
             nav_load_rx: None,
             osr_texture: None,
             osr_texture_size: (0, 0),
+            last_frame_rgba: None,
         }
     }
 
@@ -96,16 +121,113 @@ impl BrowserPane {
 
     pub fn is_new_tab(&self) -> bool {
         let url = self.url.trim();
-        url.is_empty() || url == "about:blank"
+        url.is_empty() || url == "about:blank" || url.starts_with("data:")
+    }
+
+    /// Address-bar display string: empty for blank/new tabs, otherwise the URL.
+    fn url_bar_display(&self) -> String {
+        if self.is_new_tab() {
+            String::new()
+        } else {
+            self.url.clone()
+        }
+    }
+
+    /// Keep the draft bar in sync with navigation when the field is not focused.
+    fn sync_url_bar_if_idle(&mut self, focused: bool) {
+        if !focused {
+            self.url_bar_text = self.url_bar_display();
+        }
     }
 
     pub fn is_loading(&self) -> bool {
         self.is_loading
     }
 
-    #[allow(dead_code)] // session restore / automation (Phase 4.3–4.4)
+    #[must_use]
+    #[allow(dead_code)] // public API for session / automation
     pub fn history(&self) -> &[String] {
         &self.history
+    }
+
+    #[must_use]
+    #[allow(dead_code)]
+    pub fn history_index(&self) -> usize {
+        self.history_index
+    }
+
+    /// Snapshot for session persistence.
+    #[must_use]
+    pub fn session_snapshot(&self) -> super::session::BrowserPaneSnapshot {
+        super::session::BrowserPaneSnapshot {
+            url: self.url.clone(),
+            history: self.history.clone(),
+            history_index: self.history_index,
+            title: self.page_title.clone(),
+        }
+    }
+
+    /// Restore URL / history from a session snapshot (before engine attach).
+    pub fn apply_session_snapshot(&mut self, snap: super::session::BrowserPaneSnapshot) {
+        if snap.history.is_empty() {
+            self.url = if snap.url.is_empty() { DEFAULT_URL.to_string() } else { snap.url };
+            self.history = vec![self.url.clone()];
+            self.history_index = 0;
+        } else {
+            self.history = snap.history;
+            self.history_index = snap.history_index.min(self.history.len().saturating_sub(1));
+            self.url = self.history.get(self.history_index).cloned().unwrap_or_else(|| {
+                if snap.url.is_empty() {
+                    DEFAULT_URL.to_string()
+                } else {
+                    snap.url
+                }
+            });
+        }
+        self.page_title = snap.title;
+        self.url_bar_text = self.url_bar_display();
+    }
+
+    /// Dimensions of the last OSR frame, if any.
+    #[must_use]
+    pub fn last_frame_size(&self) -> Option<(u32, u32)> {
+        self.last_frame_rgba.as_ref().map(|(w, h, _)| (*w, *h))
+    }
+
+    /// Encode the last OSR frame as PNG bytes (Chromium). Returns error if no frame yet.
+    pub fn screenshot_png(&self) -> Result<Vec<u8>> {
+        use image::ImageEncoder;
+        use image::codecs::png::PngEncoder;
+
+        let Some((w, h, rgba)) = self.last_frame_rgba.as_ref() else {
+            anyhow::bail!(
+                "no screenshot frame available yet — wait for the page to paint (Chromium OSR)"
+            );
+        };
+        if *w == 0 || *h == 0 || rgba.len() < (*w as usize) * (*h as usize) * 4 {
+            anyhow::bail!("screenshot frame is empty or corrupt");
+        }
+        let mut png = Vec::new();
+        let encoder = PngEncoder::new(&mut png);
+        encoder
+            .write_image(rgba, *w, *h, image::ExtendedColorType::Rgba8)
+            .context("encode screenshot PNG")?;
+        Ok(png)
+    }
+
+    /// Write a PNG screenshot to `path` (parent dirs created). Returns absolute path.
+    #[allow(dead_code)] // available for callers that want a direct path write
+    pub fn screenshot_to_path(&self, path: &std::path::Path) -> Result<std::path::PathBuf> {
+        let png = self.screenshot_png()?;
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("create screenshot dir {}", parent.display()))?;
+        }
+        std::fs::write(path, &png)
+            .with_context(|| format!("write screenshot {}", path.display()))?;
+        Ok(path.to_path_buf())
     }
 
     pub fn has_valid_bounds(&self) -> bool {
@@ -131,17 +253,25 @@ impl BrowserPane {
         self.history_index = self.history.len() - 1;
     }
 
-    /// Normalize user-entered URL: bare hosts get `https://`.
+    /// Normalize user-entered address-bar text.
+    ///
+    /// - Existing schemes (`https:`, `http:`, `about:`, `file:`, …) are kept.
+    /// - Host-like input (`example.com`, `localhost:3000`) gets `https://`.
+    /// - Everything else is treated as a **search query** (Google).
     pub fn normalize_url(url: &str) -> String {
         let trimmed = url.trim();
         if trimmed.is_empty() {
             return DEFAULT_URL.to_string();
         }
         if Self::has_url_scheme(trimmed) {
-            trimmed.to_string()
-        } else {
-            format!("https://{trimmed}")
+            return trimmed.to_string();
         }
+        if Self::looks_like_host(trimmed) {
+            return format!("https://{trimmed}");
+        }
+        // Search — matches the "Search or enter URL" placeholder.
+        let q = urlencoding_lite(trimmed);
+        format!("https://www.google.com/search?q={q}")
     }
 
     fn has_url_scheme(url: &str) -> bool {
@@ -149,18 +279,60 @@ impl BrowserPane {
             return false;
         };
         let scheme = &url[..colon];
-        !scheme.is_empty()
-            && !scheme.contains('/')
-            && scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+        if scheme.is_empty()
+            || scheme.contains('/')
+            || !scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+        {
+            return false;
+        }
+        let rest = &url[colon + 1..];
+        // `https://…` / `http://…` / `file://…`
+        if rest.starts_with("//") {
+            return true;
+        }
+        // Special single-colon schemes — not `host:port` like `localhost:3000`.
+        matches!(
+            scheme.to_ascii_lowercase().as_str(),
+            "about" | "data" | "blob" | "javascript" | "chrome" | "chrome-extension" | "view-source"
+        )
+    }
+
+    /// Host-like: has a dot (domain) or is localhost / IPv4, and no whitespace.
+    fn looks_like_host(s: &str) -> bool {
+        if s.chars().any(char::is_whitespace) {
+            return false;
+        }
+        if s.eq_ignore_ascii_case("localhost") || s.starts_with("localhost:") {
+            return true;
+        }
+        // example.com, example.com/path, 1.2.3.4, foo.bar:8080
+        if s.contains('.') {
+            return true;
+        }
+        false
     }
 
     pub fn navigate(&mut self, url: &str) -> Result<()> {
         let url = Self::normalize_url(url);
         if self.engine.is_ready() {
-            self.engine.navigate(&url).context("engine navigate")?;
+            match self.engine.navigate(&url) {
+                Ok(()) => self.is_loading = true,
+                Err(e) => {
+                    tracing::error!(error = %e, %url, "Browser engine navigate failed");
+                    return Err(e).context("engine navigate");
+                }
+            }
+        } else {
+            // Engine not attached yet — remember URL; attach loads `self.url`.
+            tracing::warn!(%url, "Navigate deferred until engine is ready");
             self.is_loading = true;
         }
         self.url.clone_from(&url);
+        self.url_bar_text = if url == DEFAULT_URL || url.starts_with("data:") {
+            String::new()
+        } else {
+            url.clone()
+        };
         self.push_history(url.clone());
         info!(%url, engine = self.engine.kind().as_str(), "Browser navigated");
         Ok(())
@@ -175,6 +347,7 @@ impl BrowserPane {
                 self.is_loading = true;
             }
             self.url.clone_from(&url);
+            self.url_bar_text = self.url_bar_display();
             debug!(%url, "Browser went back");
         }
         Ok(())
@@ -189,6 +362,7 @@ impl BrowserPane {
                 self.is_loading = true;
             }
             self.url.clone_from(&url);
+            self.url_bar_text = self.url_bar_display();
             debug!(%url, "Browser went forward");
         }
         Ok(())
@@ -312,6 +486,7 @@ impl BrowserPane {
         self.nav_load_rx = None;
         self.osr_texture = None;
         self.osr_texture_size = (0, 0);
+        self.last_frame_rgba = None;
         debug!("Browser engine destroyed");
     }
 
@@ -352,6 +527,7 @@ impl BrowserPane {
             }
             if url != self.url {
                 self.url.clone_from(&url);
+                // Draft bar catches up on next idle frame (while focused, leave alone).
                 self.push_history(url);
             }
         }
@@ -369,6 +545,9 @@ impl BrowserPane {
     }
 
     /// Upload latest OSR frame to an egui texture (Chromium path).
+    ///
+    /// Only runs when CEF marked a new paint dirty — avoids full GPU uploads
+    /// every egui frame while the page is idle.
     pub fn update_osr_texture(&mut self, ctx: &egui::Context) {
         let Some((w, h, rgba)) = self.take_osr_frame() else {
             return;
@@ -377,15 +556,25 @@ impl BrowserPane {
             return;
         }
         let image = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
+        // NEAREST is cheaper and keeps text edges crisp when we scale OSR
+        // paint (capped DPR) into the pane.
+        let opts = egui::TextureOptions {
+            magnification: egui::TextureFilter::Linear,
+            minification: egui::TextureFilter::Linear,
+            ..egui::TextureOptions::default()
+        };
         if let Some(tex) = self.osr_texture.as_mut()
             && self.osr_texture_size == (w, h)
         {
-            tex.set(image, egui::TextureOptions::LINEAR);
+            tex.set(image, opts);
         } else {
-            self.osr_texture =
-                Some(ctx.load_texture("rmux-chromium-osr", image, egui::TextureOptions::LINEAR));
+            self.osr_texture = Some(ctx.load_texture("rmux-chromium-osr", image, opts));
             self.osr_texture_size = (w, h);
         }
+        // Keep a copy for browser.screenshot (upload path consumes the frame).
+        self.last_frame_rgba = Some((w, h, rgba));
+        // Keep the UI loop hot while scrolling / loading so frames drain quickly.
+        ctx.request_repaint();
     }
 
     #[must_use]
@@ -478,7 +667,18 @@ pub(crate) fn render_browser_pane(
 ) {
     let palette = crate::ui::theme::palette();
 
-    let sense = ui.interact(rect, ui.id().with(("browser_pane", pane_id.0)), egui::Sense::click());
+    let toolbar_h = URL_TOOLBAR_HEIGHT;
+    let toolbar_rect =
+        egui::Rect::from_min_size(rect.left_top(), egui::Vec2::new(rect.width(), toolbar_h));
+    let webview_rect = egui::Rect::from_min_size(
+        rect.left_top() + egui::Vec2::new(0.0_f32, toolbar_h),
+        egui::Vec2::new(rect.width(), (rect.height() - toolbar_h).max(0.0_f32)),
+    );
+
+    // Click-to-activate only on the *content* rect — never the URL toolbar, or
+    // the full-pane interact steals focus from the TextEdit.
+    let sense =
+        ui.interact(webview_rect, ui.id().with(("browser_pane", pane_id.0)), egui::Sense::click());
     if sense.clicked() && !is_active {
         *active_pane = pane_id;
     }
@@ -487,14 +687,6 @@ pub(crate) fn render_browser_pane(
         ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::default()));
 
     child_ui.painter().rect_filled(rect, 0.0_f32, palette.app_bg);
-
-    let toolbar_h = URL_TOOLBAR_HEIGHT;
-    let toolbar_rect =
-        egui::Rect::from_min_size(rect.left_top(), egui::Vec2::new(rect.width(), toolbar_h));
-    let webview_rect = egui::Rect::from_min_size(
-        rect.left_top() + egui::Vec2::new(0.0_f32, toolbar_h),
-        egui::Vec2::new(rect.width(), (rect.height() - toolbar_h).max(0.0_f32)),
-    );
 
     child_ui.painter().rect_filled(toolbar_rect, 0.0_f32, palette.chrome_bg);
     child_ui.painter().hline(
@@ -548,13 +740,34 @@ pub(crate) fn render_browser_pane(
                     let _ = browser.reload();
                 }
 
-                let mut url =
-                    if browser.is_new_tab() { String::new() } else { browser.url().to_string() };
                 let url_id = ui.id().with(("browser_url", pane_id.0));
+                // Seed / reclaim focus before drawing so the first typed frame
+                // is not wiped by a fresh empty String (previous bug).
+                if browser.focus_url_bar {
+                    browser.url_bar_text = browser.url_bar_display();
+                    ui.memory_mut(|mem| mem.request_focus(url_id));
+                    browser.focus_url_bar = false;
+                }
+
+                // Capture Enter *before* TextEdit may consume it (egui singleline).
+                let enter_pressed = ui.input(|i| {
+                    i.key_pressed(egui::Key::Enter)
+                        || i.events.iter().any(|e| {
+                            matches!(
+                                e,
+                                egui::Event::Key {
+                                    key: egui::Key::Enter,
+                                    pressed: true,
+                                    ..
+                                }
+                            )
+                        })
+                });
+
                 let field_w = (ui.available_width() - 4.0_f32).max(80.0_f32);
                 let url_response = ui.add_sized(
                     egui::Vec2::new(field_w, 24.0_f32),
-                    egui::TextEdit::singleline(&mut url)
+                    egui::TextEdit::singleline(&mut browser.url_bar_text)
                         .id(url_id)
                         .font(egui::FontId::proportional(13.0_f32))
                         .desired_width(f32::INFINITY)
@@ -562,20 +775,38 @@ pub(crate) fn render_browser_pane(
                         .frame(true),
                 );
 
-                if browser.focus_url_bar {
-                    ui.memory_mut(|mem| mem.request_focus(url_id));
-                    browser.focus_url_bar = false;
+                if url_response.gained_focus() {
+                    // Select-all-like UX: start clean for blank tabs; keep host for pages.
+                    if browser.is_new_tab() {
+                        browser.url_bar_text.clear();
+                    } else if browser.url_bar_text.is_empty() {
+                        browser.url_bar_text = browser.url_bar_display();
+                    }
                 }
 
-                if url_response.has_focus() {
+                let focused = url_response.has_focus();
+                if focused {
                     crate::ui::text_sink::mark_active(ui.ctx());
                 }
 
-                let submit = (url_response.lost_focus()
-                    && ui.input(|i| i.key_pressed(egui::Key::Enter)))
-                    || (url_response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
-                if submit && !url.trim().is_empty() {
-                    let _ = browser.navigate(&url);
+                // Submit *before* idle-sync: on Enter, TextEdit often loses focus
+                // in the same frame, and sync would wipe the draft to empty.
+                let submit = enter_pressed
+                    && (focused || url_response.lost_focus())
+                    && !browser.url_bar_text.trim().is_empty();
+                if submit {
+                    let draft = browser.url_bar_text.clone();
+                    match browser.navigate(&draft) {
+                        Ok(()) => {
+                            info!(url = %browser.url(), "URL bar submitted");
+                            ui.memory_mut(|mem| mem.surrender_focus(url_id));
+                        }
+                        Err(e) => {
+                            tracing::error!(error = %e, draft = %draft, "URL bar navigate failed");
+                        }
+                    }
+                } else if !focused {
+                    browser.sync_url_bar_if_idle(false);
                 }
             });
         },
@@ -631,6 +862,7 @@ mod tests {
     fn normalize_url_prepends_https() {
         assert_eq!(BrowserPane::normalize_url("example.com"), "https://example.com");
         assert_eq!(BrowserPane::normalize_url("  example.com/x  "), "https://example.com/x");
+        assert_eq!(BrowserPane::normalize_url("localhost:3000"), "https://localhost:3000");
     }
 
     #[test]
@@ -643,6 +875,14 @@ mod tests {
     fn normalize_url_empty_is_blank() {
         assert_eq!(BrowserPane::normalize_url(""), "about:blank");
         assert_eq!(BrowserPane::normalize_url("   "), "about:blank");
+    }
+
+    #[test]
+    fn normalize_url_search_query() {
+        let u = BrowserPane::normalize_url("rust ownership");
+        assert!(u.starts_with("https://www.google.com/search?q="), "{u}");
+        assert!(u.contains("rust"), "{u}");
+        assert!(u.contains("ownership") || u.contains('+'), "{u}");
     }
 
     #[test]

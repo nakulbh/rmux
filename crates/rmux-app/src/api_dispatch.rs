@@ -7,8 +7,8 @@
 use rmux_api::JsonRpcError;
 use rmux_api::methods::{
     self, BrowserEvalParams, BrowserFillParams, BrowserNavigateParams, BrowserOpenParams,
-    BrowserPaneParams, BrowserPressParams, BrowserSelectorParams, BrowserSnapshotParams,
-    BrowserTypeParams, NotificationCreateParams, SidebarClearStatusParams,
+    BrowserPaneParams, BrowserPressParams, BrowserScreenshotParams, BrowserSelectorParams,
+    BrowserSnapshotParams, BrowserTypeParams, NotificationCreateParams, SidebarClearStatusParams,
     SidebarSetProgressParams, SidebarSetStatusParams, SurfaceFocusParams, SurfaceSendKeyParams,
     SurfaceSendTextParams, SurfaceSplitParams, WorkspaceCloseParams, WorkspaceCreateParams,
     WorkspaceSelectParams,
@@ -23,8 +23,6 @@ use crate::workspace::splits::{PaneId, SplitDirection};
 
 /// JSON-RPC 2.0 error code for invalid method parameters.
 const INVALID_PARAMS: i32 = -32602;
-/// JSON-RPC 2.0 server error for unimplemented features.
-const NOT_IMPLEMENTED: i32 = -32001;
 
 /// Outcome of dispatching one method.
 ///
@@ -100,10 +98,7 @@ pub fn dispatch(app: &mut RmuxApp, method: &str, params: Value) -> DispatchOutco
         methods::BROWSER_FILL => browser_action(app, params, ActionKind::Fill),
         methods::BROWSER_PRESS => browser_action(app, params, ActionKind::Press),
         methods::BROWSER_SNAPSHOT => browser_snapshot(app, params),
-        methods::BROWSER_SCREENSHOT => Immediate(Err(JsonRpcError::new(
-            NOT_IMPLEMENTED,
-            "browser.screenshot is not yet supported with wry child webviews; use browser.snapshot",
-        ))),
+        methods::BROWSER_SCREENSHOT => Immediate(browser_screenshot(app, params)),
 
         other => Immediate(Err(JsonRpcError::method_not_found(other))),
     }
@@ -417,6 +412,56 @@ fn browser_snapshot(app: &mut RmuxApp, params: Value) -> DispatchOutcome {
         Ok(rx) => PendingJs { result_rx: rx, map: PendingJsMap::Snapshot },
         Err(e) => Immediate(Err(JsonRpcError::internal(e.to_string()))),
     }
+}
+
+fn browser_screenshot(app: &mut RmuxApp, params: Value) -> Result<Value, JsonRpcError> {
+    use base64::Engine;
+
+    let params: BrowserScreenshotParams = parse_params(params)?;
+    let (pane_id, browser) = resolve_browser_with_id(app, params.pane_id)?;
+
+    let png = browser.screenshot_png().map_err(|e| JsonRpcError::internal(e.to_string()))?;
+    let (width, height) = browser.last_frame_size().unwrap_or((0, 0));
+
+    let want_b64 = params.include_base64.unwrap_or(params.path.is_none());
+    let path_out = params.path.as_ref().map(std::path::PathBuf::from).or_else(|| {
+        if want_b64 {
+            None
+        } else {
+            let mut path = std::env::temp_dir();
+            path.push(format!("rmux-screenshot-{}-{}.png", std::process::id(), pane_id.0));
+            Some(path)
+        }
+    });
+
+    let path_str = if let Some(ref path) = path_out {
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                JsonRpcError::internal(format!("create screenshot dir: {e}"))
+            })?;
+        }
+        std::fs::write(path, &png)
+            .map_err(|e| JsonRpcError::internal(format!("write screenshot: {e}")))?;
+        Some(path.display().to_string())
+    } else {
+        None
+    };
+
+    let png_base64 = if want_b64 {
+        Some(base64::engine::general_purpose::STANDARD.encode(&png))
+    } else {
+        None
+    };
+
+    Ok(json!({
+        "path": path_str,
+        "png_base64": png_base64,
+        "width": width,
+        "height": height,
+        "pane_id": pane_id.0,
+    }))
 }
 
 fn browser_action(app: &mut RmuxApp, params: Value, kind: ActionKind) -> DispatchOutcome {
