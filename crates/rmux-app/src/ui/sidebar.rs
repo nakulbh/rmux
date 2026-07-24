@@ -766,11 +766,7 @@ mod tests {
             Some(std::path::Path::new("/tmp/a")),
             None,
             None,
-            &[
-                "main · ~/a".to_string(),
-                "feat/x · ~/b".to_string(),
-                "feat/y · ~/c".to_string(),
-            ],
+            &["main · ~/a".to_string(), "feat/x · ~/b".to_string(), "feat/y · ~/c".to_string()],
         );
         assert!(
             estimate_card_height(&multi_paths) > estimate_card_height(&with_notif),
