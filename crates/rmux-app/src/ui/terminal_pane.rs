@@ -871,6 +871,14 @@ impl TerminalPane {
     ///
     /// The cell grid is recalculated on the next render frame when the
     /// available pixel area is known.
+    /// Set terminal background opacity for workspace wallpaper mode.
+    ///
+    /// `1.0` = fully opaque. Values below 1.0 let the shared wallpaper show
+    /// through default-background cells in every pane (including agent TUIs).
+    pub fn set_bg_opacity(&mut self, opacity: f32) {
+        self.renderer.set_bg_opacity(opacity);
+    }
+
     pub fn set_font_size(&mut self, font_size: f32) {
         self.renderer.set_font_size(font_size);
     }
