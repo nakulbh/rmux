@@ -30,6 +30,17 @@ enum TabAction {
     New,
 }
 
+/// Optional workspace wallpaper painted once behind all panes.
+///
+/// When `Some`, the image is drawn first (cover-fit) so every terminal
+/// shares a continuous background — including agent TUIs.
+pub struct WorkspaceBackground<'a> {
+    /// Shared wallpaper texture manager.
+    pub wallpaper: &'a crate::ui::Wallpaper,
+    /// When true, skip the solid `app_bg` fill so the image is visible.
+    pub active: bool,
+}
+
 /// Render the pane tree into the given `egui::Ui`, optionally zoomed to a
 /// single pane.
 ///
@@ -49,6 +60,7 @@ pub fn render_pane_tree(
     ui: &mut egui::Ui,
     manager: &mut WorkspaceManager,
     zoomed_pane: Option<PaneId>,
+    background: Option<WorkspaceBackground<'_>>,
 ) -> bool {
     let available = ui.available_rect_before_wrap();
 
@@ -57,7 +69,16 @@ pub fn render_pane_tree(
     }
 
     let palette = theme::palette();
-    ui.painter().rect_filled(available, 0.0_f32, palette.app_bg);
+    let wallpaper_active = background.as_ref().is_some_and(|b| b.active && b.wallpaper.is_ready());
+    if wallpaper_active {
+        if let Some(bg) = background.as_ref() {
+            // Screen-aligned so the image matches the glass sidebar (no
+            // free-floating layer that can cover top/status chrome).
+            bg.wallpaper.paint_screen_aligned(ui.painter(), available, ui.ctx().screen_rect());
+        }
+    } else {
+        ui.painter().rect_filled(available, 0.0_f32, palette.app_bg);
+    }
 
     let mut actions: Vec<TabAction> = Vec::new();
 

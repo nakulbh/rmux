@@ -23,6 +23,16 @@ fn p() -> crate::ui::theme::Palette {
     crate::ui::theme::palette()
 }
 
+/// Sidebar panel fill with optional transparency over the workspace wallpaper.
+fn sidebar_panel_fill(base: egui::Color32, opacity: f32) -> egui::Color32 {
+    let o = opacity.clamp(0.0, 1.0);
+    if o >= 0.999 {
+        return base;
+    }
+    let a = (o * 255.0).round() as u8;
+    egui::Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), a)
+}
+
 /// Card corner radius.
 fn card_radius() -> u8 {
     crate::ui::theme::radius_sm()
@@ -101,6 +111,15 @@ impl SidebarView {
         self.right_sidebar_visible
     }
 
+    /// Render the left workspace sidebar.
+    ///
+    /// `panel_opacity` controls the glass fill over the workspace wallpaper
+    /// (`1.0` = solid sidebar, lower = translucent like Ghostty). Cards keep
+    /// their own fills for readability.
+    ///
+    /// When translucent, `wallpaper` is painted screen-aligned under a scrim
+    /// so the image matches the terminal area without covering top chrome.
+    #[allow(clippy::too_many_arguments)]
     pub fn show(
         &mut self,
         ctx: &egui::Context,
@@ -108,6 +127,8 @@ impl SidebarView {
         notifications: &NotificationManager,
         help: &mut HelpMenu,
         help_button_rect: &mut Option<egui::Rect>,
+        panel_opacity: f32,
+        wallpaper: Option<&crate::ui::Wallpaper>,
     ) -> Option<SidebarAction> {
         if !self.visible {
             return None;
@@ -115,14 +136,34 @@ impl SidebarView {
 
         let show_hints = crate::ui::shortcut_hints::primary_mod_held(ctx);
         let mut action = None;
+        let glass = panel_opacity < 0.999 && wallpaper.is_some_and(|w| w.is_ready());
+        // Solid sidebar: opaque frame. Glass: transparent frame; we paint
+        // wallpaper + scrim inside so chrome never gets covered.
+        let frame_fill = if glass {
+            egui::Color32::TRANSPARENT
+        } else {
+            sidebar_panel_fill(p().sidebar_bg, panel_opacity)
+        };
 
         egui::SidePanel::left("rmux_sidebar")
-            .frame(egui::Frame::default().fill(p().sidebar_bg).inner_margin(egui::Margin::same(8)))
+            .frame(egui::Frame::default().fill(frame_fill).inner_margin(egui::Margin::same(8)))
             .min_width(crate::ui::theme::metrics::SIDEBAR_MIN_WIDTH)
             .max_width(crate::ui::theme::metrics::SIDEBAR_MAX_WIDTH)
             .default_width(crate::ui::theme::metrics::SIDEBAR_DEFAULT_WIDTH)
             .resizable(true)
             .show(ctx, |ui| {
+                if glass {
+                    // Include panel margins so the glass edge-to-edge matches.
+                    let clip = ui.clip_rect();
+                    if let Some(wall) = wallpaper {
+                        wall.paint_screen_aligned(ui.painter(), clip, ctx.screen_rect());
+                    }
+                    ui.painter().rect_filled(
+                        clip,
+                        0.0_f32,
+                        sidebar_panel_fill(p().sidebar_bg, panel_opacity),
+                    );
+                }
                 action = self.render_sidebar(
                     ui,
                     manager,

@@ -2,8 +2,10 @@ use crate::state::GridSnapshot;
 use alacritty_terminal::vte::ansi::CursorShape;
 use egui::{Color32, FontFamily, FontId, Pos2, Rect, Stroke, Ui, Vec2};
 
-const CURSOR_BLOCK_ALPHA: u8 = 128;
-const CURSOR_LINE_ALPHA: u8 = 200;
+// Opaque enough to read on dark themes; old 128 made the block nearly
+// invisible over black cells, especially with a light theme cursor color.
+const CURSOR_BLOCK_ALPHA: u8 = 200;
+const CURSOR_LINE_ALPHA: u8 = 255;
 
 /// Extra vertical padding factor applied on top of measured glyph height so
 /// descenders ("gypq") and combining marks don't clip, while still keeping
@@ -472,16 +474,64 @@ fn paint_special_shape(painter: &egui::Painter, cell: Rect, c: char, fg: Color32
     true
 }
 
+/// Apply alpha to a color for wallpaper transparency.
+///
+/// Uses unmultiplied RGBA so egui composites over the workspace wallpaper.
+fn with_alpha(color: Color32, opacity: f32) -> Color32 {
+    if opacity >= 0.999 {
+        return color;
+    }
+    let a = (opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+    Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), a)
+}
+
+/// Whether two colors share the same RGB (ignoring alpha).
+fn same_rgb(a: Color32, b: Color32) -> bool {
+    a.r() == b.r() && a.g() == b.g() && a.b() == b.b()
+}
+
+/// Resolve paint color for a cell background when a wallpaper is active.
+///
+/// Default terminal background cells use full `opacity` so the image shows
+/// through (shell, empty space, agents that use the default bg). Custom cell
+/// colors (TUI panels, selection) stay more solid so UI chrome remains
+/// readable while still blending slightly with the wallpaper.
+fn cell_bg_paint(cell_bg: Color32, terminal_bg: Color32, opacity: f32) -> Color32 {
+    if opacity >= 0.999 {
+        return cell_bg;
+    }
+    if same_rgb(cell_bg, terminal_bg) {
+        with_alpha(cell_bg, opacity)
+    } else {
+        // Keep custom fills more opaque than default empty cells.
+        let custom = (opacity + (1.0 - opacity) * 0.55).clamp(0.0, 1.0);
+        with_alpha(cell_bg, custom)
+    }
+}
+
 pub struct TerminalRenderer {
     pub font_size: f32,
     cell_size: Vec2,
     cell_size_measured: bool,
+    /// Opacity of default terminal background fills over a workspace wallpaper.
+    /// `1.0` = fully opaque (classic solid terminal). Shared across all panes.
+    bg_opacity: f32,
 }
 
 impl TerminalRenderer {
     pub fn new(font_size: f32) -> Self {
         let cell_size = Self::estimate_cell_size(font_size);
-        Self { font_size, cell_size, cell_size_measured: false }
+        Self { font_size, cell_size, cell_size_measured: false, bg_opacity: 1.0 }
+    }
+
+    /// Set background opacity for transparent wallpaper mode (`0.0`–`1.0`).
+    pub fn set_bg_opacity(&mut self, opacity: f32) {
+        self.bg_opacity = opacity.clamp(0.0, 1.0);
+    }
+
+    /// Current background opacity.
+    pub fn bg_opacity(&self) -> f32 {
+        self.bg_opacity
     }
 
     /// Measure cell size from the actual loaded font on the first call.
@@ -513,6 +563,8 @@ impl TerminalRenderer {
         let painter = ui.painter();
         let cell_w = self.cell_size.x;
         let cell_h = self.cell_size.y;
+        let opacity = self.bg_opacity;
+        let unused_fill = with_alpha(snapshot.terminal_bg, opacity);
 
         // Fill unused rows below the grid with terminal background
         let used_height = snapshot.rows as f32 * cell_h;
@@ -521,7 +573,7 @@ impl TerminalRenderer {
                 Pos2::new(rect.left(), rect.top() + used_height),
                 Pos2::new(rect.right(), rect.bottom()),
             );
-            painter.rect_filled(fill, 0.0, snapshot.terminal_bg);
+            painter.rect_filled(fill, 0.0, unused_fill);
         }
         // Fill unused columns to the right
         let used_width = snapshot.cols as f32 * cell_w;
@@ -530,7 +582,7 @@ impl TerminalRenderer {
                 Pos2::new(rect.left() + used_width, rect.top()),
                 Pos2::new(rect.right(), rect.top() + used_height.min(rect.height())),
             );
-            painter.rect_filled(fill, 0.0, snapshot.terminal_bg);
+            painter.rect_filled(fill, 0.0, unused_fill);
         }
 
         let visible_cols = ((rect.width() / cell_w).floor() as u16).min(snapshot.cols);
@@ -557,7 +609,11 @@ impl TerminalRenderer {
                     Vec2::new(cell_w * span as f32, cell_h),
                 );
 
-                painter.rect_filled(cell_rect, 0.0, cell.bg);
+                let paint_bg = cell_bg_paint(cell.bg, snapshot.terminal_bg, opacity);
+                // Skip fully transparent default fills so the workspace wallpaper shows.
+                if paint_bg.a() > 0 {
+                    painter.rect_filled(cell_rect, 0.0, paint_bg);
+                }
 
                 if cell.c != ' ' {
                     if is_special_shape(cell.c) {
@@ -690,6 +746,30 @@ mod tests {
     fn test_new_renderer() {
         let renderer = TerminalRenderer::new(12.0);
         assert_eq!(renderer.font_size, 12.0);
+        assert!((renderer.bg_opacity() - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_bg_opacity_clamp() {
+        let mut renderer = TerminalRenderer::new(14.0);
+        renderer.set_bg_opacity(1.5);
+        assert!((renderer.bg_opacity() - 1.0).abs() < f32::EPSILON);
+        renderer.set_bg_opacity(-0.1);
+        assert!((renderer.bg_opacity() - 0.0).abs() < f32::EPSILON);
+        renderer.set_bg_opacity(0.72);
+        assert!((renderer.bg_opacity() - 0.72).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_cell_bg_paint_default_vs_custom() {
+        let terminal_bg = Color32::from_rgb(12, 12, 14);
+        let custom = Color32::from_rgb(40, 40, 50);
+        let default_paint = cell_bg_paint(terminal_bg, terminal_bg, 0.5);
+        let custom_paint = cell_bg_paint(custom, terminal_bg, 0.5);
+        assert_eq!(default_paint.a(), 128); // 0.5 * 255
+        assert!(custom_paint.a() > default_paint.a());
+        let opaque = cell_bg_paint(terminal_bg, terminal_bg, 1.0);
+        assert_eq!(opaque.a(), 255);
     }
 
     #[test]

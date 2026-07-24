@@ -123,6 +123,9 @@ impl ReleaseClient for GitHubClient {
     fn main_commit_sha(&self) -> Result<String, String> {
         let url = format!("https://api.github.com/repos/{}/{}/commits/main", self.owner, self.repo);
         let body = http_get_json(&url)?;
+        if body.get("message").and_then(|m| m.as_str()) == Some("Not Found") {
+            return Err("main branch not found on GitHub".into());
+        }
         let sha = body
             .get("sha")
             .and_then(|v| v.as_str())
@@ -143,17 +146,32 @@ fn http_get_json(url: &str) -> Result<serde_json::Value, String> {
         ))
         .build();
 
-    let response = agent
+    // ureq 2.x returns `Err(Error::Status(code, response))` for non-2xx HTTP
+    // statuses (it does not yield Ok with status 404). That previously made a
+    // missing latest release look like a hard failure instead of "no releases".
+    let response = match agent
         .get(url)
         .set("Accept", "application/vnd.github+json")
         .set("X-GitHub-Api-Version", "2022-11-28")
         .call()
-        .map_err(|e| format!("request failed: {e}"))?;
+    {
+        Ok(resp) => resp,
+        Err(ureq::Error::Status(404, _resp)) => {
+            // Signal "not found" to callers (latest_release → Ok(None)).
+            return Ok(serde_json::json!({ "message": "Not Found" }));
+        }
+        Err(ureq::Error::Status(code, resp)) => {
+            let body: serde_json::Value = resp.into_json().unwrap_or(serde_json::Value::Null);
+            let msg = body.get("message").and_then(|m| m.as_str()).unwrap_or("unknown error");
+            return Err(format!("GitHub API HTTP {code}: {msg}"));
+        }
+        Err(e) => return Err(format!("request failed: {e}")),
+    };
 
     let status = response.status();
     let body: serde_json::Value = response.into_json().map_err(|e| format!("invalid JSON: {e}"))?;
 
-    // Treat HTTP 404 as empty release set (handled by caller for releases).
+    // Defensive: if ureq ever returns Ok for non-2xx, keep prior handling.
     if status == 404 {
         return Ok(serde_json::json!({ "message": "Not Found" }));
     }
@@ -592,6 +610,49 @@ mod tests {
         };
         let out = check_for_updates_with(client);
         assert_eq!(out.status, UpdateStatus::UpToDate);
+    }
+
+    /// Regression for #24: a missing latest release must be `Ok(None)`, not an
+    /// HTTP error that surfaces as "Update failed · … status code 404".
+    #[test]
+    fn no_releases_is_not_an_update_failure() {
+        let local = local_git_sha();
+        if local.is_empty() {
+            return;
+        }
+        // Simulates GitHubClient::latest_release after a proper 404 handle.
+        let client = MockClient {
+            release: Mutex::new(Ok(None)),
+            main_sha: Mutex::new(Ok(local.to_string())),
+        };
+        let out = check_for_updates_with(client);
+        assert!(
+            !matches!(out.status, UpdateStatus::Error(_)),
+            "no published releases must not show Update failed: {:?}",
+            out.status
+        );
+        assert_eq!(out.status, UpdateStatus::UpToDate);
+    }
+
+    #[test]
+    fn release_api_error_falls_back_to_main_commit() {
+        let local = local_git_sha();
+        if local.is_empty() {
+            return;
+        }
+        let client = MockClient {
+            release: Mutex::new(Err(
+                "request failed: https://api.github.com/.../releases/latest: status code 404"
+                    .into(),
+            )),
+            main_sha: Mutex::new(Ok(local.to_string())),
+        };
+        let out = check_for_updates_with(client);
+        assert_eq!(
+            out.status,
+            UpdateStatus::UpToDate,
+            "main-commit fallback should succeed when release probe fails"
+        );
     }
 
     #[test]
