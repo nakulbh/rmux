@@ -633,23 +633,39 @@ impl TerminalPane {
     /// 2. Alt screen + alternate-scroll → CSI A/B to the app (agents, less, vim)
     /// 3. Otherwise → scroll the scrollback viewport
     fn handle_scroll_wheel(&mut self, ui: &egui::Ui, rect: egui::Rect) {
-        let scroll_delta = ui.input(|i| i.smooth_scroll_delta);
-        if scroll_delta.y == 0.0_f32 {
+        // Prefer the smoothed delta for trackpad inertia; fall back to raw so a
+        // single mouse-wheel notch still lands even if smoothing is empty.
+        let (smooth, raw) = ui.input(|i| (i.smooth_scroll_delta, i.raw_scroll_delta));
+        let delta_y = if smooth.y != 0.0_f32 { smooth.y } else { raw.y };
+        if delta_y == 0.0_f32 {
             return;
         }
 
+        // egui: positive Y = content moves *down* (natural swipe down) → reveal
+        // content that was above = older scrollback. alacritty `Scroll::Delta`
+        // positive increases `display_offset` = same direction. Do **not**
+        // negate (that inverted the wheel).
+        //
+        // Map ~½ cell of movement to one line so trackpads feel fluid instead
+        // of needing a full cell-height swipe per line.
         let cell_h = self.renderer.cell_size().y.max(1.0_f32);
-        // egui: positive y = scroll content down = finger up = look at higher
-        // history. alacritty Scroll::Delta positive = increase display_offset
-        // = scroll up into history. So invert: lines = -delta.y / cell_h.
-        self.scroll_accum += -scroll_delta.y / cell_h;
+        let pixels_per_line = (cell_h * 0.45_f32).max(4.0_f32);
+        let step = delta_y / pixels_per_line;
+        // Drop leftover fraction when the user reverses direction so the first
+        // reverse tick isn't eaten by residual accumulation.
+        if self.scroll_accum != 0.0_f32 && self.scroll_accum.signum() != step.signum() {
+            self.scroll_accum = 0.0_f32;
+        }
+        self.scroll_accum += step;
 
-        // Emit whole lines only; keep fractional remainder for next event.
-        let lines = self.scroll_accum.trunc() as i32;
+        // Whole lines only; keep fractional remainder for the next event.
+        let mut lines = self.scroll_accum.trunc() as i32;
         if lines == 0 {
             return;
         }
         self.scroll_accum -= lines as f32;
+        // Cap a single frame so a huge wheel spike doesn't jump the whole buffer.
+        lines = lines.clamp(-32, 32);
 
         if self.state.mouse_reporting() {
             // Report wheel at the pointer cell (or top-left if unknown).
