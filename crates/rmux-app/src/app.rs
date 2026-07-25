@@ -150,6 +150,7 @@ impl RmuxApp {
             rows: INITIAL_ROWS,
             font_size,
             theme: rmux_terminal::NamedTheme::default(),
+            auto_resume_agents: config.session.auto_resume_agents,
         };
 
         let mut pending_window_size = None;
@@ -325,6 +326,7 @@ impl RmuxApp {
             rows: INITIAL_ROWS,
             font_size: self.font_size,
             theme: self.terminal_theme,
+            auto_resume_agents: self.config.session.auto_resume_agents,
         };
         self.is_applying_session_restore = true;
         match session::restore_session(&snap, &opts) {

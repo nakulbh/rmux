@@ -5,6 +5,11 @@
 //! layout. Live process memory is not checkpointed; shells spawn fresh in
 //! the saved cwd.
 //!
+//! When a terminal is running a known AI agent (Claude Code, Codex, OpenCode,
+//! …), the surface snapshot also stores a **resume command**. On restore that
+//! command is typed into the new shell so the agent session reappears
+//! (cmux agent resume).
+//!
 //! # On-disk layout
 //!
 //! - Primary: `{state}/rmux/session.json`
@@ -176,6 +181,14 @@ pub struct SurfaceSnapshot {
     /// Phase B: optional truncated scrollback text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scrollback: Option<String>,
+    /// Shell command to re-launch a running AI agent after restore
+    /// (e.g. `claude --resume <id>`). Set when the foreground process is a
+    /// known agent. Empty / absent = plain shell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_command: Option<String>,
+    /// Agent kind label for diagnostics (`claude`, `codex`, …).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_kind: Option<String>,
 }
 
 impl SessionSnapshot {
@@ -426,13 +439,7 @@ fn capture_node(node: &PaneNode) -> NodeSnapshot {
                 }
             } else if let Some(term) = terminal.as_ref() {
                 // Legacy single-terminal leaf.
-                surface_snaps.push(SurfaceSnapshot {
-                    id: 1,
-                    title: "Terminal 1".to_owned(),
-                    title_is_custom: false,
-                    cwd: term.working_directory().map(|p| p.to_string_lossy().into_owned()),
-                    scrollback: None,
-                });
+                surface_snaps.push(capture_terminal_surface(1, "Terminal 1", false, term));
             } else {
                 // Empty placeholder leaf — restore will spawn a default shell.
                 surface_snaps.push(SurfaceSnapshot {
@@ -441,6 +448,8 @@ fn capture_node(node: &PaneNode) -> NodeSnapshot {
                     title_is_custom: false,
                     cwd: None,
                     scrollback: None,
+                    resume_command: None,
+                    agent_kind: None,
                 });
             }
             NodeSnapshot::Leaf {
@@ -468,12 +477,30 @@ fn capture_node(node: &PaneNode) -> NodeSnapshot {
 
 fn capture_surface(s: &Surface) -> SurfaceSnapshot {
     let title_is_custom = !is_default_surface_title(&s.title);
+    capture_terminal_surface(s.id.0, &s.title, title_is_custom, &s.terminal)
+}
+
+fn capture_terminal_surface(
+    id: u64,
+    title: &str,
+    title_is_custom: bool,
+    term: &TerminalPane,
+) -> SurfaceSnapshot {
+    let (agent_kind, resume_command) = match term.foreground_process_args() {
+        Some(args) => match super::agent_resume::resume_from_process_args(&args) {
+            Some(r) => (Some(r.kind.to_owned()), Some(r.command)),
+            None => (None, None),
+        },
+        None => (None, None),
+    };
     SurfaceSnapshot {
-        id: s.id.0,
-        title: s.title.clone(),
+        id,
+        title: title.to_owned(),
         title_is_custom,
-        cwd: s.terminal.working_directory().map(|p| p.to_string_lossy().into_owned()),
+        cwd: term.working_directory().map(|p| p.to_string_lossy().into_owned()),
         scrollback: None,
+        resume_command,
+        agent_kind,
     }
 }
 
@@ -492,6 +519,9 @@ pub struct RestoreOptions {
     pub rows: u16,
     pub font_size: f32,
     pub theme: rmux_terminal::NamedTheme,
+    /// When true, type saved agent resume commands into restored shells
+    /// (cmux "Resume Agent Sessions on Reopen").
+    pub auto_resume_agents: bool,
 }
 
 impl Default for RestoreOptions {
@@ -501,6 +531,7 @@ impl Default for RestoreOptions {
             rows: 24,
             font_size: crate::ui::DEFAULT_FONT_SIZE,
             theme: rmux_terminal::NamedTheme::default(),
+            auto_resume_agents: true,
         }
     }
 }
@@ -623,7 +654,17 @@ fn restore_node(node: &NodeSnapshot, opts: &RestoreOptions) -> Result<PaneNode, 
                 for s in surfaces {
                     let cwd = s.cwd.as_ref().map(PathBuf::from);
                     let cwd_ref = cwd.as_deref().filter(|p| p.is_dir());
-                    let term = spawn_terminal(cwd_ref, opts)?;
+                    let mut term = spawn_terminal(cwd_ref, opts)?;
+                    if opts.auto_resume_agents
+                        && let Some(cmd) = s.resume_command.as_deref().filter(|c| !c.is_empty())
+                    {
+                        term.queue_startup_command(cmd);
+                        tracing::info!(
+                            agent = s.agent_kind.as_deref().unwrap_or("?"),
+                            command = %cmd,
+                            "Queued agent resume command for restored surface"
+                        );
+                    }
                     let title = if s.title.is_empty() {
                         format!("Terminal {}", s.id)
                     } else {
@@ -727,6 +768,8 @@ mod tests {
                         title_is_custom: false,
                         cwd: Some("/tmp".into()),
                         scrollback: None,
+                        resume_command: None,
+                        agent_kind: None,
                     }],
                 },
                 status: None,
@@ -781,6 +824,8 @@ mod tests {
                                 title_is_custom: true,
                                 cwd: None,
                                 scrollback: None,
+                                resume_command: None,
+                                agent_kind: None,
                             }],
                         },
                         NodeSnapshot::Browser {
@@ -835,6 +880,8 @@ mod tests {
                         title_is_custom: false,
                         cwd: None,
                         scrollback: None,
+                        resume_command: Some("claude --resume test-sid".into()),
+                        agent_kind: Some("claude".into()),
                     }],
                 },
                 status: None,
@@ -929,6 +976,31 @@ mod tests {
         assert!(j.contains("vertical"));
         let back: NodeSnapshot = serde_json::from_str(&j).unwrap();
         assert_eq!(back, n);
+    }
+
+    #[test]
+    fn test_surface_snapshot_resume_command_roundtrip() {
+        let snap = SurfaceSnapshot {
+            id: 2,
+            title: "agent".into(),
+            title_is_custom: true,
+            cwd: Some("/tmp/proj".into()),
+            scrollback: None,
+            resume_command: Some("claude --resume abc".into()),
+            agent_kind: Some("claude".into()),
+        };
+        let j = serde_json::to_string(&snap).unwrap();
+        assert!(j.contains("resume_command"));
+        assert!(j.contains("claude --resume abc"));
+        let back: SurfaceSnapshot = serde_json::from_str(&j).unwrap();
+        assert_eq!(back.resume_command.as_deref(), Some("claude --resume abc"));
+        assert_eq!(back.agent_kind.as_deref(), Some("claude"));
+
+        // Older snapshots without the field still deserialize.
+        let old = r#"{"id":1,"title":"t","title_is_custom":false,"cwd":null}"#;
+        let parsed: SurfaceSnapshot = serde_json::from_str(old).unwrap();
+        assert!(parsed.resume_command.is_none());
+        assert!(parsed.agent_kind.is_none());
     }
 
     #[test]

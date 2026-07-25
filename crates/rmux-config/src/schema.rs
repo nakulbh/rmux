@@ -39,7 +39,10 @@ pub struct SessionConfig {
     /// Include terminal scrollback on quit save (Phase B; currently unused).
     #[serde(default)]
     pub include_scrollback: bool,
-    /// Auto-run agent resume commands on restore (Phase C; currently unused).
+    /// Auto-run agent resume commands on restore (cmux "Resume Agent Sessions").
+    ///
+    /// When true, terminals that were running Claude Code / Codex / OpenCode /
+    /// etc. re-launch the agent's native resume command after layout restore.
     #[serde(default = "default_true")]
     pub auto_resume_agents: bool,
 }

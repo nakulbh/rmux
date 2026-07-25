@@ -109,6 +109,20 @@ pub struct TerminalPane {
     /// Pending scroll in **pixels** (Ghostty/cmux `pending_scroll_y`).
     /// Accumulates until at least one cell height, then converts to lines.
     scroll_accum_px: f32,
+
+    /// Command to type after the shell becomes ready (agent resume on session
+    /// restore). Cleared once sent.
+    pending_startup: Option<PendingStartup>,
+}
+
+/// Deferred shell input for session-restore agent resume.
+struct PendingStartup {
+    /// Full command line without trailing newline.
+    command: String,
+    /// Frames waited since queue (shell may need a moment to print PS1).
+    frames: u16,
+    /// True once any PTY output has been observed.
+    saw_output: bool,
 }
 
 impl TerminalPane {
@@ -198,7 +212,26 @@ impl TerminalPane {
             dimension_overlay_timer: 0.0_f64,
             paste_counter: 0,
             scroll_accum_px: 0.0_f32,
+            pending_startup: None,
         })
+    }
+
+    /// Queue a shell command to run once the PTY is ready (session agent resume).
+    ///
+    /// The command is typed + Enter after the shell prints some output, or
+    /// after a short frame budget — matching cmux's "initial input" resume.
+    pub fn queue_startup_command(&mut self, command: &str) {
+        let cmd = command.trim();
+        if cmd.is_empty() {
+            return;
+        }
+        self.pending_startup =
+            Some(PendingStartup { command: cmd.to_owned(), frames: 0, saw_output: false });
+    }
+
+    /// Full untruncated foreground process args (for agent resume capture).
+    pub fn foreground_process_args(&self) -> Option<String> {
+        self.backend.foreground_process_args()
     }
 
     /// Process any new PTY output from the background reader thread.
@@ -206,13 +239,19 @@ impl TerminalPane {
     /// Drains the channel and feeds bytes into the terminal state.
     /// Should be called once per frame before rendering.
     pub fn process_pty_output(&mut self) {
+        let mut got_output = false;
         while let Ok(data) = self.pty_rx.try_recv() {
             // OSC notification scanning is intentionally disabled: OSC 9 is also
             // used by iTerm2 progress bars (`OSC 9;4;…`), which produced junk
             // entries like "4;0;" in the notification panel. Re-enable only with
             // a tighter parser that rejects progress / non-notify sequences.
             self.state.feed_bytes(&data);
+            got_output = true;
         }
+        if got_output && let Some(pending) = self.pending_startup.as_mut() {
+            pending.saw_output = true;
+        }
+        self.try_flush_startup_command();
 
         // Check if the PTY process has exited; record a clean banner once.
         if !self.exited
@@ -240,6 +279,33 @@ impl TerminalPane {
         } else if self.last_cwd.is_none() {
             // First chance: populate immediately so new tabs aren't empty.
             self.refresh_title_sources();
+        }
+    }
+
+    /// Send a queued startup command once the shell looks ready.
+    ///
+    /// Waits until PTY output has been seen (prompt printed) **or** ~20 frames
+    /// (~330 ms at 60 fps) so slow shells still get the resume command.
+    fn try_flush_startup_command(&mut self) {
+        let Some(pending) = self.pending_startup.as_mut() else {
+            return;
+        };
+        pending.frames = pending.frames.saturating_add(1);
+        // Ready: saw shell output and waited a couple frames for PS1, or timeout.
+        let ready = (pending.saw_output && pending.frames >= 8) || pending.frames >= 45;
+        if !ready {
+            return;
+        }
+        let Some(pending) = self.pending_startup.take() else {
+            return;
+        };
+        let command = pending.command;
+        let mut payload = command.clone();
+        payload.push('\n');
+        if let Err(err) = self.backend.write(payload.as_bytes()) {
+            tracing::warn!(error = %err, "failed to write agent resume command to PTY");
+        } else {
+            tracing::info!(%command, "Sent agent resume command to restored terminal");
         }
     }
 

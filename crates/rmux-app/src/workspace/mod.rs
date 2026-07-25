@@ -9,6 +9,7 @@
 //! - `model` — `Workspace` with pane tree and metadata
 //! - `mod` (this file) — `WorkspaceManager` for multi-workspace management
 
+pub mod agent_resume;
 pub mod model;
 pub mod session;
 pub mod sidebar_snapshot;
