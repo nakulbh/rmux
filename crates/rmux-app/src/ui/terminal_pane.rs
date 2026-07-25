@@ -113,6 +113,15 @@ pub struct TerminalPane {
     /// Command to type after the shell becomes ready (agent resume on session
     /// restore). Cleared once sent.
     pending_startup: Option<PendingStartup>,
+
+    /// Layout-derived cols/rows (may differ from live PTY while resize is
+    /// coalesced — Warp paints every frame, reflows on a throttle).
+    desired_cols: u16,
+    desired_rows: u16,
+    /// `ui.input(|i| i.time)` when desired size last changed.
+    desired_changed_at: f64,
+    /// When the last PTY/grid resize was applied.
+    last_resize_at: f64,
 }
 
 /// Deferred shell input for session-restore agent resume.
@@ -213,7 +222,38 @@ impl TerminalPane {
             paste_counter: 0,
             scroll_accum_px: 0.0_f32,
             pending_startup: None,
+            desired_cols: cols,
+            desired_rows: rows,
+            desired_changed_at: 0.0,
+            last_resize_at: 0.0,
         })
+    }
+
+    /// Coalesce PTY/grid resizes so split drag stays smooth.
+    ///
+    /// While the desired size keeps changing, apply at most every
+    /// [`RESIZE_THROTTLE_SECS`]. Once it settles for [`RESIZE_SETTLE_SECS`],
+    /// apply immediately so the shell catches the final geometry.
+    fn maybe_apply_resize(&mut self, now: f64) {
+        const RESIZE_THROTTLE_SECS: f64 = 0.05;
+        const RESIZE_SETTLE_SECS: f64 = 0.04;
+
+        if self.desired_cols == self.cols && self.desired_rows == self.rows {
+            return;
+        }
+
+        let since_apply = now - self.last_resize_at;
+        let settled = (now - self.desired_changed_at) >= RESIZE_SETTLE_SECS;
+        let throttled = since_apply >= RESIZE_THROTTLE_SECS;
+        if !(self.last_resize_at == 0.0 || settled || throttled) {
+            return;
+        }
+
+        self.cols = self.desired_cols;
+        self.rows = self.desired_rows;
+        self.state.resize(self.cols, self.rows);
+        self.backend.resize(self.cols, self.rows).ok();
+        self.last_resize_at = now;
     }
 
     /// Queue a shell command to run once the PTY is ready (session agent resume).
@@ -413,22 +453,21 @@ impl TerminalPane {
             if self.find_visible { egui::vec2(0.0_f32, FIND_BAR_HEIGHT) } else { egui::Vec2::ZERO };
         let terminal_available = available - find_bar_space;
 
-        // Calculate terminal dimensions
+        // Layout target size — paint every frame; coalesce expensive reflow.
         let (new_cols, new_rows) = self
             .renderer
             .cols_rows_for_rect(egui::Rect::from_min_size(egui::Pos2::ZERO, terminal_available));
-
-        // Resize terminal if dimensions changed
-        if new_cols != self.cols || new_rows != self.rows {
-            self.cols = new_cols;
-            self.rows = new_rows;
-            self.state.resize(new_cols, new_rows);
-            self.backend.resize(new_cols, new_rows).ok();
+        let now = ui.input(|i| i.time);
+        if new_cols != self.desired_cols || new_rows != self.desired_rows {
+            self.desired_cols = new_cols;
+            self.desired_rows = new_rows;
+            self.desired_changed_at = now;
             if self.has_focus {
                 self.dimension_overlay_visible = true;
-                self.dimension_overlay_timer = ui.input(|i| i.time);
+                self.dimension_overlay_timer = now;
             }
         }
+        self.maybe_apply_resize(now);
 
         // Allocate space for the terminal
         let (rect, term_response) =
@@ -527,7 +566,7 @@ impl TerminalPane {
             if now - self.dimension_overlay_timer < 2.0_f64 {
                 let palette = theme::palette();
                 let painter = ui.painter();
-                let text = format!("{}\u{00d7}{}", self.cols, self.rows);
+                let text = format!("{}\u{00d7}{}", self.desired_cols, self.desired_rows);
                 let font = egui::FontId::monospace(10.0_f32);
 
                 let galley =
