@@ -646,10 +646,10 @@ impl TerminalPane {
         // positive increases `display_offset` = same direction. Do **not**
         // negate (that inverted the wheel).
         //
-        // Map ~½ cell of movement to one line so trackpads feel fluid instead
-        // of needing a full cell-height swipe per line.
+        // One terminal line per full cell height of delta — matches native
+        // terminal density without the earlier ~2× speed from 0.45× cell_h.
         let cell_h = self.renderer.cell_size().y.max(1.0_f32);
-        let pixels_per_line = (cell_h * 0.45_f32).max(4.0_f32);
+        let pixels_per_line = cell_h;
         let step = delta_y / pixels_per_line;
         // Drop leftover fraction when the user reverses direction so the first
         // reverse tick isn't eaten by residual accumulation.
