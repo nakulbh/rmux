@@ -106,10 +106,9 @@ pub struct TerminalPane {
     /// still be reading from the first paste.
     paste_counter: u64,
 
-    /// Fractional scroll remainder so trackpad pixel deltas accumulate into
-    /// whole cell-rows. Without this, smooth-scroll events often cast to 0
-    /// lines (`delta / cell_h` truncated) and scrolling appears broken.
-    scroll_accum: f32,
+    /// Pending scroll in **pixels** (Ghostty/cmux `pending_scroll_y`).
+    /// Accumulates until at least one cell height, then converts to lines.
+    scroll_accum_px: f32,
 }
 
 impl TerminalPane {
@@ -198,7 +197,7 @@ impl TerminalPane {
             dimension_overlay_visible: false,
             dimension_overlay_timer: 0.0_f64,
             paste_counter: 0,
-            scroll_accum: 0.0_f32,
+            scroll_accum_px: 0.0_f32,
         })
     }
 
@@ -625,50 +624,79 @@ impl TerminalPane {
 
     /// Convert wheel/trackpad delta into terminal scroll or PTY wheel events.
     ///
-    /// Accumulates fractional pixel deltas so smooth trackpads actually move
-    /// lines (casting `delta / cell_h` to `i32` alone often yields 0).
+    /// Matches **Ghostty / cmux** `Surface.scrollCallback` exactly:
+    /// - precision (trackpad, `MouseWheelUnit::Point`): multiplier **1**
+    /// - discrete (mouse wheel, `MouseWheelUnit::Line`): multiplier **3**
+    /// - accumulate pixel residual until ≥ one cell height, then emit lines
     ///
-    /// Priority:
-    /// 1. Mouse reporting on → SGR/X10 wheel report to the app
-    /// 2. Alt screen + alternate-scroll → CSI A/B to the app (agents, less, vim)
+    /// Direction (after egui’s natural-scroll handling):
+    /// - positive egui Y = content moves down = older history
+    /// - alacritty `Scroll::Delta` positive = same (into scrollback)
+    ///
+    /// Priority after line count is known:
+    /// 1. Mouse reporting → SGR/X10 wheel report to the app
+    /// 2. Alt screen + alternate-scroll → CSI A/B (agents, less, vim)
     /// 3. Otherwise → scroll the scrollback viewport
     fn handle_scroll_wheel(&mut self, ui: &egui::Ui, rect: egui::Rect) {
-        // Prefer the smoothed delta for trackpad inertia; fall back to raw so a
-        // single mouse-wheel notch still lands even if smoothing is empty.
-        let (smooth, raw) = ui.input(|i| (i.smooth_scroll_delta, i.raw_scroll_delta));
-        let delta_y = if smooth.y != 0.0_f32 { smooth.y } else { raw.y };
-        if delta_y == 0.0_f32 {
+        // Ghostty defaults: `mouse-scroll-multiplier = precision:1,discrete:3`
+        const PRECISION_MULT: f32 = 1.0;
+        const DISCRETE_MULT: f32 = 3.0;
+
+        let cell_h = self.renderer.cell_size().y.max(1.0_f32);
+
+        // Convert this frame’s wheel events into a Ghostty-style pixel offset.
+        // Positive = scroll into history (content moves down / “up” on the
+        // traditional wheel). egui already applies natural scrolling.
+        let yoff_px: f32 = ui.input(|i| {
+            let mut y = 0.0_f32;
+            for event in &i.events {
+                let egui::Event::MouseWheel { unit, delta, .. } = event else {
+                    continue;
+                };
+                match unit {
+                    // Trackpad / precision: delta is already in points (pixels).
+                    egui::MouseWheelUnit::Point => {
+                        y += delta.y * PRECISION_MULT;
+                    }
+                    // Notched mouse wheel: each tick → cell_h × discrete mult.
+                    // On macOS, slow clicks can report ~0.1; Ghostty clamps to
+                    // a minimum magnitude of 1 so one click still scrolls.
+                    egui::MouseWheelUnit::Line => {
+                        if delta.y == 0.0_f32 {
+                            continue;
+                        }
+                        let ticks = delta.y.abs().max(1.0_f32).copysign(delta.y);
+                        y += ticks * cell_h * DISCRETE_MULT;
+                    }
+                    egui::MouseWheelUnit::Page => {
+                        y += delta.y * cell_h * f32::from(self.rows);
+                    }
+                }
+            }
+            y
+        });
+
+        if yoff_px == 0.0_f32 {
             return;
         }
 
-        // egui: positive Y = content moves *down* (natural swipe down) → reveal
-        // content that was above = older scrollback. alacritty `Scroll::Delta`
-        // positive increases `display_offset` = same direction. Do **not**
-        // negate (that inverted the wheel).
-        //
-        // One terminal line per full cell height of delta — matches native
-        // terminal density without the earlier ~2× speed from 0.45× cell_h.
-        let cell_h = self.renderer.cell_size().y.max(1.0_f32);
-        let pixels_per_line = cell_h;
-        let step = delta_y / pixels_per_line;
-        // Drop leftover fraction when the user reverses direction so the first
-        // reverse tick isn't eaten by residual accumulation.
-        if self.scroll_accum != 0.0_f32 && self.scroll_accum.signum() != step.signum() {
-            self.scroll_accum = 0.0_f32;
+        // Ghostty: pending + yoff; only scroll once |pending| ≥ cell height.
+        self.scroll_accum_px += yoff_px;
+        if self.scroll_accum_px.abs() < cell_h {
+            return;
         }
-        self.scroll_accum += step;
 
-        // Whole lines only; keep fractional remainder for the next event.
-        let mut lines = self.scroll_accum.trunc() as i32;
+        let amount = self.scroll_accum_px / cell_h;
+        let mut lines = amount.trunc() as i32;
+        // Keep fractional cell remainder (Ghostty `pending_scroll_y`).
+        self.scroll_accum_px -= lines as f32 * cell_h;
+        // Safety cap for a single frame (not in Ghostty; prevents runaway).
+        lines = lines.clamp(-64, 64);
         if lines == 0 {
             return;
         }
-        self.scroll_accum -= lines as f32;
-        // Cap a single frame so a huge wheel spike doesn't jump the whole buffer.
-        lines = lines.clamp(-32, 32);
 
         if self.state.mouse_reporting() {
-            // Report wheel at the pointer cell (or top-left if unknown).
             let (col, row) = ui
                 .input(|i| i.pointer.hover_pos())
                 .map(|pos| {
