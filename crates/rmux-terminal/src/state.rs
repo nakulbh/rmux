@@ -323,19 +323,21 @@ impl TermState {
     /// Bytes to send to the PTY for a wheel step on the alternate screen
     /// when mouse reporting is off and alternate-scroll is on.
     ///
-    /// Positive `lines` = scroll up (into history / content above), which
-    /// maps to CSI A (cursor up) so apps like `less` / Claude Code move up.
+    /// Matches Alacritty (`Processor::scroll_terminal`): application-cursor
+    /// sequences `ESC O A` / `ESC O B` (not CSI). Positive `lines` = scroll
+    /// up (into history / content above).
     pub fn alternate_scroll_bytes(lines: i32) -> Vec<u8> {
         if lines == 0 {
             return Vec::new();
         }
+        // Alacritty uses ESC O A/B (SS3), same as DECCKM application arrows.
         let (seq, n) = if lines > 0 {
-            (b"\x1b[A".as_slice(), lines as usize)
+            (b"\x1bOA".as_slice(), lines as usize)
         } else {
-            (b"\x1b[B".as_slice(), (-lines) as usize)
+            (b"\x1bOB".as_slice(), (-lines) as usize)
         };
-        let mut out = Vec::with_capacity(seq.len() * n.min(64));
-        for _ in 0..n.min(64) {
+        let mut out = Vec::with_capacity(seq.len() * n.min(128));
+        for _ in 0..n.min(128) {
             out.extend_from_slice(seq);
         }
         out
@@ -695,10 +697,11 @@ mod tests {
     }
     #[test]
     fn test_alternate_scroll_bytes_direction() {
+        // Alacritty application-cursor form (ESC O A/B), not CSI.
         let up = TermState::alternate_scroll_bytes(3);
-        assert_eq!(up, b"\x1b[A\x1b[A\x1b[A");
+        assert_eq!(up, b"\x1bOA\x1bOA\x1bOA");
         let down = TermState::alternate_scroll_bytes(-2);
-        assert_eq!(down, b"\x1b[B\x1b[B");
+        assert_eq!(down, b"\x1bOB\x1bOB");
         assert!(TermState::alternate_scroll_bytes(0).is_empty());
     }
 

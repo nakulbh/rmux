@@ -690,86 +690,89 @@ impl TerminalPane {
 
     /// Convert wheel/trackpad delta into terminal scroll or PTY wheel events.
     ///
-    /// Matches **Ghostty / cmux** `Surface.scrollCallback` exactly:
-    /// - precision (trackpad, `MouseWheelUnit::Point`): multiplier **1**
-    /// - discrete (mouse wheel, `MouseWheelUnit::Line`): multiplier **3**
-    /// - accumulate pixel residual until ≥ one cell height, then emit lines
+    /// Implements **Alacritty**’s `Processor::scroll_terminal` (the reference
+    /// client for `alacritty_terminal`), not Ghostty’s dual-multiplier path:
     ///
-    /// Direction (after egui’s natural-scroll handling):
-    /// - positive egui Y = content moves down = older history
-    /// - alacritty `Scroll::Delta` positive = same (into scrollback)
+    /// 1. Convert this frame’s input to pixels  
+    ///    - `Line` → `delta * cell_size` (fractional ticks kept; no min-1 clamp)  
+    ///    - `Point` → raw points (trackpad)  
+    /// 2. Multiply by `scrolling.multiplier` (**3**, or **1** in mouse mode)  
+    /// 3. Accumulate; emit `floor(|accum| / cell_h)` lines; keep remainder  
+    /// 4. Prefer live `MouseWheel` events; fall back to `smooth_scroll_delta`
+    ///    so OS trackpad inertia still coasts across frames  
+    /// 5. Request an immediate repaint so the grid doesn’t lag the 16 ms tick
     ///
-    /// Priority after line count is known:
-    /// 1. Mouse reporting → SGR/X10 wheel report to the app
-    /// 2. Alt screen + alternate-scroll → CSI A/B (agents, less, vim)
-    /// 3. Otherwise → scroll the scrollback viewport
+    /// Priority after line count is known (same as Alacritty):
+    /// 1. Mouse reporting → SGR/X10 wheel report  
+    /// 2. Alt screen + alternate-scroll → ESC O A/B  
+    /// 3. Else → `Scroll::Delta` on the grid
     fn handle_scroll_wheel(&mut self, ui: &egui::Ui, rect: egui::Rect) {
-        // Ghostty defaults: `mouse-scroll-multiplier = precision:1,discrete:3`
-        const PRECISION_MULT: f32 = 1.0;
-        const DISCRETE_MULT: f32 = 3.0;
+        // alacritty/src/config/scrolling.rs — default multiplier.
+        const SCROLL_MULTIPLIER: f32 = 3.0;
 
-        let cell_h = self.renderer.cell_size().y.max(1.0_f32);
+        let cell = self.renderer.cell_size();
+        let cell_h = cell.y.max(1.0_f32);
+        let cell_w = cell.x.max(1.0_f32);
 
-        // Convert this frame’s wheel events into a Ghostty-style pixel offset.
-        // Positive = scroll into history (content moves down / “up” on the
-        // traditional wheel). egui already applies natural scrolling.
-        let yoff_px: f32 = ui.input(|i| {
+        // Alacritty `mouse_wheel_input`: LineDelta → px via cell size; PixelDelta as-is.
+        // egui: positive Y = content moves down = into scrollback history.
+        let scroll_y_px = ui.input(|i| {
             let mut y = 0.0_f32;
+            let mut had = false;
             for event in &i.events {
                 let egui::Event::MouseWheel { unit, delta, .. } = event else {
                     continue;
                 };
+                had = true;
                 match unit {
-                    // Trackpad / precision: delta is already in points (pixels).
-                    egui::MouseWheelUnit::Point => {
-                        y += delta.y * PRECISION_MULT;
-                    }
-                    // Notched mouse wheel: each tick → cell_h × discrete mult.
-                    // On macOS, slow clicks can report ~0.1; Ghostty clamps to
-                    // a minimum magnitude of 1 so one click still scrolls.
                     egui::MouseWheelUnit::Line => {
-                        if delta.y == 0.0_f32 {
-                            continue;
-                        }
-                        let ticks = delta.y.abs().max(1.0_f32).copysign(delta.y);
-                        y += ticks * cell_h * DISCRETE_MULT;
+                        // Keep fractional line ticks (0.1, 0.3, …) — Alacritty
+                        // does not clamp to 1; that clamp made trackpads jumpy.
+                        y += delta.y * cell_h;
+                    }
+                    egui::MouseWheelUnit::Point => {
+                        y += delta.y;
                     }
                     egui::MouseWheelUnit::Page => {
                         y += delta.y * cell_h * f32::from(self.rows);
                     }
                 }
             }
+            // Coast on inertia when the OS stopped sending discrete events but
+            // egui still has a smoothed residual (feels less sticky/laggy).
+            if !had {
+                y += i.smooth_scroll_delta.y;
+            }
             y
         });
 
-        if yoff_px == 0.0_f32 {
+        if scroll_y_px == 0.0_f32 {
             return;
         }
 
-        // Ghostty: pending + yoff; only scroll once |pending| ≥ cell height.
-        self.scroll_accum_px += yoff_px;
-        if self.scroll_accum_px.abs() < cell_h {
-            return;
-        }
+        // Alacritty: mouse-mode reporting uses mult 1; otherwise config mult.
+        let mult = if self.state.mouse_reporting() { 1.0_f32 } else { SCROLL_MULTIPLIER };
 
-        let amount = self.scroll_accum_px / cell_h;
-        let mut lines = amount.trunc() as i32;
-        // Keep fractional cell remainder (Ghostty `pending_scroll_y`).
-        self.scroll_accum_px -= lines as f32 * cell_h;
-        // Safety cap for a single frame (not in Ghostty; prevents runaway).
-        lines = lines.clamp(-64, 64);
+        self.scroll_accum_px += scroll_y_px * mult;
+
+        // lines = trunc(accum / cell_h); remainder kept (alacritty `accum %= height`).
+        let lines = (self.scroll_accum_px / cell_h).trunc() as i32;
         if lines == 0 {
             return;
         }
+        self.scroll_accum_px -= lines as f32 * cell_h;
+
+        // Cap runaway spikes (trackpad glitches); Alacritty has no cap but we
+        // keep a generous one so a single event can't jump the whole history.
+        let lines = lines.clamp(-128, 128);
 
         if self.state.mouse_reporting() {
             let (col, row) = ui
                 .input(|i| i.pointer.hover_pos())
                 .map(|pos| {
                     let local = pos - rect.min;
-                    let cell = self.renderer.cell_size();
-                    let col = (local.x / cell.x).floor().max(0.0) as u16;
-                    let row = (local.y / cell.y).floor().max(0.0) as u16;
+                    let col = (local.x / cell_w).floor().max(0.0) as u16;
+                    let row = (local.y / cell_h).floor().max(0.0) as u16;
                     (col.min(self.cols.saturating_sub(1)), row.min(self.rows.saturating_sub(1)))
                 })
                 .unwrap_or((0, 0));
@@ -777,6 +780,7 @@ impl TerminalPane {
             if !bytes.is_empty() {
                 let _ = self.backend.write(&bytes);
             }
+            ui.ctx().request_repaint();
             return;
         }
 
@@ -785,10 +789,13 @@ impl TerminalPane {
             if !bytes.is_empty() {
                 let _ = self.backend.write(&bytes);
             }
+            ui.ctx().request_repaint();
             return;
         }
 
         self.state.scroll(lines);
+        // Don't wait for the periodic 16 ms repaint — scroll should feel instant.
+        ui.ctx().request_repaint();
     }
 
     /// Drag / multi-click mouse selection over the grid.
