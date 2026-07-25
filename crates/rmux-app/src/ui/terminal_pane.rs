@@ -105,6 +105,11 @@ pub struct TerminalPane {
     /// paste doesn't overwrite (and thus corrupt) the file a CLI tool may
     /// still be reading from the first paste.
     paste_counter: u64,
+
+    /// Fractional scroll remainder so trackpad pixel deltas accumulate into
+    /// whole cell-rows. Without this, smooth-scroll events often cast to 0
+    /// lines (`delta / cell_h` truncated) and scrolling appears broken.
+    scroll_accum: f32,
 }
 
 impl TerminalPane {
@@ -193,6 +198,7 @@ impl TerminalPane {
             dimension_overlay_visible: false,
             dimension_overlay_timer: 0.0_f64,
             paste_counter: 0,
+            scroll_accum: 0.0_f32,
         })
     }
 
@@ -374,15 +380,10 @@ impl TerminalPane {
         // Mouse selection: drag selects cells; double-click word; triple line.
         self.handle_mouse_selection(ui, rect, &term_response);
 
-        // Handle scroll wheel for terminal scrollback
+        // Handle scroll wheel: scrollback, alternate-screen app scroll, or
+        // mouse-report wheel (agent TUIs / vim / less).
         if term_response.hovered() {
-            let scroll_delta = ui.input(|i| i.smooth_scroll_delta);
-            if scroll_delta.y != 0.0_f32 {
-                let lines = (-scroll_delta.y / self.renderer.cell_size().y) as i32;
-                if lines != 0 {
-                    self.state.scroll(lines);
-                }
-            }
+            self.handle_scroll_wheel(ui, rect);
         }
 
         // Keyboard: active terminal claims egui focus so Tab is not stolen for
@@ -417,7 +418,12 @@ impl TerminalPane {
         let now = ui.input(|i| i.time);
         self.show_cursor = cursor_blink_visible(now, self.has_focus);
 
-        self.show_title_bar(ui, rect);
+        // Only paint the floating shell badge in copy mode. Multi-tab leaves
+        // already show the title in the tab strip; an always-on "zsh" chip
+        // looked like content bleeding between panes (GitHub #31).
+        if self.copy_mode {
+            self.show_title_bar(ui, rect);
+        }
 
         // Take a snapshot of the terminal grid and render it
         let snapshot = self.state.snapshot();
@@ -615,6 +621,64 @@ impl TerminalPane {
             let _ = self.backend.write(&[0x03]);
             tracing::debug!("No selection; sent SIGINT (^C) to PTY");
         }
+    }
+
+    /// Convert wheel/trackpad delta into terminal scroll or PTY wheel events.
+    ///
+    /// Accumulates fractional pixel deltas so smooth trackpads actually move
+    /// lines (casting `delta / cell_h` to `i32` alone often yields 0).
+    ///
+    /// Priority:
+    /// 1. Mouse reporting on → SGR/X10 wheel report to the app
+    /// 2. Alt screen + alternate-scroll → CSI A/B to the app (agents, less, vim)
+    /// 3. Otherwise → scroll the scrollback viewport
+    fn handle_scroll_wheel(&mut self, ui: &egui::Ui, rect: egui::Rect) {
+        let scroll_delta = ui.input(|i| i.smooth_scroll_delta);
+        if scroll_delta.y == 0.0_f32 {
+            return;
+        }
+
+        let cell_h = self.renderer.cell_size().y.max(1.0_f32);
+        // egui: positive y = scroll content down = finger up = look at higher
+        // history. alacritty Scroll::Delta positive = increase display_offset
+        // = scroll up into history. So invert: lines = -delta.y / cell_h.
+        self.scroll_accum += -scroll_delta.y / cell_h;
+
+        // Emit whole lines only; keep fractional remainder for next event.
+        let lines = self.scroll_accum.trunc() as i32;
+        if lines == 0 {
+            return;
+        }
+        self.scroll_accum -= lines as f32;
+
+        if self.state.mouse_reporting() {
+            // Report wheel at the pointer cell (or top-left if unknown).
+            let (col, row) = ui
+                .input(|i| i.pointer.hover_pos())
+                .map(|pos| {
+                    let local = pos - rect.min;
+                    let cell = self.renderer.cell_size();
+                    let col = (local.x / cell.x).floor().max(0.0) as u16;
+                    let row = (local.y / cell.y).floor().max(0.0) as u16;
+                    (col.min(self.cols.saturating_sub(1)), row.min(self.rows.saturating_sub(1)))
+                })
+                .unwrap_or((0, 0));
+            let bytes = self.state.mouse_wheel_report_bytes(col, row, lines);
+            if !bytes.is_empty() {
+                let _ = self.backend.write(&bytes);
+            }
+            return;
+        }
+
+        if self.state.is_alt_screen() && self.state.alternate_scroll() {
+            let bytes = rmux_terminal::TermState::alternate_scroll_bytes(lines);
+            if !bytes.is_empty() {
+                let _ = self.backend.write(&bytes);
+            }
+            return;
+        }
+
+        self.state.scroll(lines);
     }
 
     /// Drag / multi-click mouse selection over the grid.

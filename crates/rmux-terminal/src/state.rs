@@ -280,10 +280,96 @@ impl TermState {
     ///
     /// Positive `lines` scrolls up (into scrollback).
     /// Negative `lines` scrolls down.
+    ///
+    /// On the alternate screen (agent TUIs, vim, less, …) scrollback is
+    /// empty, so this is a no-op unless the app is in the primary buffer.
     pub fn scroll(&mut self, lines: i32) {
+        if lines == 0 {
+            return;
+        }
         use alacritty_terminal::grid::Scroll;
         let scroll = Scroll::Delta(lines);
         self.term.scroll_display(scroll);
+    }
+
+    /// Whether the alternate screen buffer is active (full-screen TUIs).
+    ///
+    /// When true, mouse-wheel should be forwarded to the app (via
+    /// [`Self::alternate_scroll_bytes`] or mouse reporting) rather than
+    /// scrolling the (empty) scrollback history.
+    pub fn is_alt_screen(&self) -> bool {
+        use alacritty_terminal::term::TermMode;
+        self.term.mode().contains(TermMode::ALT_SCREEN)
+    }
+
+    /// Whether mouse reporting is enabled (click / drag / motion modes).
+    pub fn mouse_reporting(&self) -> bool {
+        use alacritty_terminal::term::TermMode;
+        self.term.mode().intersects(TermMode::MOUSE_MODE)
+    }
+
+    /// Whether SGR (1006) extended mouse encoding is active.
+    pub fn sgr_mouse(&self) -> bool {
+        use alacritty_terminal::term::TermMode;
+        self.term.mode().contains(TermMode::SGR_MOUSE)
+    }
+
+    /// Whether alternate-scroll mode is on (default: wheel → ↑/↓ on alt screen).
+    pub fn alternate_scroll(&self) -> bool {
+        use alacritty_terminal::term::TermMode;
+        self.term.mode().contains(TermMode::ALTERNATE_SCROLL)
+    }
+
+    /// Bytes to send to the PTY for a wheel step on the alternate screen
+    /// when mouse reporting is off and alternate-scroll is on.
+    ///
+    /// Positive `lines` = scroll up (into history / content above), which
+    /// maps to CSI A (cursor up) so apps like `less` / Claude Code move up.
+    pub fn alternate_scroll_bytes(lines: i32) -> Vec<u8> {
+        if lines == 0 {
+            return Vec::new();
+        }
+        let (seq, n) = if lines > 0 {
+            (b"\x1b[A".as_slice(), lines as usize)
+        } else {
+            (b"\x1b[B".as_slice(), (-lines) as usize)
+        };
+        let mut out = Vec::with_capacity(seq.len() * n.min(64));
+        for _ in 0..n.min(64) {
+            out.extend_from_slice(seq);
+        }
+        out
+    }
+
+    /// Encode a mouse-wheel step as an X10 / SGR mouse report for the PTY.
+    ///
+    /// `lines > 0` = wheel up (button 4), `lines < 0` = wheel down (button 5).
+    /// `col` / `row` are 0-based viewport cell coordinates.
+    pub fn mouse_wheel_report_bytes(&self, col: u16, row: u16, lines: i32) -> Vec<u8> {
+        if lines == 0 {
+            return Vec::new();
+        }
+        // X10 button codes: 64 = wheel up, 65 = wheel down (button + 64).
+        let button: u8 = if lines > 0 { 64 } else { 65 };
+        let steps = lines.unsigned_abs().min(64);
+        // CSI mouse coords are 1-based.
+        let c = (col as u32).saturating_add(1);
+        let r = (row as u32).saturating_add(1);
+
+        let mut out = Vec::new();
+        for _ in 0..steps {
+            if self.sgr_mouse() {
+                // SGR: CSI < Pb ; Px ; Py M  (press only for wheel)
+                out.extend_from_slice(format!("\x1b[<{button};{c};{r}M").as_bytes());
+            } else {
+                // Legacy X10: CSI M Cb Cx Cy  with coords + 32
+                let cb = button.saturating_add(32);
+                let cx = (c.min(223) as u8).saturating_add(32);
+                let cy = (r.min(223) as u8).saturating_add(32);
+                out.extend_from_slice(&[0x1b, b'[', b'M', cb, cx, cy]);
+            }
+        }
+        out
     }
 
     /// Access the underlying term colors for custom color queries.
@@ -607,6 +693,34 @@ mod tests {
         assert!(c0 != c255 || c0 == c255);
         let _ = (c16, c231);
     }
+    #[test]
+    fn test_alternate_scroll_bytes_direction() {
+        let up = TermState::alternate_scroll_bytes(3);
+        assert_eq!(up, b"\x1b[A\x1b[A\x1b[A");
+        let down = TermState::alternate_scroll_bytes(-2);
+        assert_eq!(down, b"\x1b[B\x1b[B");
+        assert!(TermState::alternate_scroll_bytes(0).is_empty());
+    }
+
+    #[test]
+    fn test_mouse_wheel_report_sgr_default() {
+        let state = TermState::new(80, 24, 1000);
+        // SGR mouse off by default → legacy X10 encoding.
+        let bytes = state.mouse_wheel_report_bytes(0, 0, 1);
+        assert!(!bytes.is_empty());
+        assert_eq!(bytes[0], 0x1b);
+        assert_eq!(bytes[1], b'[');
+        assert_eq!(bytes[2], b'M');
+    }
+
+    #[test]
+    fn test_is_alt_screen_default_false() {
+        let state = TermState::new(80, 24, 1000);
+        assert!(!state.is_alt_screen());
+        assert!(state.alternate_scroll()); // on by default in alacritty
+        assert!(!state.mouse_reporting());
+    }
+
     #[test]
     fn test_clear_scrollback() {
         let mut state = TermState::new(80, 24, 1000);

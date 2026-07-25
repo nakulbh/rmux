@@ -509,10 +509,13 @@ impl eframe::App for RmuxApp {
 
         // Keep wallpaper texture ready (painted only inside panels — never on a
         // free-floating background layer that can cover top bar / chrome).
+        // Re-push opacity every frame so Cmd+T / restored / API-spawned
+        // terminals never stick at the default opaque fill (GitHub #30 / #32).
         if self.config.appearance.wallpaper_active() {
             let path =
                 self.config.appearance.background_image.as_deref().map(rmux_config::expand_tilde);
             self.wallpaper.ensure_loaded(ctx, path.as_deref());
+            self.propagate_bg_opacity();
         }
 
         // Render the settings panel (theme + workspace wallpaper).
@@ -833,6 +836,18 @@ impl RmuxApp {
         let theme = rmux_terminal::TerminalTheme::default().named(self.terminal_theme);
         let font_size = self.font_size;
         let bg_opacity = self.effective_bg_opacity();
+        // Apply theme/font/opacity to *every* terminal so a just-promoted
+        // legacy slot and the new Cmd+T tab both keep wallpaper transparency
+        // (GitHub #30 / #32).
+        self.propagate_bg_opacity();
+        for workspace in self.workspace_manager.workspaces_mut() {
+            workspace.root.for_each_terminal_mut(&mut |term| {
+                term.set_font_size(font_size);
+                term.set_theme(theme);
+            });
+        }
+        // Ensure the new active surface has the current theme even if
+        // propagate only touches opacity.
         if let Some(term) = self.workspace_manager.active_mut().active_terminal() {
             term.set_font_size(font_size);
             term.set_theme(theme);
