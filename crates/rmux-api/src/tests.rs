@@ -17,12 +17,17 @@ fn test_socket_path_falls_back_when_override_absent_or_empty() {
 }
 
 #[test]
-fn test_all_methods_lists_full_phase3_contract() {
+fn test_all_methods_lists_full_contract() {
     let all = methods::all_methods();
-    assert_eq!(all.len(), 19);
+    assert_eq!(all.len(), 30);
     assert!(all.contains(&methods::SYSTEM_PING));
     assert!(all.contains(&methods::EVENTS_STREAM));
     assert!(all.contains(&methods::SIDEBAR_SET_PROGRESS));
+    assert!(all.contains(&methods::WORKSPACE_RENAME));
+    assert!(all.contains(&methods::SURFACE_CLOSE));
+    assert!(all.contains(&methods::SURFACE_NEW));
+    assert!(all.contains(&methods::BROWSER_OPEN));
+    assert!(all.contains(&methods::APP_SET_THEME));
 }
 
 #[cfg(unix)]

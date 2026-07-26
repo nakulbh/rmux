@@ -645,10 +645,8 @@ fn collect_workspace_sidebar_meta(ws: &Workspace) -> WorkspaceSidebarMeta {
     });
 
     // Prefer focused terminal's PR when it has one; else first open PR; else any.
-    let pull_request = focused_term
-        .and_then(|t| t.cached_pull_request().cloned())
-        .or(open_pr)
-        .or(any_pr);
+    let pull_request =
+        focused_term.and_then(|t| t.cached_pull_request().cloned()).or(open_pr).or(any_pr);
 
     let path_lines = sidebar_snapshot::unique_path_lines(
         Some((focused_cwd.as_deref(), focused_branch_ref)),

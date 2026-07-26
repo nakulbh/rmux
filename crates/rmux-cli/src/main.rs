@@ -2,8 +2,9 @@
 //! CLI tool for controlling a running rmux instance.
 //!
 //! Communicates with the rmux socket server over a Unix domain socket
-//! using a newline-delimited JSON protocol. Each subcommand performs a
-//! single request/response roundtrip.
+//! using a newline-delimited JSON protocol. Commands are organized by
+//! domain (`system`, `workspace`, `surface`, …) so every part of the
+//! application is scriptable. Use `call` to invoke any method by name.
 //!
 //! # Exit codes
 //!
@@ -14,9 +15,11 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::Parser;
 
-use rmux_cli::{commands, socket};
+use rmux_cli::commands::{self, Command};
+use rmux_cli::output::OutputOpts;
+use rmux_cli::socket;
 
 /// Command-line arguments for `rmux-cli`.
 #[derive(Parser, Debug)]
@@ -24,94 +27,29 @@ use rmux_cli::{commands, socket};
     name = "rmux-cli",
     version,
     about = "Control a running rmux instance over its socket API",
-    long_about = None
+    long_about = "Scriptable control plane for the rmux terminal multiplexer.\n\n\
+                  Domains: system, workspace, surface, notification, sidebar, browser, app, events.\n\
+                  Escape hatch: call <method> [params_json]\n\
+                  Flat aliases (ping, notify, …) remain for Phase 3 script compatibility."
 )]
 struct Cli {
     /// Path to the rmux control socket (takes precedence over $RMUX_SOCKET_PATH)
     #[arg(long, global = true, value_name = "PATH")]
     socket: Option<PathBuf>,
 
+    /// Print machine-readable JSON instead of human tables
+    #[arg(long, global = true)]
+    json: bool,
+
     #[command(subcommand)]
     command: Command,
-}
-
-/// Subcommands supported by `rmux-cli`.
-#[derive(Subcommand, Debug)]
-enum Command {
-    /// Check that rmux is reachable (prints "pong")
-    Ping,
-    /// Print the server capabilities as pretty JSON
-    Capabilities,
-    /// Create a notification in rmux
-    Notify {
-        /// Notification title
-        #[arg(long)]
-        title: String,
-        /// Notification subtitle
-        #[arg(long)]
-        subtitle: Option<String>,
-        /// Notification body text
-        #[arg(long)]
-        body: Option<String>,
-    },
-    /// Create a new workspace
-    NewWorkspace {
-        /// Optional workspace name
-        name: Option<String>,
-    },
-    /// List workspaces
-    ListWorkspaces {
-        /// Print the raw JSON result instead of a table
-        #[arg(long)]
-        json: bool,
-    },
-    /// Split the focused pane
-    NewSplit {
-        /// Direction to split in
-        #[arg(value_enum)]
-        direction: SplitDirection,
-    },
-    /// Send text to the active pane
-    Send {
-        /// Text to send. Backslash escapes \n, \r, \t, \e (escape) and \\
-        /// are interpreted; unknown escapes pass through unchanged.
-        text: String,
-    },
-}
-
-/// Split direction accepted by `new-split`.
-#[derive(ValueEnum, Clone, Copy, Debug)]
-enum SplitDirection {
-    /// Split to the right (vertical divider)
-    Right,
-    /// Split downward (horizontal divider)
-    Down,
-}
-
-impl SplitDirection {
-    /// Wire representation expected by `surface.split`.
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Right => "right",
-            Self::Down => "down",
-        }
-    }
 }
 
 /// Dispatch the parsed CLI to the matching command implementation.
 fn run(cli: Cli) -> anyhow::Result<()> {
     let socket_path = socket::effective_socket_path(cli.socket);
-    match cli.command {
-        Command::Ping => commands::ping(&socket_path),
-        Command::Capabilities => commands::capabilities(&socket_path),
-        Command::Notify { title, subtitle, body } => {
-            commands::notify(&socket_path, &title, subtitle.as_deref(), body.as_deref())
-        }
-        Command::NewWorkspace { name } => commands::new_workspace(&socket_path, name.as_deref()),
-        Command::ListWorkspaces { json } => commands::list_workspaces(&socket_path, json),
-        Command::NewSplit { direction } => commands::new_split(&socket_path, direction.as_str()),
-        Command::Send { text } => commands::send(&socket_path, &text),
-    }
+    let opts = OutputOpts { json: cli.json };
+    commands::run(cli.command, &socket_path, opts)
 }
 
 fn main() -> ExitCode {
@@ -139,22 +77,35 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::CommandFactory;
 
     #[test]
     fn cli_parses_all_subcommands() {
-        use clap::CommandFactory;
         Cli::command().debug_assert();
     }
 
     #[test]
     fn socket_flag_is_global() {
-        let cli = Cli::parse_from(["rmux-cli", "ping", "--socket", "/tmp/custom.sock"]);
+        let cli = Cli::parse_from(["rmux-cli", "system", "ping", "--socket", "/tmp/custom.sock"]);
         assert_eq!(cli.socket, Some(PathBuf::from("/tmp/custom.sock")));
     }
 
     #[test]
-    fn split_direction_maps_to_wire_strings() {
-        assert_eq!(SplitDirection::Right.as_str(), "right");
-        assert_eq!(SplitDirection::Down.as_str(), "down");
+    fn hierarchical_and_alias_commands_parse() {
+        let _ = Cli::parse_from(["rmux-cli", "workspace", "list"]);
+        let _ = Cli::parse_from(["rmux-cli", "surface", "split", "right"]);
+        let _ = Cli::parse_from(["rmux-cli", "notification", "create", "--title", "t"]);
+        let _ = Cli::parse_from(["rmux-cli", "call", "system.ping", "{}"]);
+        let _ = Cli::parse_from(["rmux-cli", "ping"]);
+        let _ = Cli::parse_from(["rmux-cli", "list-workspaces", "--json"]);
+        let _ = Cli::parse_from(["rmux-cli", "browser", "open", "https://example.com"]);
+        let _ = Cli::parse_from(["rmux-cli", "app", "theme", "dracula"]);
+        let _ = Cli::parse_from(["rmux-cli", "events", "stream"]);
+    }
+
+    #[test]
+    fn global_json_flag_parses() {
+        let cli = Cli::parse_from(["rmux-cli", "--json", "workspace", "list"]);
+        assert!(cli.json);
     }
 }

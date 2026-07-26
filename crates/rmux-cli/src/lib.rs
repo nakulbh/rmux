@@ -8,7 +8,11 @@
 //! # Modules
 //!
 //! - [`socket`] — socket path resolution and the blocking line-protocol client
-//! - [`commands`] — one function per CLI subcommand
+//! - [`commands`] — hierarchical domain commands + back-compat aliases
+//! - [`output`] — shared stdout formatting (`--json` / tables)
+//! - [`util`] — escape interpretation and id extraction
 
 pub mod commands;
+pub mod output;
 pub mod socket;
+pub mod util;

@@ -312,19 +312,13 @@ mod tests {
             None,
             std::slice::from_ref(&path_title),
         );
-        assert!(
-            !snap.shows_branch_line(),
-            "single path line equal to title should hide"
-        );
+        assert!(!snap.shows_branch_line(), "single path line equal to title should hide");
     }
 
     #[test]
     fn test_snapshot_keeps_multiple_path_lines() {
-        let lines = vec![
-            "main · ~/a".to_string(),
-            "feat/x · ~/b".to_string(),
-            "feat/y · ~/c".to_string(),
-        ];
+        let lines =
+            vec!["main · ~/a".to_string(), "feat/x · ~/b".to_string(), "feat/y · ~/c".to_string()];
         let snap = WorkspaceSidebarSnapshot::build(
             "custom workspace",
             None,
