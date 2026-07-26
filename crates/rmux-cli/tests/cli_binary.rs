@@ -48,6 +48,9 @@ fn binary_version_exits_zero() {
 
 #[test]
 fn binary_connect_failure_exits_two() {
+    // Missing socket (Unix) and unsupported-transport stubs (non-Unix) both
+    // surface as ConnectError so the binary always exits 2 when the control
+    // plane is unreachable.
     let sock =
         std::env::temp_dir().join(format!("rmux-cli-bin-missing-{}.sock", std::process::id()));
     let _ = std::fs::remove_file(&sock);
@@ -55,9 +58,16 @@ fn binary_connect_failure_exits_two() {
         .args(["--socket", sock.to_str().unwrap(), "system", "ping"])
         .output()
         .expect("run system ping");
-    assert_eq!(output.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("cannot connect") || stderr.contains("is rmux running"));
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "expected exit 2 for unreachable socket; stderr={stderr}"
+    );
+    assert!(
+        stderr.contains("cannot connect") || stderr.contains("is rmux running"),
+        "stderr={stderr}"
+    );
 }
 
 #[test]

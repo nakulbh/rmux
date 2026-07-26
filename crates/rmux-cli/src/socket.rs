@@ -215,38 +215,52 @@ pub fn stream_events_to(path: &Path, out: &mut dyn std::io::Write) -> anyhow::Re
     Ok(())
 }
 
+/// I/O error used by the non-Unix stubs so callers still get [`ConnectError`]
+/// (and the CLI exit code 2) rather than a generic bail.
+#[cfg(not(unix))]
+fn platform_unsupported(path: &Path) -> ConnectError {
+    ConnectError {
+        path: path.to_path_buf(),
+        source: std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "the rmux socket API is not supported on this platform yet",
+        ),
+    }
+}
+
 /// Stub for non-Unix targets: the socket API always errors.
 ///
 /// # Errors
 ///
-/// Always returns an error; the Unix-socket transport is not available.
+/// Always returns [`ConnectError`] so exit-code mapping stays consistent with
+/// Unix (CLI exit code 2 — cannot reach the control socket).
 #[cfg(not(unix))]
 pub fn call(
-    _path: &Path,
+    path: &Path,
     _method: &str,
     _params: serde_json::Value,
 ) -> anyhow::Result<serde_json::Value> {
-    anyhow::bail!("the rmux socket API is not supported on this platform yet")
+    Err(platform_unsupported(path).into())
 }
 
 /// Stub for non-Unix targets.
 ///
 /// # Errors
 ///
-/// Always returns an error; the Unix-socket transport is not available.
+/// Always returns [`ConnectError`]; the Unix-socket transport is not available.
 #[cfg(not(unix))]
-pub fn stream_events(_path: &Path) -> anyhow::Result<()> {
-    anyhow::bail!("the rmux socket API is not supported on this platform yet")
+pub fn stream_events(path: &Path) -> anyhow::Result<()> {
+    Err(platform_unsupported(path).into())
 }
 
 /// Stub for non-Unix targets.
 ///
 /// # Errors
 ///
-/// Always returns an error; the Unix-socket transport is not available.
+/// Always returns [`ConnectError`]; the Unix-socket transport is not available.
 #[cfg(not(unix))]
-pub fn stream_events_to(_path: &Path, _out: &mut dyn std::io::Write) -> anyhow::Result<()> {
-    anyhow::bail!("the rmux socket API is not supported on this platform yet")
+pub fn stream_events_to(path: &Path, _out: &mut dyn std::io::Write) -> anyhow::Result<()> {
+    Err(platform_unsupported(path).into())
 }
 
 #[cfg(test)]
