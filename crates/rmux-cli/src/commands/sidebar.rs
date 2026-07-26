@@ -24,7 +24,7 @@ pub enum SidebarCommand {
 }
 
 /// Status set / clear.
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand, Debug, Clone)]
 pub enum StatusCommand {
     /// Set the status text
     Set {
@@ -86,9 +86,16 @@ mod tests {
     #[test]
     fn request_builders() {
         assert_eq!(
-            set_status_request(Some(1), "ok").1,
-            json!({ "workspace_id": 1, "status": "ok" })
+            set_status_request(Some(1), "ok"),
+            (methods::SIDEBAR_SET_STATUS, json!({ "workspace_id": 1, "status": "ok" }))
         );
-        assert_eq!(set_progress_request(0.5).1, json!({ "value": 0.5 }));
+        assert_eq!(
+            clear_status_request(None),
+            (methods::SIDEBAR_CLEAR_STATUS, json!({ "workspace_id": null }))
+        );
+        assert_eq!(
+            set_progress_request(0.5),
+            (methods::SIDEBAR_SET_PROGRESS, json!({ "value": 0.5 }))
+        );
     }
 }

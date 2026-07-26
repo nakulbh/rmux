@@ -82,4 +82,16 @@ mod tests {
         assert_eq!(method, methods::NOTIFICATION_CREATE);
         assert_eq!(params, json!({ "title": "Build", "subtitle": "rmux", "body": "done" }));
     }
+
+    #[test]
+    fn create_request_nulls_optional_fields() {
+        let (_, params) = create_request("T", None, None);
+        assert_eq!(params, json!({ "title": "T", "subtitle": null, "body": null }));
+    }
+
+    #[test]
+    fn list_and_clear_use_expected_methods() {
+        assert_eq!(list_request().0, methods::NOTIFICATION_LIST);
+        assert_eq!(clear_request().0, methods::NOTIFICATION_CLEAR);
+    }
 }

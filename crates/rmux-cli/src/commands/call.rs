@@ -13,10 +13,10 @@ use crate::socket;
 #[derive(Args, Debug)]
 pub struct CallCommand {
     /// Method name (e.g. `system.ping`, `workspace.create`)
-    method: String,
+    pub method: String,
     /// JSON object of parameters (default: `{}`)
     #[arg(default_value = "{}")]
-    params: String,
+    pub params: String,
 }
 
 /// Run a raw method call and print the result as pretty JSON.

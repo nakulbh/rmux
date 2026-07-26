@@ -154,10 +154,14 @@ mod tests {
 
     #[test]
     fn request_builders() {
+        assert_eq!(list_request().0, methods::SURFACE_LIST);
         assert_eq!(split_request("right").1, json!({ "direction": "right" }));
+        assert_eq!(focus_request(7).1, json!({ "pane_id": 7 }));
         assert_eq!(send_request("ls\\n").1, json!({ "text": "ls\n" }));
         assert_eq!(key_request("enter").1, json!({ "key": "enter" }));
         assert_eq!(close_request(Some(3)).1, json!({ "pane_id": 3 }));
+        assert_eq!(close_request(None).1, json!({ "pane_id": null }));
         assert_eq!(new_request(Some("shell")).1, json!({ "title": "shell" }));
+        assert_eq!(new_request(None).1, json!({ "title": null }));
     }
 }

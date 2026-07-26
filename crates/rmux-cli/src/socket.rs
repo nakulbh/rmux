@@ -130,7 +130,17 @@ pub fn call(
     }
 }
 
-/// Subscribe to `events.stream` and print each event as one NDJSON line.
+/// Subscribe to `events.stream` and print each event as one NDJSON line on stdout.
+///
+/// # Errors
+///
+/// See [`stream_events_to`].
+#[cfg(unix)]
+pub fn stream_events(path: &Path) -> anyhow::Result<()> {
+    stream_events_to(path, &mut std::io::stdout())
+}
+
+/// Subscribe to `events.stream` and write each event as one NDJSON line to `out`.
 ///
 /// Sends the stream request, checks the ack, then reads event lines with
 /// no read timeout until the server closes the connection or the client
@@ -142,7 +152,7 @@ pub fn call(
 /// - [`ServerError`] when the ack reports failure
 /// - I/O errors after the stream starts (other than clean EOF)
 #[cfg(unix)]
-pub fn stream_events(path: &Path) -> anyhow::Result<()> {
+pub fn stream_events_to(path: &Path, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixStream;
     use std::time::Duration;
@@ -154,14 +164,11 @@ pub fn stream_events(path: &Path) -> anyhow::Result<()> {
 
     let stream = UnixStream::connect(path)
         .map_err(|source| ConnectError { path: path.to_path_buf(), source })?;
-    // Write timeout for the request; clear read timeout after the ack so
-    // the stream can block indefinitely waiting for events.
+    // Only a write timeout: reads stay blocking so sparse events work.
+    // (Changing read timeouts after I/O starts is EINVAL on some platforms.)
     stream
         .set_write_timeout(Some(Duration::from_secs(5)))
         .context("failed to set socket write timeout")?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .context("failed to set socket read timeout")?;
 
     let request = JsonRpcRequest {
         id: serde_json::Value::from(1),
@@ -191,9 +198,6 @@ pub fn stream_events(path: &Path) -> anyhow::Result<()> {
         return Err(ServerError { code: error.code, message: error.message }.into());
     }
 
-    // Block forever on events after a successful ack.
-    stream.set_read_timeout(None).context("failed to clear socket read timeout")?;
-
     let mut event_line = String::new();
     loop {
         event_line.clear();
@@ -205,7 +209,7 @@ pub fn stream_events(path: &Path) -> anyhow::Result<()> {
         }
         let trimmed = event_line.trim_end();
         if !trimmed.is_empty() {
-            println!("{trimmed}");
+            writeln!(out, "{trimmed}").context("failed to write event line")?;
         }
     }
     Ok(())
@@ -232,6 +236,16 @@ pub fn call(
 /// Always returns an error; the Unix-socket transport is not available.
 #[cfg(not(unix))]
 pub fn stream_events(_path: &Path) -> anyhow::Result<()> {
+    anyhow::bail!("the rmux socket API is not supported on this platform yet")
+}
+
+/// Stub for non-Unix targets.
+///
+/// # Errors
+///
+/// Always returns an error; the Unix-socket transport is not available.
+#[cfg(not(unix))]
+pub fn stream_events_to(_path: &Path, _out: &mut dyn std::io::Write) -> anyhow::Result<()> {
     anyhow::bail!("the rmux socket API is not supported on this platform yet")
 }
 
