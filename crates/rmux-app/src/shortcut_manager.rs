@@ -344,7 +344,7 @@ impl ShortcutManager {
         );
         self.bind_chord(mac_ctrl_cmd(), Key::Equals, AppCommand::EqualizeSplitsAlt);
 
-        // Focus panes (⌘⌥ arrows)
+        // Focus panes (⌘⌥ arrows; Ctrl+Shift+arrows on Linux/Windows)
         self.bind_chord(Modifiers::COMMAND | Modifiers::ALT, Key::ArrowLeft, AppCommand::FocusLeft);
         self.bind_chord(
             Modifiers::COMMAND | Modifiers::ALT,
@@ -353,6 +353,26 @@ impl ShortcutManager {
         );
         self.bind_chord(Modifiers::COMMAND | Modifiers::ALT, Key::ArrowUp, AppCommand::FocusUp);
         self.bind_chord(Modifiers::COMMAND | Modifiers::ALT, Key::ArrowDown, AppCommand::FocusDown);
+
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        {
+            self.bind_chord(
+                Modifiers::CTRL | Modifiers::SHIFT,
+                Key::ArrowLeft,
+                AppCommand::FocusLeft,
+            );
+            self.bind_chord(
+                Modifiers::CTRL | Modifiers::SHIFT,
+                Key::ArrowRight,
+                AppCommand::FocusRight,
+            );
+            self.bind_chord(Modifiers::CTRL | Modifiers::SHIFT, Key::ArrowUp, AppCommand::FocusUp);
+            self.bind_chord(
+                Modifiers::CTRL | Modifiers::SHIFT,
+                Key::ArrowDown,
+                AppCommand::FocusDown,
+            );
+        }
 
         // Surfaces / tabs
         self.bind_chord(Modifiers::COMMAND, Key::T, AppCommand::NewSurface);
@@ -604,9 +624,19 @@ mod tests {
     }
 
     #[test]
-    fn focus_arrows_require_alt() {
+    fn focus_arrows_keep_command_alt_binding() {
         assert_eq!(mgr().resolve(cmd_alt(), Key::ArrowLeft), Some(AppCommand::FocusLeft));
         assert_eq!(mgr().resolve(cmd(), Key::ArrowLeft), None);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    #[test]
+    fn ctrl_shift_arrows_focus_panes() {
+        let mods = Modifiers::CTRL | Modifiers::SHIFT;
+        assert_eq!(mgr().resolve(mods, Key::ArrowLeft), Some(AppCommand::FocusLeft));
+        assert_eq!(mgr().resolve(mods, Key::ArrowRight), Some(AppCommand::FocusRight));
+        assert_eq!(mgr().resolve(mods, Key::ArrowUp), Some(AppCommand::FocusUp));
+        assert_eq!(mgr().resolve(mods, Key::ArrowDown), Some(AppCommand::FocusDown));
     }
 
     #[test]

@@ -518,7 +518,14 @@ impl HelpMenu {
                             (&format!("{mod_label}D"), "Split right"),
                             (&format!("{mod_label}⇧D"), "Split down"),
                             (&format!("{mod_label}T"), "New terminal tab"),
-                            ("⌥←/→/↑/↓", "Focus adjacent pane"),
+                            (
+                                if cfg!(target_os = "macos") {
+                                    "⌘⌥←/→/↑/↓"
+                                } else {
+                                    "Ctrl+Shift+←/→/↑/↓"
+                                },
+                                "Focus adjacent pane",
+                            ),
                         ],
                     );
                     shortcut_section(

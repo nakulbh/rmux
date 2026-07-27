@@ -178,7 +178,7 @@ cross-platform Rust application targeting Linux, macOS, and Windows with a stric
   - `Cmd+D` / `Ctrl+D`: split right
   - `Cmd+Shift+D` / `Ctrl+Shift+D`: split down
   - `Cmd+1..9` / `Ctrl+1..9`: switch workspace
-  - `Opt+Cmd+Arrow` / `Alt+Ctrl+Arrow`: focus pane
+  - `Opt+Cmd+Arrow` on macOS / `Ctrl+Shift+Arrow` on Linux/Windows: focus pane
 - [x] **2.7** Add pane memory guardrails:
   - Hibernate offscreen/hidden panes (stop rendering, keep PTY alive)
   - Configurable `max_active_panes` (warn when exceeded)

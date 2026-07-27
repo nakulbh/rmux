@@ -272,10 +272,10 @@ macOS uses Cmd where Linux and Windows use Ctrl.
 | Previous Workspace | Cmd+Shift+[ | Ctrl+Shift+[ |
 | Next Workspace | Cmd+Shift+] | Ctrl+Shift+] |
 | Switch to Workspace 1 through 9 | Cmd+1 through Cmd+9 | Ctrl+1 through Ctrl+9 |
-| Focus Left | Cmd+Left Arrow | Ctrl+Left Arrow |
-| Focus Up | Cmd+Up Arrow | Ctrl+Up Arrow |
-| Focus Right | Cmd+Option+Right Arrow | Ctrl+Alt+Right Arrow |
-| Focus Down | Cmd+Option+Down Arrow | Ctrl+Alt+Down Arrow |
+| Focus Left | Cmd+Option+Left Arrow | Ctrl+Shift+Left Arrow |
+| Focus Up | Cmd+Option+Up Arrow | Ctrl+Shift+Up Arrow |
+| Focus Right | Cmd+Option+Right Arrow | Ctrl+Shift+Right Arrow |
+| Focus Down | Cmd+Option+Down Arrow | Ctrl+Shift+Down Arrow |
 | Open Browser Split | Cmd+Shift+L | Ctrl+Shift+L |
 | Focus Browser URL Bar | Cmd+L | Ctrl+L |
 | Reload Browser | Cmd+R | Ctrl+R |

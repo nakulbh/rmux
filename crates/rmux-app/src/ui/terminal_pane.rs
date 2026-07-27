@@ -902,10 +902,6 @@ impl TerminalPane {
             | egui::Key::OpenBracket
             | egui::Key::CloseBracket
             | egui::Key::Enter
-            | egui::Key::ArrowLeft
-            | egui::Key::ArrowRight
-            | egui::Key::ArrowUp
-            | egui::Key::ArrowDown
             | egui::Key::Num0
             | egui::Key::Num1
             | egui::Key::Num2

@@ -98,6 +98,17 @@ mod tests {
         assert_eq!(reg.lookup(mods, Key::ArrowDown), Some(ShortcutAction::FocusDown));
     }
 
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    #[test]
+    fn registry_ctrl_shift_focus_arrows() {
+        let reg = ShortcutRegistry::default();
+        let mods = Modifiers::CTRL | Modifiers::SHIFT;
+        assert_eq!(reg.lookup(mods, Key::ArrowLeft), Some(ShortcutAction::FocusLeft));
+        assert_eq!(reg.lookup(mods, Key::ArrowRight), Some(ShortcutAction::FocusRight));
+        assert_eq!(reg.lookup(mods, Key::ArrowUp), Some(ShortcutAction::FocusUp));
+        assert_eq!(reg.lookup(mods, Key::ArrowDown), Some(ShortcutAction::FocusDown));
+    }
+
     #[test]
     fn linux_ctrl_bits_match_command_bindings() {
         let reg = ShortcutRegistry::default();
