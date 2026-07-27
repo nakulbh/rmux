@@ -6,7 +6,9 @@
 use anyhow::Result;
 use image::ImageEncoder;
 use image::codecs::png::PngEncoder;
-use rmux_terminal::{InputMapper, PtyBackend, PtyError, TermState, TerminalRenderer};
+use rmux_terminal::{
+    CoalescedSize, InputMapper, PtyBackend, PtyError, TermState, TerminalRenderer,
+};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
@@ -51,10 +53,8 @@ pub struct TerminalPane {
     show_cursor: bool,
     /// Display name (typically the shell name).
     name: String,
-    /// Current column count.
-    cols: u16,
-    /// Current row count.
-    rows: u16,
+    /// Layout-desired vs applied PTY/grid size (throttled reflow).
+    size: CoalescedSize,
     /// Whether the underlying process has exited.
     exited: bool,
     /// Human-readable exit banner (set once when the process is reaped).
@@ -113,15 +113,6 @@ pub struct TerminalPane {
     /// Command to type after the shell becomes ready (agent resume on session
     /// restore). Cleared once sent.
     pending_startup: Option<PendingStartup>,
-
-    /// Layout-derived cols/rows (may differ from live PTY while resize is
-    /// coalesced — Warp paints every frame, reflows on a throttle).
-    desired_cols: u16,
-    desired_rows: u16,
-    /// `ui.input(|i| i.time)` when desired size last changed.
-    desired_changed_at: f64,
-    /// When the last PTY/grid resize was applied.
-    last_resize_at: f64,
 }
 
 /// Deferred shell input for session-restore agent resume.
@@ -199,8 +190,7 @@ impl TerminalPane {
             has_focus: false,
             show_cursor: true,
             name,
-            cols,
-            rows,
+            size: CoalescedSize::new(cols, rows),
             exited: false,
             exit_message: None,
             exit_success: false,
@@ -222,38 +212,15 @@ impl TerminalPane {
             paste_counter: 0,
             scroll_accum_px: 0.0_f32,
             pending_startup: None,
-            desired_cols: cols,
-            desired_rows: rows,
-            desired_changed_at: 0.0,
-            last_resize_at: 0.0,
         })
     }
 
-    /// Coalesce PTY/grid resizes so split drag stays smooth.
-    ///
-    /// While the desired size keeps changing, apply at most every
-    /// [`RESIZE_THROTTLE_SECS`]. Once it settles for [`RESIZE_SETTLE_SECS`],
-    /// apply immediately so the shell catches the final geometry.
-    fn maybe_apply_resize(&mut self, now: f64) {
-        const RESIZE_THROTTLE_SECS: f64 = 0.05;
-        const RESIZE_SETTLE_SECS: f64 = 0.04;
-
-        if self.desired_cols == self.cols && self.desired_rows == self.rows {
-            return;
+    /// Apply coalesced PTY/grid reflow when the size model says so.
+    fn apply_coalesced_resize(&mut self, now: f64) {
+        if let Some((cols, rows)) = self.size.poll_apply(now) {
+            self.state.resize(cols, rows);
+            self.backend.resize(cols, rows).ok();
         }
-
-        let since_apply = now - self.last_resize_at;
-        let settled = (now - self.desired_changed_at) >= RESIZE_SETTLE_SECS;
-        let throttled = since_apply >= RESIZE_THROTTLE_SECS;
-        if !(self.last_resize_at == 0.0 || settled || throttled) {
-            return;
-        }
-
-        self.cols = self.desired_cols;
-        self.rows = self.desired_rows;
-        self.state.resize(self.cols, self.rows);
-        self.backend.resize(self.cols, self.rows).ok();
-        self.last_resize_at = now;
     }
 
     /// Queue a shell command to run once the PTY is ready (session agent resume).
@@ -458,16 +425,16 @@ impl TerminalPane {
             .renderer
             .cols_rows_for_rect(egui::Rect::from_min_size(egui::Pos2::ZERO, terminal_available));
         let now = ui.input(|i| i.time);
-        if new_cols != self.desired_cols || new_rows != self.desired_rows {
-            self.desired_cols = new_cols;
-            self.desired_rows = new_rows;
-            self.desired_changed_at = now;
-            if self.has_focus {
-                self.dimension_overlay_visible = true;
-                self.dimension_overlay_timer = now;
-            }
+        if self.size.set_desired(new_cols, new_rows, now) && self.has_focus {
+            self.dimension_overlay_visible = true;
+            self.dimension_overlay_timer = now;
         }
-        self.maybe_apply_resize(now);
+        self.apply_coalesced_resize(now);
+        // Own continuous frames while reflow is still pending (window resize
+        // or split drag) — not a one-off in the split divider path.
+        if self.size.is_pending() {
+            ui.ctx().request_repaint();
+        }
 
         // Allocate space for the terminal
         let (rect, term_response) =
@@ -519,7 +486,7 @@ impl TerminalPane {
         // seconds to `u64` and used `% 1000 < 500`, which left the cursor
         // fully invisible for entire ~500 s windows (looked like a missing
         // caret). See [`cursor_blink_visible`].
-        let now = ui.input(|i| i.time);
+        // Reuse the frame clock from resize above.
         self.show_cursor = cursor_blink_visible(now, self.has_focus);
 
         // Only paint the floating shell badge in copy mode. Multi-tab leaves
@@ -566,7 +533,8 @@ impl TerminalPane {
             if now - self.dimension_overlay_timer < 2.0_f64 {
                 let palette = theme::palette();
                 let painter = ui.painter();
-                let text = format!("{}\u{00d7}{}", self.desired_cols, self.desired_rows);
+                let text =
+                    format!("{}\u{00d7}{}", self.size.desired_cols(), self.size.desired_rows());
                 let font = egui::FontId::monospace(10.0_f32);
 
                 let galley =
@@ -773,7 +741,7 @@ impl TerminalPane {
                         y += delta.y;
                     }
                     egui::MouseWheelUnit::Page => {
-                        y += delta.y * cell_h * f32::from(self.rows);
+                        y += delta.y * cell_h * f32::from(self.size.rows());
                     }
                 }
             }
@@ -812,7 +780,10 @@ impl TerminalPane {
                     let local = pos - rect.min;
                     let col = (local.x / cell_w).floor().max(0.0) as u16;
                     let row = (local.y / cell_h).floor().max(0.0) as u16;
-                    (col.min(self.cols.saturating_sub(1)), row.min(self.rows.saturating_sub(1)))
+                    (
+                        col.min(self.size.cols().saturating_sub(1)),
+                        row.min(self.size.rows().saturating_sub(1)),
+                    )
                 })
                 .unwrap_or((0, 0));
             let bytes = self.state.mouse_wheel_report_bytes(col, row, lines);
@@ -853,8 +824,8 @@ impl TerminalPane {
             let local = pos - rect.min;
             let col = (local.x / cell.x).floor().max(0.0) as u16;
             let row = (local.y / cell.y).floor().max(0.0) as u16;
-            let col = col.min(self.cols.saturating_sub(1));
-            let row = row.min(self.rows.saturating_sub(1));
+            let col = col.min(self.size.cols().saturating_sub(1));
+            let row = row.min(self.size.rows().saturating_sub(1));
             (col, row)
         };
 
@@ -1111,8 +1082,7 @@ impl TerminalPane {
     /// Resize the terminal pane.
     #[allow(dead_code)]
     pub fn resize(&mut self, cols: u16, rows: u16) {
-        self.cols = cols;
-        self.rows = rows;
+        self.size.force(cols, rows, 0.0);
         self.state.resize(cols, rows);
         self.backend.resize(cols, rows).ok();
     }

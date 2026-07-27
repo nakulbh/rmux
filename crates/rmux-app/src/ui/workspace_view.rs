@@ -563,8 +563,6 @@ fn render_split(
                 let pixel_delta =
                     if is_horizontal { response.drag_delta().x } else { response.drag_delta().y };
                 resize_request = Some((i, pixel_delta / usable_space));
-                // Continuous frames while the divider is held (Warp/cmux feel).
-                ui.ctx().request_repaint();
             }
 
             if response.dragged() {

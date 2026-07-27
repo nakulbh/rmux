@@ -1,8 +1,8 @@
+use crate::bg_batch::BgSpanAccumulator;
+use crate::glyph_cache::{GlyphCache, GlyphKey};
 use crate::state::GridSnapshot;
 use alacritty_terminal::vte::ansi::CursorShape;
-use egui::{Color32, FontFamily, FontId, Galley, Pos2, Rect, Stroke, Ui, Vec2};
-use std::collections::HashMap;
-use std::sync::Arc;
+use egui::{Color32, FontFamily, FontId, Pos2, Rect, Stroke, Ui, Vec2};
 
 // Opaque enough to read on dark themes; old 128 made the block nearly
 // invisible over black cells, especially with a light theme cursor color.
@@ -511,52 +511,6 @@ fn cell_bg_paint(cell_bg: Color32, terminal_bg: Color32, opacity: f32) -> Color3
     }
 }
 
-/// Draw one batched background span as a single rect (Warp-style).
-fn flush_bg_span(painter: &egui::Painter, pane: Rect, cell_w: f32, cell_h: f32, span: &BgSpan) {
-    let cols = span.end_col.saturating_sub(span.start_col);
-    if cols == 0 {
-        return;
-    }
-    let r = Rect::from_min_size(
-        Pos2::new(
-            pane.left() + span.start_col as f32 * cell_w,
-            pane.top() + span.row as f32 * cell_h,
-        ),
-        Vec2::new(cols as f32 * cell_w, cell_h),
-    );
-    painter.rect_filled(r, 0.0, span.color);
-}
-
-/// Max cached per-glyph galleys (Warp-style cell glyph cache, egui-backed).
-const GLYPH_CACHE_CAP: usize = 8192;
-
-/// Cache key for a laid-out terminal glyph (Warp `CellGlyphCache` idea).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct GlyphKey {
-    c: char,
-    bold: bool,
-    /// Font size × 10 as fixed-point so 14.0 and 14.1 don't thrash.
-    size_x10: u16,
-    /// Packed RGBA for the paint color (egui bakes color into the galley).
-    color: u32,
-}
-
-impl GlyphKey {
-    fn new(c: char, bold: bool, font_size: f32, color: Color32) -> Self {
-        let size_x10 = (font_size * 10.0).round().clamp(1.0, 65535.0) as u16;
-        let color = u32::from_le_bytes([color.r(), color.g(), color.b(), color.a()]);
-        Self { c, bold, size_x10, color }
-    }
-}
-
-/// Pending background span — flushed when color changes (Warp bg batching).
-struct BgSpan {
-    row: u16,
-    start_col: u16,
-    end_col: u16,
-    color: Color32,
-}
-
 pub struct TerminalRenderer {
     pub font_size: f32,
     cell_size: Vec2,
@@ -564,8 +518,8 @@ pub struct TerminalRenderer {
     /// Opacity of default terminal background fills over a workspace wallpaper.
     /// `1.0` = fully opaque (classic solid terminal). Shared across all panes.
     bg_opacity: f32,
-    /// Warp-inspired glyph cache: avoid `layout_no_wrap` every cell every frame.
-    glyph_cache: HashMap<GlyphKey, Arc<Galley>>,
+    /// Per-glyph galley cache (avoids `layout_no_wrap` every cell every frame).
+    glyph_cache: GlyphCache,
 }
 
 impl TerminalRenderer {
@@ -576,7 +530,7 @@ impl TerminalRenderer {
             cell_size,
             cell_size_measured: false,
             bg_opacity: 1.0,
-            glyph_cache: HashMap::with_capacity(512),
+            glyph_cache: GlyphCache::with_capacity(512),
         }
     }
 
@@ -609,30 +563,6 @@ impl TerminalRenderer {
         self.cell_size_measured = true;
     }
 
-    fn galley_for(
-        &mut self,
-        ui: &Ui,
-        c: char,
-        bold: bool,
-        color: Color32,
-        font_regular: &FontId,
-        font_bold: &FontId,
-    ) -> Arc<Galley> {
-        let key = GlyphKey::new(c, bold, self.font_size, color);
-        if let Some(g) = self.glyph_cache.get(&key) {
-            return g.clone();
-        }
-        if self.glyph_cache.len() >= GLYPH_CACHE_CAP {
-            // Simple eviction: drop everything rather than LRU bookkeeping.
-            // Terminal palettes are small; this rarely fires mid-session.
-            self.glyph_cache.clear();
-        }
-        let font_id = if bold { font_bold.clone() } else { font_regular.clone() };
-        let galley = ui.fonts(|f| f.layout_no_wrap(c.to_string(), font_id, color));
-        self.glyph_cache.insert(key, galley.clone());
-        galley
-    }
-
     pub fn draw(&mut self, ui: &mut Ui, rect: Rect, snapshot: &GridSnapshot, cursor_visible: bool) {
         if !ui.is_rect_visible(rect) {
             return;
@@ -657,13 +587,34 @@ impl TerminalRenderer {
         let visible_cols = ((rect.width() / cell_w).floor() as u16).min(snapshot.cols);
         let visible_rows = ((rect.height() / cell_h).floor() as u16).min(snapshot.rows);
 
+        // Pass 1: batched backgrounds only (breaks on default/transparent).
+        {
+            let mut bg = BgSpanAccumulator::default();
+            for row in 0..visible_rows {
+                let mut col = 0_u16;
+                while col < visible_cols {
+                    let cell = &snapshot.cells[row as usize][col as usize];
+                    let span = if cell.wide && col + 1 < visible_cols { 2 } else { 1 };
+                    let color = if !same_rgb(cell.bg, snapshot.terminal_bg) {
+                        let paint = cell_bg_paint(cell.bg, snapshot.terminal_bg, opacity);
+                        Some(paint)
+                    } else {
+                        None
+                    };
+                    if let Some(finished) = bg.push(row, col, span, color) {
+                        finished.paint(&painter, rect, cell_w, cell_h);
+                    }
+                    col += span;
+                }
+                if let Some(finished) = bg.take() {
+                    finished.paint(&painter, rect, cell_w, cell_h);
+                }
+            }
+        }
+
+        // Pass 2: glyphs / native shapes / underlines (cell-aligned X).
         let font_regular = FontId::monospace(self.font_size);
         let font_bold = FontId::new(self.font_size, FontFamily::Name("JetBrainsMonoBold".into()));
-
-        // Warp-style: batch consecutive same-bg cells into one rect; collect
-        // glyphs positioned at exact col*cell_w (not string advances).
-        let mut bg_span: Option<BgSpan> = None;
-        let mut deferred_cursors: Vec<(Rect, CursorShape)> = Vec::new();
 
         for row in 0..visible_rows {
             let row_y = rect.top() + row as f32 * cell_h;
@@ -671,69 +622,32 @@ impl TerminalRenderer {
             while col < visible_cols {
                 let cell = &snapshot.cells[row as usize][col as usize];
                 let span = if cell.wide && col + 1 < visible_cols { 2 } else { 1 };
-
                 let cell_rect = Rect::from_min_size(
                     Pos2::new(rect.left() + col as f32 * cell_w, row_y),
                     Vec2::new(cell_w * span as f32, cell_h),
                 );
 
-                // --- Background batching (Warp CachedBackgroundColor) ---
-                let custom_bg = !same_rgb(cell.bg, snapshot.terminal_bg);
-                if custom_bg {
-                    let paint_bg = cell_bg_paint(cell.bg, snapshot.terminal_bg, opacity);
-                    if paint_bg.a() > 0 {
-                        match bg_span.as_mut() {
-                            Some(s) if s.row == row && s.end_col == col && s.color == paint_bg => {
-                                s.end_col = col + span;
-                            }
-                            _ => {
-                                if let Some(s) = bg_span.take() {
-                                    flush_bg_span(&painter, rect, cell_w, cell_h, &s);
-                                }
-                                bg_span = Some(BgSpan {
-                                    row,
-                                    start_col: col,
-                                    end_col: col + span,
-                                    color: paint_bg,
-                                });
-                            }
-                        }
-                    }
-                } else if let Some(s) = bg_span.take() {
-                    flush_bg_span(&painter, rect, cell_w, cell_h, &s);
-                }
-
-                // --- Glyph / native shape ---
-                // Warp: skip pure whitespace; place at cell origin (col * cell_w).
                 if cell.c != ' ' && cell.c != '\t' && cell.c != '\0' {
                     if is_special_shape(cell.c) {
                         paint_special_shape(&painter, cell_rect, cell.c, cell.fg);
                     } else {
-                        // Fast path: ASCII always has a glyph in the cascade.
-                        let needs_check = !cell.c.is_ascii();
-                        let use_fallback = if needs_check {
+                        let use_fallback = if cell.c.is_ascii() {
+                            false
+                        } else {
                             let font_id =
                                 if cell.bold { font_bold.clone() } else { font_regular.clone() };
                             let has = ui.fonts(|f| f.has_glyph(&font_id, cell.c));
                             !has && is_symbol_range(cell.c)
-                        } else {
-                            false
                         };
 
                         if use_fallback {
                             paint_missing_symbol_fallback(&painter, cell_rect, cell.c, cell.fg);
                         } else {
-                            let galley = self.galley_for(
-                                ui,
-                                cell.c,
-                                cell.bold,
-                                cell.fg,
-                                &font_regular,
-                                &font_bold,
-                            );
+                            let key = GlyphKey::new(cell.c, cell.bold, self.font_size, cell.fg);
+                            let galley =
+                                self.glyph_cache.get_or_layout(ui, key, &font_regular, &font_bold);
                             let gw = galley.size().x;
                             let gh = galley.size().y;
-                            // Cell-aligned X (Warp grid_origin + col * cell_w).
                             let x = if is_nerd_icon(cell.c) {
                                 cell_rect.left() + (cell_rect.width() - gw) * 0.5
                             } else {
@@ -757,50 +671,21 @@ impl TerminalRenderer {
                     }
                 }
 
-                if cell.is_cursor && cursor_visible {
-                    deferred_cursors.push((cell_rect, snapshot.cursor_shape));
-                }
-
                 col += span;
-            }
-            // End of row: flush bg span (Warp doesn't carry bg across rows).
-            if let Some(s) = bg_span.take() {
-                flush_bg_span(&painter, rect, cell_w, cell_h, &s);
             }
         }
 
-        // Cursor after text so it isn't covered by later bg batches.
-        for (cell_rect, shape) in deferred_cursors {
-            match shape {
-                CursorShape::Block | CursorShape::HollowBlock => {
-                    painter.rect_filled(
-                        cell_rect,
-                        0.0,
-                        cursor_color(CURSOR_BLOCK_ALPHA, snapshot.cursor_color),
-                    );
-                }
-                CursorShape::Underline => {
-                    painter.rect_filled(
-                        Rect::from_min_max(
-                            Pos2::new(cell_rect.left(), cell_rect.bottom() - 2.0),
-                            Pos2::new(cell_rect.right(), cell_rect.bottom()),
-                        ),
-                        0.0,
-                        cursor_color(CURSOR_LINE_ALPHA, snapshot.cursor_color),
-                    );
-                }
-                CursorShape::Beam => {
-                    painter.rect_filled(
-                        Rect::from_min_max(
-                            Pos2::new(cell_rect.left(), cell_rect.top()),
-                            Pos2::new(cell_rect.left() + 2.0, cell_rect.bottom()),
-                        ),
-                        0.0,
-                        cursor_color(CURSOR_LINE_ALPHA, snapshot.cursor_color),
-                    );
-                }
-                CursorShape::Hidden => {}
-            }
+        // Pass 3: cursor from snapshot metadata (not a per-cell scan).
+        if cursor_visible {
+            paint_cursor_overlay(
+                &painter,
+                rect,
+                cell_w,
+                cell_h,
+                snapshot,
+                visible_cols,
+                visible_rows,
+            );
         }
     }
 
@@ -825,6 +710,61 @@ impl TerminalRenderer {
         let cols = (rect.width() / self.cell_size.x).floor() as u16;
         let rows = (rect.height() / self.cell_size.y).floor() as u16;
         (cols.max(1), rows.max(1))
+    }
+}
+
+/// Paint the caret using snapshot cursor position (pass 3).
+fn paint_cursor_overlay(
+    painter: &egui::Painter,
+    pane: Rect,
+    cell_w: f32,
+    cell_h: f32,
+    snapshot: &GridSnapshot,
+    visible_cols: u16,
+    visible_rows: u16,
+) {
+    let row = snapshot.cursor_row;
+    let col = snapshot.cursor_col;
+    if row >= visible_rows || col >= visible_cols {
+        return;
+    }
+    let wide =
+        snapshot.cells.get(row as usize).and_then(|r| r.get(col as usize)).is_some_and(|c| c.wide);
+    let span = if wide && col + 1 < visible_cols { 2 } else { 1 };
+    let cell_rect = Rect::from_min_size(
+        Pos2::new(pane.left() + col as f32 * cell_w, pane.top() + row as f32 * cell_h),
+        Vec2::new(cell_w * span as f32, cell_h),
+    );
+
+    match snapshot.cursor_shape {
+        CursorShape::Block | CursorShape::HollowBlock => {
+            painter.rect_filled(
+                cell_rect,
+                0.0,
+                cursor_color(CURSOR_BLOCK_ALPHA, snapshot.cursor_color),
+            );
+        }
+        CursorShape::Underline => {
+            painter.rect_filled(
+                Rect::from_min_max(
+                    Pos2::new(cell_rect.left(), cell_rect.bottom() - 2.0),
+                    Pos2::new(cell_rect.right(), cell_rect.bottom()),
+                ),
+                0.0,
+                cursor_color(CURSOR_LINE_ALPHA, snapshot.cursor_color),
+            );
+        }
+        CursorShape::Beam => {
+            painter.rect_filled(
+                Rect::from_min_max(
+                    Pos2::new(cell_rect.left(), cell_rect.top()),
+                    Pos2::new(cell_rect.left() + 2.0, cell_rect.bottom()),
+                ),
+                0.0,
+                cursor_color(CURSOR_LINE_ALPHA, snapshot.cursor_color),
+            );
+        }
+        CursorShape::Hidden => {}
     }
 }
 
@@ -880,23 +820,10 @@ mod tests {
     }
 
     #[test]
-    fn test_glyph_key_differs_by_style_and_color() {
-        let a = GlyphKey::new('a', false, 14.0, Color32::WHITE);
-        let b = GlyphKey::new('a', true, 14.0, Color32::WHITE);
-        let c = GlyphKey::new('a', false, 14.0, Color32::RED);
-        let d = GlyphKey::new('a', false, 14.0, Color32::WHITE);
-        assert_ne!(a, b);
-        assert_ne!(a, c);
-        assert_eq!(a, d);
-    }
-
-    #[test]
     fn test_set_font_size_clears_glyph_cache_and_measurement() {
         let mut renderer = TerminalRenderer::new(14.0);
         let original = renderer.cell_size();
-        assert!(renderer.glyph_cache.is_empty());
         renderer.set_font_size(20.0);
-        assert!(renderer.glyph_cache.is_empty());
         assert_eq!(renderer.font_size, 20.0);
         assert!(!renderer.cell_size_measured);
         let updated = renderer.cell_size();

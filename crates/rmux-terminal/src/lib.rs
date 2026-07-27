@@ -9,10 +9,14 @@
 //! - `backend` — PTY lifecycle management (spawn, read, write, resize)
 //! - `state` — Terminal state wrapper around `alacritty_terminal::Term`
 //! - `renderer` — Convert terminal grid cells into egui paint commands
+//! - `coalesced_size` — layout size vs throttled PTY/grid reflow
 //! - `input` — Map egui keyboard/mouse events to terminal escape sequences
 //! - `osc` — Scan PTY output for notification OSC sequences (9/99/777)
 
 mod backend;
+mod bg_batch;
+mod coalesced_size;
+mod glyph_cache;
 mod input;
 mod osc;
 mod renderer;
@@ -23,6 +27,7 @@ pub use backend::{
     PtyBackend, PtyError, PtyResult, clean_process_title, foreground_process_args,
     foreground_process_title, parse_ps_pid_ppid_args, pick_foreground_args, pick_foreground_title,
 };
+pub use coalesced_size::CoalescedSize;
 pub use input::InputMapper;
 pub use osc::{OscKind, OscNotification, OscScanner};
 pub use renderer::TerminalRenderer;
