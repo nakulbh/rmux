@@ -25,13 +25,10 @@ RAW_BASE="https://raw.githubusercontent.com/nakulbh/rmux/${RMUX_VERSION}"
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
-info() { printf '==> %s\n' "$*"; }
-warn() { printf 'warning: %s\n' "$*" >&2; }
-die() {
-  printf 'error: %s\n' "$*" >&2
-  exit 1
-}
-have() { command -v "$1" >/dev/null 2>&1; }
+info()  { printf '==> %s\n' "$*"; }
+warn()  { printf 'warning: %s\n' "$*" >&2; }
+die()   { printf 'error: %s\n' "$*" >&2; exit 1; }
+have()  { command -v "$1" >/dev/null 2>&1; }
 
 need_cmd() {
   have "$1" || die "required command not found: $1"
@@ -51,9 +48,9 @@ download() {
 
 os_name() {
   case "$(uname -s)" in
-  Darwin) echo macos ;;
-  Linux) echo linux ;;
-  *) die "unsupported OS: $(uname -s). This installer supports macOS and Linux only." ;;
+    Darwin) echo macos ;;
+    Linux)  echo linux ;;
+    *)      die "unsupported OS: $(uname -s). This installer supports macOS and Linux only." ;;
   esac
 }
 
@@ -118,16 +115,16 @@ install_linux_build_deps() {
   if have apt-get; then
     info "Installing Linux build dependencies (apt)"
     "${sudo_cmd[@]}" apt-get update -qq || warn "apt-get update failed; build may still succeed"
-    "${sudo_cmd[@]}" DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${pkgs[@]}" ||
+    "${sudo_cmd[@]}" DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${pkgs[@]}" || \
       warn "some apt packages failed to install; build may still succeed"
   elif have dnf; then
     info "Installing Linux build dependencies (dnf)"
     "${sudo_cmd[@]}" dnf install -y gcc pkgconf-pkg-config openssl-devel \
-      gtk3-devel webkit2gtk4.1-devel ||
+      gtk3-devel webkit2gtk4.1-devel || \
       warn "some dnf packages failed to install; build may still succeed"
   elif have pacman; then
     info "Installing Linux build dependencies (pacman)"
-    "${sudo_cmd[@]}" pacman -S --needed --noconfirm base-devel openssl gtk3 webkit2gtk-4.1 ||
+    "${sudo_cmd[@]}" pacman -S --needed --noconfirm base-devel openssl gtk3 webkit2gtk-4.1 || \
       warn "some pacman packages failed to install; build may still succeed"
   else
     warn "could not detect a package manager; ensure GUI/WebKit dev libs are installed"
@@ -143,8 +140,8 @@ cleanup() { rm -rf "$WORKDIR"; }
 trap cleanup EXIT
 
 info "Cloning ${RMUX_REPO} @ ${RMUX_VERSION}"
-git clone --depth 1 --branch "${RMUX_VERSION}" "${RMUX_REPO}" "${WORKDIR}/rmux" ||
-  git clone --depth 1 "${RMUX_REPO}" "${WORKDIR}/rmux"
+git clone --depth 1 --branch "${RMUX_VERSION}" "${RMUX_REPO}" "${WORKDIR}/rmux" \
+  || git clone --depth 1 "${RMUX_REPO}" "${WORKDIR}/rmux"
 
 cd "${WORKDIR}/rmux"
 # If the requested branch/tag didn't exist, we cloned default — try checkout.
@@ -163,21 +160,18 @@ info "Installed binary → ${RMUX_INSTALL_DIR}/rmux"
 
 # Ensure PATH hint
 case ":${PATH}:" in
-*":${RMUX_INSTALL_DIR}:"*) ;;
-*)
-  warn "${RMUX_INSTALL_DIR} is not on your PATH"
-  printf '    Add this to your shell profile:\n'
-  printf '      export PATH="%s:$PATH"\n' "${RMUX_INSTALL_DIR}"
-  ;;
+  *":${RMUX_INSTALL_DIR}:"*) ;;
+  *)
+    warn "${RMUX_INSTALL_DIR} is not on your PATH"
+    printf '    Add this to your shell profile:\n'
+    printf '      export PATH="%s:$PATH"\n' "${RMUX_INSTALL_DIR}"
+    ;;
 esac
 
 # ── official logo + desktop integration ──────────────────────────────────────
 
 install_logo_and_desktop() {
-  [[ "${RMUX_SKIP_DESKTOP}" == "1" ]] && {
-    info "Skipping desktop integration (RMUX_SKIP_DESKTOP=1)"
-    return
-  }
+  [[ "${RMUX_SKIP_DESKTOP}" == "1" ]] && { info "Skipping desktop integration (RMUX_SKIP_DESKTOP=1)"; return; }
 
   local logo_src="${WORKDIR}/rmux/rmux_logo.jpg"
   local logo_png="${WORKDIR}/rmux/assets/icons/rmux_logo.png"
@@ -191,16 +185,13 @@ install_logo_and_desktop() {
   if [[ ! -f "$logo_png" ]]; then
     # Fallback: fetch from GitHub raw
     logo_png="${WORKDIR}/rmux_logo.png"
-    download "${RAW_BASE}/assets/icons/rmux_logo.png" "$logo_png" 2>/dev/null ||
-      download "${RAW_BASE}/rmux_logo.jpg" "${WORKDIR}/rmux_logo.jpg" || true
+    download "${RAW_BASE}/assets/icons/rmux_logo.png" "$logo_png" 2>/dev/null \
+      || download "${RAW_BASE}/rmux_logo.jpg" "${WORKDIR}/rmux_logo.jpg" || true
     if [[ -f "${WORKDIR}/rmux_logo.jpg" && ! -f "$logo_png" ]] && have sips; then
       sips -s format png "${WORKDIR}/rmux_logo.jpg" --out "$logo_png" >/dev/null
     fi
   fi
-  [[ -f "$logo_png" ]] || {
-    warn "could not locate official rmux logo; skipping icon install"
-    return
-  }
+  [[ -f "$logo_png" ]] || { warn "could not locate official rmux logo; skipping icon install"; return; }
 
   if [[ "$OS" == macos ]]; then
     install_macos_app "$logo_png"
@@ -241,14 +232,14 @@ install_macos_app() {
     done
     # Required naming variants for iconutil
     cp "${iconset}/icon_32x32.png" "${iconset}/icon_16x16@2x.png" 2>/dev/null || true
-    iconutil -c icns "$iconset" -o "${resources}/AppIcon.icns" 2>/dev/null ||
-      warn "iconutil failed; app will use the runtime-embedded icon"
+    iconutil -c icns "$iconset" -o "${resources}/AppIcon.icns" 2>/dev/null \
+      || warn "iconutil failed; app will use the runtime-embedded icon"
   else
     # Store PNG as a fallback resource
     cp "$logo_png" "${resources}/rmux.png"
   fi
 
-  cat >"${contents}/Info.plist" <<'PLIST'
+  cat > "${contents}/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -309,7 +300,7 @@ install_linux_desktop() {
     elif have magick; then
       magick "$logo_png" -resize "${size}x${size}" "${dir}/rmux.png"
     elif have ffmpeg; then
-      ffmpeg -y -i "$logo_png" -vf "scale=${size}:${size}" "${dir}/rmux.png" >/dev/null 2>&1 ||
+      ffmpeg -y -i "$logo_png" -vf "scale=${size}:${size}" "${dir}/rmux.png" >/dev/null 2>&1 || \
         cp "$logo_png" "${dir}/rmux.png"
     else
       # Install full-res PNG at every size; desktop environments still pick it up.
@@ -320,7 +311,7 @@ install_linux_desktop() {
   mkdir -p "${icons_base}/scalable/apps"
   cp "$logo_png" "${icons_base}/scalable/apps/rmux.png"
 
-  cat >"${apps_dir}/rmux.desktop" <<DESKTOP
+  cat > "${apps_dir}/rmux.desktop" <<DESKTOP
 [Desktop Entry]
 Type=Application
 Name=rmux
@@ -356,7 +347,7 @@ cat <<EOF
 rmux installed successfully.
 
   Binary:  ${RMUX_INSTALL_DIR}/rmux
-  Version: $("${RMUX_INSTALL_DIR}/rmux" --version 2>/dev/null || echo "${RMUX_VERSION}")
+  Version: $( "${RMUX_INSTALL_DIR}/rmux" --version 2>/dev/null || echo "${RMUX_VERSION}" )
 
 Run:
   rmux
