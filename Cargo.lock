@@ -3908,6 +3908,7 @@ dependencies = [
  "notify-rust",
  "rfd",
  "rmux-api",
+ "rmux-cli",
  "rmux-config",
  "rmux-terminal",
  "serde",

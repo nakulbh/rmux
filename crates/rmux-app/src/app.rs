@@ -933,7 +933,9 @@ fn attach_terminal(
     cwd: Option<&std::path::Path>,
     bg_opacity: f32,
 ) {
-    match TerminalPane::spawn_with_cwd(INITIAL_COLS, INITIAL_ROWS, font_size, cwd) {
+    let workspace_id = manager.active().id.0;
+    let env = agent_integration_env(workspace_id, pane_id.0);
+    match TerminalPane::spawn_with_env(INITIAL_COLS, INITIAL_ROWS, font_size, cwd, &env) {
         Ok(mut terminal) => {
             terminal.set_theme(rmux_terminal::TerminalTheme::default().named(named_theme));
             terminal.set_bg_opacity(bg_opacity);
@@ -941,4 +943,38 @@ fn attach_terminal(
         }
         Err(e) => tracing::error!(pane_id = pane_id.0, "Failed to spawn terminal pane: {e}"),
     }
+}
+
+/// Environment variables injected into every PTY so agent notify plugins
+/// (OpenCode kdco-notify / cmux-compatible tools) can reach this workspace.
+///
+/// Sets both `RMUX_*` and `CMUX_*` aliases. Also ensures a `cmux` shim exists
+/// under `~/.local/bin` so plugins that shell out to `cmux notify` succeed
+/// instead of falling back to the external `alerter` binary on macOS.
+fn agent_integration_env(workspace_id: u64, pane_id: u64) -> Vec<(String, String)> {
+    // Best-effort: install/update the cmux PATH shim once per process.
+    static SHIM_ONCE: std::sync::Once = std::sync::Once::new();
+    SHIM_ONCE.call_once(|| {
+        if let Some(dir) = rmux_cli::cmux_compat::ensure_local_shim() {
+            tracing::info!(path = %dir.join("cmux").display(), "ensured cmux notify shim");
+        } else {
+            tracing::debug!("could not install cmux notify shim (HOME/rmux-cli missing?)");
+        }
+    });
+
+    let socket = rmux_api::default_socket_path();
+    let socket_s = socket.display().to_string();
+    let ws = workspace_id.to_string();
+    let pane = pane_id.to_string();
+
+    vec![
+        ("RMUX_WORKSPACE_ID".to_owned(), ws.clone()),
+        ("RMUX_PANE_ID".to_owned(), pane.clone()),
+        ("RMUX_SOCKET_PATH".to_owned(), socket_s.clone()),
+        // cmux-compatible aliases used by OpenCode notify / kdco plugins
+        ("CMUX_WORKSPACE_ID".to_owned(), ws),
+        ("CMUX_SURFACE_ID".to_owned(), pane),
+        ("CMUX_SOCKET_PATH".to_owned(), socket_s),
+        ("CMUX_SOCKET_MODE".to_owned(), "allowall".to_owned()),
+    ]
 }
