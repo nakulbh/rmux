@@ -397,8 +397,7 @@ All return `anyhow::Result<()>`:
 | `Cmd/Ctrl+Shift+Enter` | Toggle pane zoom |
 | `Cmd/Ctrl+Shift+=` | Equalize split sizes |
 | `Cmd/Ctrl+Shift+[/]` | Previous/next workspace |
-| `Cmd/Ctrl+ArrowLeft/Up` | Focus previous pane |
-| `Cmd/Ctrl+ArrowRight/Down` | Focus next pane |
+| `Cmd+Option+Arrow` (macOS) / `Ctrl+Shift+Arrow` (Linux/Windows) | Focus adjacent pane |
 
 ---
 

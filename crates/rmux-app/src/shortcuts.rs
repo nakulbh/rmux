@@ -90,8 +90,7 @@ mod tests {
     #[test]
     fn registry_focus_arrows() {
         let reg = ShortcutRegistry::default();
-        let mut mods = primary_mod_pressed();
-        mods.alt = true;
+        let mods = crate::shortcut_manager::focus_pane_modifiers();
         assert_eq!(reg.lookup(mods, Key::ArrowLeft), Some(ShortcutAction::FocusLeft));
         assert_eq!(reg.lookup(mods, Key::ArrowRight), Some(ShortcutAction::FocusRight));
         assert_eq!(reg.lookup(mods, Key::ArrowUp), Some(ShortcutAction::FocusUp));

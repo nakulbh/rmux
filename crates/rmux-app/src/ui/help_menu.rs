@@ -518,7 +518,10 @@ impl HelpMenu {
                             (&format!("{mod_label}D"), "Split right"),
                             (&format!("{mod_label}⇧D"), "Split down"),
                             (&format!("{mod_label}T"), "New terminal tab"),
-                            ("⌥←/→/↑/↓", "Focus adjacent pane"),
+                            (
+                                crate::shortcut_manager::focus_pane_chord_label(),
+                                "Focus adjacent pane",
+                            ),
                         ],
                     );
                     shortcut_section(

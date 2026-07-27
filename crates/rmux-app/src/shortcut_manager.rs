@@ -344,15 +344,14 @@ impl ShortcutManager {
         );
         self.bind_chord(mac_ctrl_cmd(), Key::Equals, AppCommand::EqualizeSplitsAlt);
 
-        // Focus panes (⌘⌥ arrows)
-        self.bind_chord(Modifiers::COMMAND | Modifiers::ALT, Key::ArrowLeft, AppCommand::FocusLeft);
-        self.bind_chord(
-            Modifiers::COMMAND | Modifiers::ALT,
-            Key::ArrowRight,
-            AppCommand::FocusRight,
-        );
-        self.bind_chord(Modifiers::COMMAND | Modifiers::ALT, Key::ArrowUp, AppCommand::FocusUp);
-        self.bind_chord(Modifiers::COMMAND | Modifiers::ALT, Key::ArrowDown, AppCommand::FocusDown);
+        // Focus panes — one platform chord (not stacked):
+        // macOS: ⌘⌥ arrows (cmux). Linux/Windows: Ctrl+Shift arrows
+        // (Ctrl+Alt conflicts with desktop workspace switching).
+        let focus_mods = focus_pane_modifiers();
+        self.bind_chord(focus_mods, Key::ArrowLeft, AppCommand::FocusLeft);
+        self.bind_chord(focus_mods, Key::ArrowRight, AppCommand::FocusRight);
+        self.bind_chord(focus_mods, Key::ArrowUp, AppCommand::FocusUp);
+        self.bind_chord(focus_mods, Key::ArrowDown, AppCommand::FocusDown);
 
         // Surfaces / tabs
         self.bind_chord(Modifiers::COMMAND, Key::T, AppCommand::NewSurface);
@@ -444,6 +443,33 @@ const NUM_KEYS: [Key; 9] = [
 /// (avoids stealing plain Ctrl bindings).
 fn mac_ctrl_cmd() -> Modifiers {
     Modifiers { ctrl: true, command: true, mac_cmd: true, ..Modifiers::NONE }
+}
+
+/// Modifiers for focus-adjacent-pane chords.
+///
+/// Single source of truth for bindings, help labels, and tests — do not
+/// re-encode this policy as stacked `cfg` bind blocks.
+pub(crate) fn focus_pane_modifiers() -> Modifiers {
+    #[cfg(target_os = "macos")]
+    {
+        Modifiers::COMMAND | Modifiers::ALT
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Modifiers::CTRL | Modifiers::SHIFT
+    }
+}
+
+/// Human-readable focus-pane chord for help UI / docs.
+pub(crate) fn focus_pane_chord_label() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "⌘⌥←/→/↑/↓"
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        "Ctrl+Shift+←/→/↑/↓"
+    }
 }
 
 /// Simulate the modifiers egui reports when the user holds the platform
@@ -545,6 +571,7 @@ mod tests {
         m
     }
 
+    #[cfg(not(target_os = "macos"))]
     fn cmd_alt() -> Modifiers {
         let mut m = cmd();
         m.alt = true;
@@ -604,9 +631,22 @@ mod tests {
     }
 
     #[test]
-    fn focus_arrows_require_alt() {
-        assert_eq!(mgr().resolve(cmd_alt(), Key::ArrowLeft), Some(AppCommand::FocusLeft));
+    fn focus_arrows_use_platform_chord() {
+        let mods = focus_pane_modifiers();
+        assert_eq!(mgr().resolve(mods, Key::ArrowLeft), Some(AppCommand::FocusLeft));
+        assert_eq!(mgr().resolve(mods, Key::ArrowRight), Some(AppCommand::FocusRight));
+        assert_eq!(mgr().resolve(mods, Key::ArrowUp), Some(AppCommand::FocusUp));
+        assert_eq!(mgr().resolve(mods, Key::ArrowDown), Some(AppCommand::FocusDown));
+        // Bare primary (no Alt/Shift) must not steal terminal arrow motion.
         assert_eq!(mgr().resolve(cmd(), Key::ArrowLeft), None);
+    }
+
+    /// Linux/Windows must not keep Ctrl+Alt focus (desktop workspace conflict).
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn focus_arrows_do_not_use_ctrl_alt_on_non_mac() {
+        assert_eq!(mgr().resolve(cmd_alt(), Key::ArrowLeft), None);
+        assert_eq!(mgr().resolve(cmd_alt(), Key::ArrowRight), None);
     }
 
     #[test]
