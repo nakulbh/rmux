@@ -1,7 +1,7 @@
 //! G2: full-grid GPU paint from [`rmux_terminal::GridSnapshot`].
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use eframe::egui_wgpu::{self, CallbackResources, RenderState, ScreenDescriptor, wgpu};
 use egui::{Color32, PaintCallbackInfo, Rect, Ui};
@@ -12,10 +12,31 @@ use crate::atlas::GlyphAtlas;
 const MAX_INSTANCES: u64 = 64 * 1024;
 
 static NEXT_PANE_ID: AtomicU64 = AtomicU64::new(1);
+static GRID_READY: AtomicBool = AtomicBool::new(false);
+static FRAME_EPOCH: AtomicU64 = AtomicU64::new(1);
 
 /// Allocate a stable id for multipane instance-buffer ranges.
 pub fn alloc_pane_id() -> u64 {
     NEXT_PANE_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Whether the full-grid GPU pipeline is installed (not just G0 fill).
+#[inline]
+pub fn grid_is_ready() -> bool {
+    GRID_READY.load(Ordering::Relaxed)
+}
+
+pub(crate) fn set_grid_ready(ready: bool) {
+    GRID_READY.store(ready, Ordering::Relaxed);
+}
+
+/// Begin a new UI frame’s GPU terminal paints (call once per `App::update`).
+pub fn begin_frame() {
+    FRAME_EPOCH.fetch_add(1, Ordering::Relaxed);
+}
+
+fn current_epoch() -> u64 {
+    FRAME_EPOCH.load(Ordering::Relaxed)
 }
 
 #[repr(C)]
@@ -30,8 +51,6 @@ struct CellInstance {
     uv_max: [f32; 2],
 }
 
-/// Compact cell for sending into the paint callback (built on the UI thread
-/// without needing the atlas; glyphs are resolved in `prepare`).
 #[derive(Clone, Copy)]
 struct CpuCell {
     col: u16,
@@ -51,7 +70,6 @@ pub(crate) struct GridGpu {
     instance_buffer: wgpu::Buffer,
     atlas_texture: wgpu::Texture,
     atlas: GlyphAtlas,
-    /// pane_id → (first_instance, count) after prepare
     ranges: HashMap<u64, (u32, u32)>,
     next_instance: u32,
     last_prepare_epoch: u64,
@@ -84,8 +102,11 @@ impl GridGpu {
         let atlas_view = atlas_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("rmux_term_atlas_samp"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Nearest,
             min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
 
@@ -183,7 +204,8 @@ impl GridGpu {
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: target_format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    // Match egui's default mesh blending.
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -216,6 +238,7 @@ impl GridGpu {
             last_prepare_epoch: 0,
         });
 
+        set_grid_ready(true);
         Ok(())
     }
 
@@ -257,7 +280,6 @@ struct GridPaintCallback {
     pane_w: f32,
     pane_h: f32,
     cells: Vec<CpuCell>,
-    /// Monotonic frame id so multipane prepares share one instance wave.
     frame_epoch: u64,
 }
 
@@ -271,14 +293,15 @@ impl egui_wgpu::CallbackTrait for GridPaintCallback {
         resources: &mut CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
         let Some(gpu) = resources.get_mut::<GridGpu>() else {
+            tracing::warn!("rmux-terminal-gpu: GridGpu missing in prepare");
             return Vec::new();
         };
 
         gpu.begin_frame_if_needed(self.frame_epoch);
         gpu.atlas.set_font_size(self.font_size);
 
-        let cell_w = gpu.atlas.cell_w;
-        let cell_h = gpu.atlas.cell_h;
+        let cell_w = gpu.atlas.cell_w.max(1.0);
+        let cell_h = gpu.atlas.cell_h.max(1.0);
         let metrics = [self.pane_w, self.pane_h, cell_w, cell_h];
 
         let mut instances = Vec::with_capacity(self.cells.len());
@@ -291,11 +314,18 @@ impl egui_wgpu::CallbackTrait for GridPaintCallback {
             if cell.cursor {
                 flags += 2.0;
             }
+
+            // Clamp glyph placement into the cell so UV sampling always hits ink.
             let (glyph_rect, uv_min, uv_max) = if g.has_ink {
-                ([g.ox, g.oy, g.gw, g.gh], g.uv_min, g.uv_max)
+                let gw = g.gw.min(cell_w * f32::from(cell.span));
+                let gh = g.gh.min(cell_h);
+                let ox = g.ox.clamp(0.0, (cell_w - 1.0).max(0.0));
+                let oy = g.oy.clamp(0.0, (cell_h - 1.0).max(0.0));
+                ([ox, oy, gw.max(1.0), gh.max(1.0)], g.uv_min, g.uv_max)
             } else {
                 ([0.0, 0.0, 0.0, 0.0], [0.0, 0.0], [0.0, 0.0])
             };
+
             instances.push(CellInstance {
                 geo: [f32::from(cell.col), f32::from(cell.row), f32::from(cell.span), flags],
                 metrics,
@@ -336,7 +366,7 @@ impl egui_wgpu::CallbackTrait for GridPaintCallback {
 
     fn paint(
         &self,
-        _info: PaintCallbackInfo,
+        info: PaintCallbackInfo,
         render_pass: &mut wgpu::RenderPass<'static>,
         resources: &CallbackResources,
     ) {
@@ -350,6 +380,26 @@ impl egui_wgpu::CallbackTrait for GridPaintCallback {
             return;
         }
 
+        // Match scissor to the pane viewport so we are not clipped to a
+        // previous mesh's scissor rect from the egui batcher.
+        let vp = info.viewport_in_pixels();
+        if vp.width_px <= 0 || vp.height_px <= 0 {
+            return;
+        }
+        let x = vp.left_px.max(0) as u32;
+        let y = vp.top_px.max(0) as u32;
+        let w = vp.width_px as u32;
+        let h = vp.height_px as u32;
+        render_pass.set_scissor_rect(x, y, w, h);
+        render_pass.set_viewport(
+            vp.left_px as f32,
+            vp.top_px as f32,
+            vp.width_px as f32,
+            vp.height_px as f32,
+            0.0,
+            1.0,
+        );
+
         let stride = std::mem::size_of::<CellInstance>() as u64;
         let start = u64::from(first) * stride;
         let end = start + u64::from(count) * stride;
@@ -361,20 +411,9 @@ impl egui_wgpu::CallbackTrait for GridPaintCallback {
     }
 }
 
-static FRAME_EPOCH: AtomicU64 = AtomicU64::new(1);
-
-/// Begin a new UI frame’s GPU terminal paints (call once per `App::update`).
-pub fn begin_frame() {
-    FRAME_EPOCH.fetch_add(1, Ordering::Relaxed);
-}
-
-fn current_epoch() -> u64 {
-    FRAME_EPOCH.load(Ordering::Relaxed)
-}
-
 /// Paint the terminal grid with the GPU path.
 ///
-/// Returns `false` if GPU resources are not installed.
+/// Returns `false` if the grid pipeline is not installed (caller must use egui).
 pub fn paint_grid(
     ui: &mut Ui,
     rect: Rect,
@@ -384,16 +423,19 @@ pub fn paint_grid(
     font_size: f32,
     pane_id: u64,
 ) -> bool {
-    if !crate::is_ready() || !rect.is_positive() {
+    if !grid_is_ready() || !rect.is_positive() {
         return false;
     }
 
-    // Upload the full snapshot grid; the GPU viewport scissor clips to the pane.
-    // (Per-frame atlas metrics may differ slightly from this estimate.)
     let visible_cols = snapshot.cols;
     let visible_rows = snapshot.rows;
+    if visible_cols == 0 || visible_rows == 0 {
+        return false;
+    }
 
     let opacity = opacity.clamp(0.0, 1.0);
+    // Keep terminal glass readable: never fully disappear into wallpaper.
+    let bg_opacity = opacity.max(0.35);
     let term_bg = snapshot.terminal_bg;
     let mut cells = Vec::with_capacity(visible_cols as usize * visible_rows as usize);
 
@@ -403,9 +445,10 @@ pub fn paint_grid(
             let cell = &snapshot.cells[row as usize][col as usize];
             let span = if cell.wide && col + 1 < visible_cols { 2 } else { 1 };
             let bg = if same_rgb(cell.bg, term_bg) {
-                with_opacity(term_bg, opacity)
+                with_opacity(term_bg, bg_opacity)
             } else {
-                with_opacity(cell.bg, opacity.max(0.85))
+                // Custom cell backgrounds (nvim, TUIs) stay nearly solid.
+                with_opacity(cell.bg, bg_opacity.max(0.92))
             };
             let cursor = cursor_visible && row == snapshot.cursor_row && col == snapshot.cursor_col;
             cells.push(CpuCell {

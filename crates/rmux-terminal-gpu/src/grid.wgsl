@@ -1,10 +1,11 @@
 // G2: instanced terminal cells. Metrics are per-instance for multipane safety.
+// Output is premultiplied alpha (matches egui's render pass blending).
 
 struct VsOut {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,
-    @location(1) fg: vec4<f32>,
-    @location(2) bg: vec4<f32>,
+    @location(1) fg: vec4<f32>, // straight RGBA 0..1
+    @location(2) bg: vec4<f32>, // straight RGBA 0..1
     @location(3) @interpolate(flat) flags: u32,
     @location(4) cell_uv: vec2<f32>,
 };
@@ -36,7 +37,7 @@ fn vs_main(
     let col = geo.x;
     let row = geo.y;
     let span = max(geo.z, 1.0);
-    let flags = u32(geo.w);
+    let flags = u32(geo.w + 0.5);
 
     let pane_w = max(metrics.x, 1.0);
     let pane_h = max(metrics.y, 1.0);
@@ -51,6 +52,7 @@ fn vs_main(
     let px = mix(cell_x0, cell_x1, corner.x);
     let py = mix(cell_y0, cell_y1, corner.y);
 
+    // Points → NDC (viewport = pane; y down in points, y up in NDC).
     let ndc_x = (px / pane_w) * 2.0 - 1.0;
     let ndc_y = 1.0 - (py / pane_h) * 2.0;
 
@@ -61,18 +63,19 @@ fn vs_main(
     out.flags = flags;
     out.cell_uv = corner;
 
-    let gx0 = cell_x0 + glyph_rect.x;
-    let gy0 = cell_y0 + glyph_rect.y;
-    let gx1 = gx0 + glyph_rect.z;
-    let gy1 = gy0 + glyph_rect.w;
-
-    if (glyph_rect.z > 0.5 && glyph_rect.w > 0.5) {
+    // Map UVs only inside the glyph sub-rect; elsewhere uv.x < 0 → bg only.
+    let has_glyph = glyph_rect.z > 0.5 && glyph_rect.w > 0.5;
+    if (has_glyph) {
+        let gx0 = cell_x0 + glyph_rect.x;
+        let gy0 = cell_y0 + glyph_rect.y;
+        let gx1 = gx0 + glyph_rect.z;
+        let gy1 = gy0 + glyph_rect.w;
         let u = (px - gx0) / max(gx1 - gx0, 0.001);
         let v = (py - gy0) / max(gy1 - gy0, 0.001);
-        if (u < 0.0 || u > 1.0 || v < 0.0 || v > 1.0) {
-            out.uv = vec2<f32>(-1.0, -1.0);
+        if (u >= 0.0 && u <= 1.0 && v >= 0.0 && v <= 1.0) {
+            out.uv = mix(uv_min, uv_max, vec2<f32>(clamp(u, 0.0, 1.0), clamp(v, 0.0, 1.0)));
         } else {
-            out.uv = mix(uv_min, uv_max, vec2<f32>(u, v));
+            out.uv = vec2<f32>(-1.0, -1.0);
         }
     } else {
         out.uv = vec2<f32>(-1.0, -1.0);
@@ -82,25 +85,30 @@ fn vs_main(
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    var color = in.bg;
+    // Start with straight-alpha background, then composite glyph coverage.
+    var rgb = in.bg.rgb;
+    var a = in.bg.a;
 
     if (in.uv.x >= 0.0) {
         let sample = textureSampleLevel(atlas_tex, atlas_samp, in.uv, 0.0);
-        let a = sample.a;
-        color = vec4<f32>(
-            in.bg.rgb * (1.0 - a) + in.fg.rgb * a,
-            max(in.bg.a, in.fg.a * a),
-        );
+        // Atlas stores premultiplied white coverage in .a (and .rgb).
+        let cov = sample.a;
+        rgb = rgb * (1.0 - cov) + in.fg.rgb * cov;
+        a = a * (1.0 - cov) + in.fg.a * cov;
     }
 
+    // Underline near bottom of cell.
     if ((in.flags & 1u) != 0u && in.cell_uv.y > 0.88) {
-        color = vec4<f32>(in.fg.rgb, max(color.a, in.fg.a));
+        rgb = in.fg.rgb;
+        a = max(a, in.fg.a);
     }
 
+    // Cursor block overlay.
     if ((in.flags & 2u) != 0u) {
-        let c = in.fg;
-        color = vec4<f32>(color.rgb * 0.35 + c.rgb * 0.65, max(color.a, c.a));
+        rgb = rgb * 0.35 + in.fg.rgb * 0.65;
+        a = max(a, in.fg.a);
     }
 
-    return color;
+    // Premultiply for egui's PREMULTIPLIED_ALPHA_BLENDING target.
+    return vec4<f32>(rgb * a, a);
 }

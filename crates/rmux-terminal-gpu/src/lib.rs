@@ -20,12 +20,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use egui::{Color32, Rect, Ui};
 use rmux_terminal::GridSnapshot;
 
-pub use grid::{alloc_pane_id, begin_frame, paint_grid};
+pub use grid::{alloc_pane_id, begin_frame, grid_is_ready, paint_grid};
 
-/// Set once at app startup when GPU resources were installed successfully.
+/// Set once at app startup when any GPU surface (G0+) was installed.
 static GPU_READY: AtomicBool = AtomicBool::new(false);
 
-/// Whether the GPU terminal surface was initialized for this process.
+/// Whether a GPU surface was initialized (G0 fill and/or G2 grid).
 #[inline]
 pub fn is_ready() -> bool {
     GPU_READY.load(Ordering::Relaxed)
@@ -43,6 +43,8 @@ pub struct FontSetup<'a> {
 /// Call once from [`eframe::App`] construction. Returns `false` if eframe is
 /// not on the wgpu backend.
 pub fn init(cc: &eframe::CreationContext<'_>, fonts: FontSetup<'_>) -> bool {
+    grid::set_grid_ready(false);
+
     let Some(wgpu_render_state) = cc.wgpu_render_state.as_ref() else {
         tracing::warn!("rmux-terminal-gpu: no wgpu_render_state — terminal GPU surface disabled");
         GPU_READY.store(false, Ordering::Relaxed);
@@ -54,20 +56,20 @@ pub fn init(cc: &eframe::CreationContext<'_>, fonts: FontSetup<'_>) -> bool {
         GPU_READY.store(false, Ordering::Relaxed);
         return false;
     }
-
-    if let Err(err) =
-        grid::GridGpu::install(wgpu_render_state, fonts.regular, fonts.bold, fonts.size)
-    {
-        tracing::error!(error = %err, "rmux-terminal-gpu: G1/G2 grid install failed");
-        // G0 still works
-        GPU_READY.store(true, Ordering::Relaxed);
-        tracing::warn!("rmux-terminal-gpu: G0 only (grid failed)");
-        return true;
-    }
-
     GPU_READY.store(true, Ordering::Relaxed);
-    tracing::info!("rmux-terminal-gpu: G0–G2 surface ready (wgpu + glyph atlas)");
-    true
+
+    match grid::GridGpu::install(wgpu_render_state, fonts.regular, fonts.bold, fonts.size) {
+        Ok(()) => {
+            tracing::info!("rmux-terminal-gpu: G0–G2 surface ready (wgpu + glyph atlas)");
+            true
+        }
+        Err(err) => {
+            tracing::error!(error = %err, "rmux-terminal-gpu: G1/G2 grid install failed");
+            tracing::warn!("rmux-terminal-gpu: G0 only — panes will use egui glyphs");
+            grid::set_grid_ready(false);
+            true
+        }
+    }
 }
 
 /// Convert egui [`Color32`] to premultiplied RGBA for the G0 fill shader.
@@ -77,7 +79,7 @@ pub fn color32_to_rgba(c: Color32) -> [f32; 4] {
     [f32::from(c.r()) / 255.0 * a, f32::from(c.g()) / 255.0 * a, f32::from(c.b()) / 255.0 * a, a]
 }
 
-/// Paint a solid GPU fill over `rect` if the surface is ready.
+/// Paint a solid GPU fill over `rect` if G0 is ready.
 pub fn try_paint_pane_fill(ui: &mut Ui, rect: Rect, color: Color32) -> bool {
     if !is_ready() {
         return false;
@@ -86,7 +88,10 @@ pub fn try_paint_pane_fill(ui: &mut Ui, rect: Rect, color: Color32) -> bool {
     true
 }
 
-/// Paint the full terminal grid on the GPU. Falls back to `false` if not ready.
+/// Paint the full terminal grid on the GPU.
+///
+/// Returns `false` unless the **grid** pipeline is ready (not merely G0), so
+/// callers always fall back to the egui renderer when glyphs cannot be drawn.
 pub fn try_paint_grid(
     ui: &mut Ui,
     rect: Rect,
@@ -96,6 +101,9 @@ pub fn try_paint_grid(
     font_size: f32,
     pane_id: u64,
 ) -> bool {
+    if !grid_is_ready() {
+        return false;
+    }
     paint_grid(ui, rect, snapshot, cursor_visible, opacity, font_size, pane_id)
 }
 
