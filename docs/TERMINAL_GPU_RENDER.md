@@ -1,7 +1,10 @@
 # Terminal GPU rendering — plan & fallbacks
 
-> **Status:** Active experiment on `feat/terminal-damage-redraw`  
-> **Started:** G0 spike (eframe wgpu + pane paint callback)  
+> **Status:** Active on `feat/terminal-damage-redraw` — **G0–G2 landed**  
+> **G0:** eframe wgpu + pane paint callback  
+> **G1:** fontdue glyph atlas  
+> **G2:** full-grid instanced paint (primary path; egui fallback if init fails)  
+> **Next:** G3 damage uploads  
 > **Goal:** Kill felt keyboard / LazyVim `j`/`k` lag by drawing terminal cells on the GPU, not via thousands of egui galleys per frame.
 
 If this approach fails, use the **fallback ladder** at the bottom — do not throw away VT work.

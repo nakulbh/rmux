@@ -1,13 +1,9 @@
 //! G0: solid-color fill of a terminal pane via wgpu paint callback.
-//!
-//! egui sets the render-pass **viewport** to the callback rect, so a full NDC
-//! triangle covers exactly the pane — same pattern as egui's `custom3d_wgpu` demo.
 
 use eframe::egui_wgpu::{self, CallbackResources, RenderState, ScreenDescriptor, wgpu};
-use egui::{Color32, PaintCallbackInfo, Rect, Ui};
+use egui::{PaintCallbackInfo, Rect, Ui};
 use wgpu::util::DeviceExt;
 
-/// Uniform: premultiplied RGBA (16 bytes).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct FillUniform {
@@ -28,7 +24,6 @@ impl PaneFillResources {
     fn paint(&self, render_pass: &mut wgpu::RenderPass<'_>) {
         render_pass.set_pipeline(&self.pipeline);
         render_pass.set_bind_group(0, &self.bind_group, &[]);
-        // Full-screen triangle in NDC; viewport is the pane rect.
         render_pass.draw(0..3, 0..1);
     }
 }
@@ -64,7 +59,6 @@ impl egui_wgpu::CallbackTrait for PaneFillCallback {
     }
 }
 
-/// Create pipeline + uniform buffer and store them in egui-wgpu callback resources.
 pub(crate) fn install_resources(wgpu_render_state: &RenderState) -> Result<(), String> {
     let device = &wgpu_render_state.device;
     let target_format = wgpu_render_state.target_format;
@@ -144,26 +138,9 @@ pub(crate) fn install_resources(wgpu_render_state: &RenderState) -> Result<(), S
     Ok(())
 }
 
-/// Queue a solid fill of `rect` with premultiplied `color` (RGBA 0–1).
 pub fn paint_pane_fill(ui: &mut Ui, rect: Rect, color: [f32; 4]) {
     if !rect.is_positive() {
         return;
     }
     ui.painter().add(egui_wgpu::Callback::new_paint_callback(rect, PaneFillCallback { color }));
-}
-
-/// Helper for tests / callers that still hold a [`Color32`].
-#[allow(dead_code)]
-pub fn paint_pane_fill_color32(ui: &mut Ui, rect: Rect, color: Color32) {
-    let a = f32::from(color.a()) / 255.0;
-    paint_pane_fill(
-        ui,
-        rect,
-        [
-            f32::from(color.r()) / 255.0 * a,
-            f32::from(color.g()) / 255.0 * a,
-            f32::from(color.b()) / 255.0 * a,
-            a,
-        ],
-    );
 }

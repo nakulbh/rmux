@@ -2,65 +2,75 @@
 //!
 //! # Phases
 //!
-//! * **G0 (this module):** solid pane fill via [`egui_wgpu::Callback`] to prove the
-//!   eframe wgpu path works inside a multipane terminal layout.
-//! * **G1+:** glyph atlas, cell instance buffers, damage uploads — see
-//!   `docs/TERMINAL_GPU_RENDER.md`.
+//! * **G0:** solid pane fill (see `pane_fill`)
+//! * **G1:** fontdue glyph atlas (`atlas`)
+//! * **G2:** full-grid instanced paint (`grid`) — primary path when ready
+//! * **G3+:** damage uploads — see `docs/TERMINAL_GPU_RENDER.md`
 //!
 //! VT / grid stay in `rmux-terminal` (`alacritty_terminal`). This crate only paints.
 
 #![forbid(unsafe_code)]
 
+mod atlas;
+mod grid;
 mod pane_fill;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use eframe::egui_wgpu;
 use egui::{Color32, Rect, Ui};
+use rmux_terminal::GridSnapshot;
 
-pub use pane_fill::paint_pane_fill;
+pub use grid::{alloc_pane_id, begin_frame, paint_grid};
 
 /// Set once at app startup when GPU resources were installed successfully.
 static GPU_READY: AtomicBool = AtomicBool::new(false);
 
-/// Whether the G0 GPU surface was initialized for this process.
+/// Whether the GPU terminal surface was initialized for this process.
 #[inline]
 pub fn is_ready() -> bool {
     GPU_READY.load(Ordering::Relaxed)
 }
 
-/// Install shared wgpu resources used by terminal paint callbacks.
+/// Font bytes + size used to build the atlas at init.
+pub struct FontSetup<'a> {
+    pub regular: &'a [u8],
+    pub bold: &'a [u8],
+    pub size: f32,
+}
+
+/// Install shared wgpu resources (G0 fill + G1/G2 grid).
 ///
-/// Call once from [`eframe::App`] construction with a wgpu
-/// [`eframe::CreationContext`]. Returns `false` if eframe is not on the wgpu
-/// backend (e.g. forced glow) so callers can fall back to CPU fills.
-pub fn init(cc: &eframe::CreationContext<'_>) -> bool {
+/// Call once from [`eframe::App`] construction. Returns `false` if eframe is
+/// not on the wgpu backend.
+pub fn init(cc: &eframe::CreationContext<'_>, fonts: FontSetup<'_>) -> bool {
     let Some(wgpu_render_state) = cc.wgpu_render_state.as_ref() else {
-        tracing::warn!(
-            "rmux-terminal-gpu: no wgpu_render_state — terminal GPU surface disabled \
-             (is eframe using the wgpu renderer?)"
-        );
+        tracing::warn!("rmux-terminal-gpu: no wgpu_render_state — terminal GPU surface disabled");
         GPU_READY.store(false, Ordering::Relaxed);
         return false;
     };
 
-    match pane_fill::install_resources(wgpu_render_state) {
-        Ok(()) => {
-            GPU_READY.store(true, Ordering::Relaxed);
-            tracing::info!("rmux-terminal-gpu: G0 pane-fill surface ready (wgpu)");
-            true
-        }
-        Err(err) => {
-            tracing::error!(error = %err, "rmux-terminal-gpu: failed to install G0 resources");
-            GPU_READY.store(false, Ordering::Relaxed);
-            false
-        }
+    if let Err(err) = pane_fill::install_resources(wgpu_render_state) {
+        tracing::error!(error = %err, "rmux-terminal-gpu: G0 pane-fill install failed");
+        GPU_READY.store(false, Ordering::Relaxed);
+        return false;
     }
+
+    if let Err(err) =
+        grid::GridGpu::install(wgpu_render_state, fonts.regular, fonts.bold, fonts.size)
+    {
+        tracing::error!(error = %err, "rmux-terminal-gpu: G1/G2 grid install failed");
+        // G0 still works
+        GPU_READY.store(true, Ordering::Relaxed);
+        tracing::warn!("rmux-terminal-gpu: G0 only (grid failed)");
+        return true;
+    }
+
+    GPU_READY.store(true, Ordering::Relaxed);
+    tracing::info!("rmux-terminal-gpu: G0–G2 surface ready (wgpu + glyph atlas)");
+    true
 }
 
-/// Convert egui [`Color32`] to premultiplied-ish linear-ish RGBA for the G0 fill shader.
-///
-/// G0 does not do color-space conversion; we pass unorm channels as `f32`.
+/// Convert egui [`Color32`] to premultiplied RGBA for the G0 fill shader.
 #[inline]
 pub fn color32_to_rgba(c: Color32) -> [f32; 4] {
     let a = f32::from(c.a()) / 255.0;
@@ -68,15 +78,25 @@ pub fn color32_to_rgba(c: Color32) -> [f32; 4] {
 }
 
 /// Paint a solid GPU fill over `rect` if the surface is ready.
-///
-/// No-op when [`init`] was not successful — caller should use the CPU path.
 pub fn try_paint_pane_fill(ui: &mut Ui, rect: Rect, color: Color32) -> bool {
     if !is_ready() {
         return false;
     }
-    paint_pane_fill(ui, rect, color32_to_rgba(color));
+    pane_fill::paint_pane_fill(ui, rect, color32_to_rgba(color));
     true
 }
 
-/// Re-export for callers that already depend on eframe's wgpu types.
-pub use egui_wgpu::wgpu;
+/// Paint the full terminal grid on the GPU. Falls back to `false` if not ready.
+pub fn try_paint_grid(
+    ui: &mut Ui,
+    rect: Rect,
+    snapshot: &GridSnapshot,
+    cursor_visible: bool,
+    opacity: f32,
+    font_size: f32,
+    pane_id: u64,
+) -> bool {
+    paint_grid(ui, rect, snapshot, cursor_visible, opacity, font_size, pane_id)
+}
+
+pub use pane_fill::paint_pane_fill;

@@ -1,0 +1,15 @@
+{
+    "keep": {
+        "days": true,
+        "amount": 14
+    },
+    "auditLog": "/Users/nakulbhardwaj/Developer/PersonalProjects/RustPersonalProjects/rmux-feat-terminal-damage-redraw/logs/.668025235fa3a502c16b207942d3304aad5d46e3-audit.json",
+    "files": [
+        {
+            "date": 1785155514912,
+            "name": "/Users/nakulbhardwaj/Developer/PersonalProjects/RustPersonalProjects/rmux-feat-terminal-damage-redraw/logs/mcp-puppeteer-2026-07-27.log",
+            "hash": "f0d7bbeaaa5846ef11881dc743e43c8ad46251fca05f20f1b557fd223c7f1645"
+        }
+    ],
+    "hashType": "sha256"
+}

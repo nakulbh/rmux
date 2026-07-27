@@ -125,9 +125,18 @@ fn load_launch_snapshot(store: &SessionStore) -> Option<SessionSnapshot> {
 impl RmuxApp {
     /// Create a new application state with a default workspace and terminal pane.
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        // G0: install wgpu paint-callback resources for terminal pane fills.
-        // See docs/TERMINAL_GPU_RENDER.md. Safe no-op if wgpu is unavailable.
-        let _gpu_ready = rmux_terminal_gpu::init(cc);
+        // G0–G2: wgpu terminal surface (glyph atlas + grid). See docs/TERMINAL_GPU_RENDER.md.
+        // Atlas font size is updated per frame when panes paint; init uses default.
+        const FONT_REGULAR: &[u8] = include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf");
+        const FONT_BOLD: &[u8] = include_bytes!("../assets/fonts/JetBrainsMono-Bold.ttf");
+        let _gpu_ready = rmux_terminal_gpu::init(
+            cc,
+            rmux_terminal_gpu::FontSetup {
+                regular: FONT_REGULAR,
+                bold: FONT_BOLD,
+                size: DEFAULT_FONT_SIZE,
+            },
+        );
 
         let channels = api::start_server();
         let config = match rmux_config::load() {
@@ -434,6 +443,9 @@ impl RmuxApp {
 impl eframe::App for RmuxApp {
     /// Called each frame to update the UI.
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Multipane GPU instance buffer is reset once per frame.
+        rmux_terminal_gpu::begin_frame();
+
         // Apply shadcn-inspired theme every frame
         crate::ui::theme::Theme::dark().apply(ctx);
 
