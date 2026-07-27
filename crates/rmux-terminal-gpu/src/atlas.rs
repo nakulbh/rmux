@@ -218,12 +218,23 @@ impl GlyphAtlas {
     }
 }
 
+fn measure_cell(font: &Font, font_size: f32) -> (f32, f32, f32) {
+    let (metrics, _) = font.rasterize('M', font_size);
+    let line = font.horizontal_line_metrics(font_size);
+    let ascent = line.map(|l| l.ascent).unwrap_or(font_size * 0.8);
+    let descent = line.map(|l| l.descent.abs()).unwrap_or(font_size * 0.2);
+    let cell_w = metrics.advance_width.max(1.0);
+    let natural = ascent + descent;
+    let cell_h = (natural * LINE_HEIGHT_PAD).max(font_size);
+    let pad = (cell_h - natural) * 0.5;
+    let baseline = pad + ascent;
+    (cell_w, cell_h, baseline)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // Tiny subset of JetBrains via re-load from path is heavy; use include of
-    // the same fonts the app embeds for a real raster smoke test.
     const FONT: &[u8] = include_bytes!("../../rmux-app/assets/fonts/JetBrainsMono-Regular.ttf");
     const FONT_BOLD: &[u8] = include_bytes!("../../rmux-app/assets/fonts/JetBrainsMono-Bold.ttf");
 
@@ -235,7 +246,6 @@ mod tests {
         assert!(g.gw > 0.0 && g.gh > 0.0);
         assert!(g.uv_max[0] > g.uv_min[0]);
         assert!(g.uv_max[1] > g.uv_min[1]);
-        // At least one non-zero coverage pixel in the packed region.
         let x0 = (g.uv_min[0] * atlas.width as f32) as u32;
         let y0 = (g.uv_min[1] * atlas.height as f32) as u32;
         let x1 = (g.uv_max[0] * atlas.width as f32) as u32;
@@ -262,17 +272,4 @@ mod tests {
         let g = atlas.glyph(' ', false);
         assert!(!g.has_ink);
     }
-}
-
-fn measure_cell(font: &Font, font_size: f32) -> (f32, f32, f32) {
-    let (metrics, _) = font.rasterize('M', font_size);
-    let line = font.horizontal_line_metrics(font_size);
-    let ascent = line.map(|l| l.ascent).unwrap_or(font_size * 0.8);
-    let descent = line.map(|l| l.descent.abs()).unwrap_or(font_size * 0.2);
-    let cell_w = metrics.advance_width.max(1.0);
-    let natural = ascent + descent;
-    let cell_h = (natural * LINE_HEIGHT_PAD).max(font_size);
-    let pad = (cell_h - natural) * 0.5;
-    let baseline = pad + ascent;
-    (cell_w, cell_h, baseline)
 }
