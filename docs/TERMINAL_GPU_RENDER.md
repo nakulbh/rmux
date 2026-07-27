@@ -1,12 +1,12 @@
 # Terminal GPU rendering — plan & fallbacks
 
 > **Status:** Active on `feat/terminal-damage-redraw`  
-> **G0:** eframe wgpu + pane paint callback (installed; not used for panes by default)  
-> **G1/G2:** glyph atlas + full-grid path **exists but is OFF by default**  
->   (`RMUX_GPU_GRID=1` to experiment). G2 draws cell **backgrounds** but glyphs  
->   were not visible (wallpaper-only / TUI chrome without text) — egui remains  
->   the default painter until the atlas path is fixed.  
-> **Next:** Fix G2 glyph pass, then G3 damage uploads  
+> **G0:** eframe wgpu + pane paint callback  
+> **G1/G2:** glyph atlas + full-grid path — **ON by default** after glyph UV fix  
+>   (escape hatch: `RMUX_GPU_GRID=0` forces egui CPU paint)  
+> **Bug fixed:** vertex shader set glyph UV to `-1` at cell corners (outside the  
+>   ink sub-rect), so interpolation never sampled the atlas — backgrounds only.  
+> **Next:** G3 damage uploads  
 > **Goal:** Kill felt keyboard / LazyVim `j`/`k` lag by drawing terminal cells on the GPU, not via thousands of egui galleys per frame.
 
 If this approach fails, use the **fallback ladder** at the bottom — do not throw away VT work.

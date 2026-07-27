@@ -523,8 +523,7 @@ impl TerminalPane {
             self.show_title_bar(ui, rect);
         }
 
-        // Snapshot + paint. GPU full-grid is opt-in (`RMUX_GPU_GRID=1`) because
-        // G2 still fails to show glyphs reliably; egui path is the default.
+        // Snapshot + paint: GPU full-grid when ready (`RMUX_GPU_GRID=0` → egui).
         let snapshot = self.state.snapshot();
         let opacity = self.renderer.bg_opacity().clamp(0.0, 1.0);
         let font_size = self.renderer.font_size;
@@ -538,9 +537,6 @@ impl TerminalPane {
             self.gpu_pane_id,
         );
         if !gpu_grid {
-            // CPU egui glyphs (default). Optional G0 base fill only when GPU
-            // is up — skip it so we never replace the CPU base with a broken
-            // multipane fill either.
             self.renderer.set_skip_base_fill(false);
             self.renderer.draw(ui, rect, &snapshot, self.show_cursor);
         }

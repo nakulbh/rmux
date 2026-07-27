@@ -90,13 +90,8 @@ pub fn try_paint_pane_fill(ui: &mut Ui, rect: Rect, color: Color32) -> bool {
 
 /// Paint the full terminal grid on the GPU.
 ///
-/// **Disabled by default:** G2 currently draws cell backgrounds but not
-/// reliable glyphs (wallpaper/TUI chrome with missing text). The egui path
-/// stays primary until the atlas/glyph pass is solid.
-///
-/// Opt in for experiments: `RMUX_GPU_GRID=1`.
-///
-/// Returns `false` unless the grid pipeline is ready **and** explicitly enabled.
+/// Returns `false` unless the grid pipeline is ready (caller uses egui).
+/// Disable with `RMUX_GPU_GRID=0` if you need the pure egui path.
 pub fn try_paint_grid(
     ui: &mut Ui,
     rect: Rect,
@@ -109,12 +104,12 @@ pub fn try_paint_grid(
     if !grid_is_ready() {
         return false;
     }
-    // Default OFF — blank-text regression with wallpaper / LazyVim (G2).
-    static GPU_GRID_ENV: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    let enabled = *GPU_GRID_ENV.get_or_init(|| {
-        std::env::var_os("RMUX_GPU_GRID").is_some_and(|v| v != "0" && v != "false")
+    // Escape hatch: force CPU egui paint.
+    static GPU_GRID_OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let disabled = *GPU_GRID_OFF.get_or_init(|| {
+        std::env::var_os("RMUX_GPU_GRID").is_some_and(|v| v == "0" || v == "false")
     });
-    if !enabled {
+    if disabled {
         return false;
     }
     paint_grid(ui, rect, snapshot, cursor_visible, opacity, font_size, pane_id)

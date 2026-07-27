@@ -315,13 +315,10 @@ impl egui_wgpu::CallbackTrait for GridPaintCallback {
                 flags += 2.0;
             }
 
-            // Clamp glyph placement into the cell so UV sampling always hits ink.
+            // Keep real placement (may extend slightly outside the cell);
+            // the shader samples only where glyph_local is inside 0..1.
             let (glyph_rect, uv_min, uv_max) = if g.has_ink {
-                let gw = g.gw.min(cell_w * f32::from(cell.span));
-                let gh = g.gh.min(cell_h);
-                let ox = g.ox.clamp(0.0, (cell_w - 1.0).max(0.0));
-                let oy = g.oy.clamp(0.0, (cell_h - 1.0).max(0.0));
-                ([ox, oy, gw.max(1.0), gh.max(1.0)], g.uv_min, g.uv_max)
+                ([g.ox, g.oy, g.gw.max(1.0), g.gh.max(1.0)], g.uv_min, g.uv_max)
             } else {
                 ([0.0, 0.0, 0.0, 0.0], [0.0, 0.0], [0.0, 0.0])
             };

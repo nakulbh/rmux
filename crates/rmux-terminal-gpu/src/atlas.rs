@@ -199,11 +199,12 @@ impl GlyphAtlas {
         let u1 = (x + gw) as f32 / self.width as f32;
         let v1 = (y + gh) as f32 / self.height as f32;
 
-        // fontdue: `ymin` is the distance from the baseline to the bottom of
-        // the bitmap (often negative). Place bitmap so baseline sits at
-        // `self.baseline` from the top of the cell.
+        // fontdue layout (same as their image example):
+        //   x = pen_x + metrics.xmin
+        //   y = baseline - metrics.height - metrics.ymin
+        // with ymin typically ≤ 0 (extent below the baseline).
         let ox = metrics.xmin as f32;
-        let oy = self.baseline - (metrics.height as f32 + metrics.ymin as f32);
+        let oy = self.baseline - metrics.height as f32 - metrics.ymin as f32;
 
         GlyphEntry {
             uv_min: [u0, v0],
@@ -214,6 +215,52 @@ impl GlyphAtlas {
             gh: metrics.height as f32,
             has_ink: true,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Tiny subset of JetBrains via re-load from path is heavy; use include of
+    // the same fonts the app embeds for a real raster smoke test.
+    const FONT: &[u8] = include_bytes!("../../rmux-app/assets/fonts/JetBrainsMono-Regular.ttf");
+    const FONT_BOLD: &[u8] = include_bytes!("../../rmux-app/assets/fonts/JetBrainsMono-Bold.ttf");
+
+    #[test]
+    fn atlas_rasterizes_ascii_with_ink() {
+        let mut atlas = GlyphAtlas::new(FONT, FONT_BOLD, 14.0).expect("font load");
+        let g = atlas.glyph('A', false);
+        assert!(g.has_ink, "expected ink for 'A'");
+        assert!(g.gw > 0.0 && g.gh > 0.0);
+        assert!(g.uv_max[0] > g.uv_min[0]);
+        assert!(g.uv_max[1] > g.uv_min[1]);
+        // At least one non-zero coverage pixel in the packed region.
+        let x0 = (g.uv_min[0] * atlas.width as f32) as u32;
+        let y0 = (g.uv_min[1] * atlas.height as f32) as u32;
+        let x1 = (g.uv_max[0] * atlas.width as f32) as u32;
+        let y1 = (g.uv_max[1] * atlas.height as f32) as u32;
+        let mut any = false;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let i = (y * atlas.width + x) as usize * 4;
+                if atlas.pixels[i + 3] > 0 {
+                    any = true;
+                    break;
+                }
+            }
+            if any {
+                break;
+            }
+        }
+        assert!(any, "packed glyph region should contain coverage");
+    }
+
+    #[test]
+    fn space_has_no_ink() {
+        let mut atlas = GlyphAtlas::new(FONT, FONT_BOLD, 14.0).expect("font load");
+        let g = atlas.glyph(' ', false);
+        assert!(!g.has_ink);
     }
 }
 
