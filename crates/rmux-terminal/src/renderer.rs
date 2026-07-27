@@ -520,6 +520,8 @@ pub struct TerminalRenderer {
     bg_opacity: f32,
     /// Per-glyph galley cache (avoids `layout_no_wrap` every cell every frame).
     glyph_cache: GlyphCache,
+    /// When true, skip the full-pane base `rect_filled` (GPU path paints it).
+    skip_base_fill: bool,
 }
 
 impl TerminalRenderer {
@@ -531,6 +533,7 @@ impl TerminalRenderer {
             cell_size_measured: false,
             bg_opacity: 1.0,
             glyph_cache: GlyphCache::with_capacity(512),
+            skip_base_fill: false,
         }
     }
 
@@ -542,6 +545,12 @@ impl TerminalRenderer {
     /// Current background opacity.
     pub fn bg_opacity(&self) -> f32 {
         self.bg_opacity
+    }
+
+    /// When true, the CPU renderer will not paint the full-pane base fill
+    /// (used when `rmux-terminal-gpu` draws that fill via a wgpu callback).
+    pub fn set_skip_base_fill(&mut self, skip: bool) {
+        self.skip_base_fill = skip;
     }
 
     /// Measure cell size from the actual loaded font on the first call.
@@ -579,8 +588,9 @@ impl TerminalRenderer {
         let unused_fill = with_alpha(snapshot.terminal_bg, opacity);
 
         // Base fill over the whole pane so wallpaper shows evenly through
-        // empty space (including gaps from cell rounding).
-        if unused_fill.a() > 0 {
+        // empty space (including gaps from cell rounding). Skipped when a
+        // GPU paint callback already filled the pane (G0+).
+        if !self.skip_base_fill && unused_fill.a() > 0 {
             painter.rect_filled(rect, 0.0, unused_fill);
         }
 

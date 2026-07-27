@@ -9,8 +9,9 @@ edition = "2024"
 license = "MIT"
 
 [workspace.dependencies]
-# GUI framework
-eframe = "0.31"
+# GUI framework — enable wgpu so terminal panes can use paint callbacks
+# (default renderer becomes wgpu when both glow and wgpu features are on).
+eframe = { version = "0.31", features = ["default", "wgpu"] }
 egui = "0.31"
 
 # Terminal emulation

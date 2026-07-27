@@ -95,7 +95,11 @@ fn main() -> Result<()> {
         viewport = viewport.with_icon(std::sync::Arc::new(icon));
     }
 
-    let native_options = eframe::NativeOptions { viewport, ..Default::default() };
+    // Prefer wgpu so terminal panes can use paint callbacks (G0+ GPU path).
+    // See docs/TERMINAL_GPU_RENDER.md. eframe defaults to Wgpu when the
+    // `wgpu` feature is enabled alongside glow.
+    let native_options =
+        eframe::NativeOptions { viewport, renderer: eframe::Renderer::Wgpu, ..Default::default() };
 
     eframe::run_native(
         "rmux",

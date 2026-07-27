@@ -125,6 +125,10 @@ fn load_launch_snapshot(store: &SessionStore) -> Option<SessionSnapshot> {
 impl RmuxApp {
     /// Create a new application state with a default workspace and terminal pane.
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        // G0: install wgpu paint-callback resources for terminal pane fills.
+        // See docs/TERMINAL_GPU_RENDER.md. Safe no-op if wgpu is unavailable.
+        let _gpu_ready = rmux_terminal_gpu::init(cc);
+
         let channels = api::start_server();
         let config = match rmux_config::load() {
             Ok(c) => c,

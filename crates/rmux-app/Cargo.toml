@@ -22,6 +22,7 @@ notify-rust = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 rmux-terminal = { path = "../rmux-terminal" }
+rmux-terminal-gpu = { path = "../rmux-terminal-gpu" }
 rmux-api = { path = "../rmux-api" }
 rmux-config = { path = "../rmux-config" }
 wry = { workspace = true }

@@ -1,0 +1,12 @@
+[package]
+name = "rmux-terminal-gpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "GPU terminal surface for rmux (wgpu paint callbacks, glyph atlas — phased)"
+
+[dependencies]
+bytemuck = { version = "1", features = ["derive"] }
+eframe = { workspace = true }
+egui = { workspace = true }
+tracing = { workspace = true }

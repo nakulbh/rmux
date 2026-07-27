@@ -519,8 +519,20 @@ impl TerminalPane {
             self.show_title_bar(ui, rect);
         }
 
-        // Take a snapshot of the terminal grid and render it
+        // Take a snapshot of the terminal grid and render it.
+        // G0: when the wgpu terminal surface is ready, paint the pane base
+        // fill on the GPU and skip the matching CPU rect_filled.
         let snapshot = self.state.snapshot();
+        let opacity = self.renderer.bg_opacity().clamp(0.0, 1.0);
+        let bg = snapshot.terminal_bg;
+        let base = egui::Color32::from_rgba_unmultiplied(
+            bg.r(),
+            bg.g(),
+            bg.b(),
+            (f32::from(bg.a()) * opacity).round() as u8,
+        );
+        let gpu_base = rmux_terminal_gpu::try_paint_pane_fill(ui, rect, base);
+        self.renderer.set_skip_base_fill(gpu_base);
         self.renderer.draw(ui, rect, &snapshot, self.show_cursor);
 
         // Highlight find matches in the terminal
