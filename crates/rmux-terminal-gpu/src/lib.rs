@@ -96,10 +96,13 @@ pub fn try_paint_pane_fill(ui: &mut Ui, rect: Rect, color: Color32) -> bool {
     true
 }
 
-/// Paint the full terminal grid on the GPU.
+/// Paint the full terminal grid on the GPU (experimental).
 ///
-/// Returns `false` unless the grid pipeline is ready (caller uses egui).
-/// Disable with `RMUX_GPU_GRID=0` if you need the pure egui path.
+/// **Off by default.** The fontdue atlas path cannot match egui’s JetBrains
+/// Mono + Nerd Font cascade (hinting, icons, LazyVim block art). Production
+/// panes use [`rmux_terminal::TerminalRenderer`] — same glyphs as `main`.
+///
+/// Opt in only for GPU experiments: `RMUX_GPU_GRID=1`.
 pub fn try_paint_grid(
     ui: &mut Ui,
     rect: Rect,
@@ -112,12 +115,11 @@ pub fn try_paint_grid(
     if !grid_is_ready() {
         return false;
     }
-    // Escape hatch: force CPU egui paint.
-    static GPU_GRID_OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    let disabled = *GPU_GRID_OFF.get_or_init(|| {
-        std::env::var_os("RMUX_GPU_GRID").is_some_and(|v| v == "0" || v == "false")
+    static GPU_GRID_ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let enabled = *GPU_GRID_ON.get_or_init(|| {
+        std::env::var_os("RMUX_GPU_GRID").is_some_and(|v| v != "0" && v != "false")
     });
-    if disabled {
+    if !enabled {
         return false;
     }
     paint_grid(ui, rect, snapshot, cursor_visible, opacity, font_size, pane_id)

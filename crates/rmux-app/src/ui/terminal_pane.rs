@@ -523,7 +523,9 @@ impl TerminalPane {
             self.show_title_bar(ui, rect);
         }
 
-        // Snapshot + paint: GPU full-grid when ready (`RMUX_GPU_GRID=0` → egui).
+        // Snapshot + paint with the **same** egui JetBrains/Nerd path as main.
+        // Pure GPU grid (fontdue atlas) is opt-in only — it cannot match egui
+        // text quality (`RMUX_GPU_GRID=1` for experiments).
         let snapshot = self.state.snapshot();
         let opacity = self.renderer.bg_opacity().clamp(0.0, 1.0);
         let font_size = self.renderer.font_size;

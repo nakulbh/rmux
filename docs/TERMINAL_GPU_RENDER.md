@@ -1,13 +1,17 @@
 # Terminal GPU rendering — plan & fallbacks
 
 > **Status:** Active on `feat/terminal-damage-redraw`  
-> **G0:** eframe wgpu + pane paint callback  
-> **G1/G2:** glyph atlas + full-grid path — **ON by default** after glyph UV fix  
->   (escape hatch: `RMUX_GPU_GRID=0` forces egui CPU paint)  
-> **Bug fixed:** vertex shader set glyph UV to `-1` at cell corners (outside the  
->   ink sub-rect), so interpolation never sampled the atlas — backgrounds only.  
-> **Next:** G3 damage uploads  
-> **Goal:** Kill felt keyboard / LazyVim `j`/`k` lag by drawing terminal cells on the GPU, not via thousands of egui galleys per frame.
+> **Default paint:** **egui `TerminalRenderer`** — same JetBrains Mono + Nerd  
+>   Font cascade, metrics, special shapes, and AA as `main`.  
+> **G0–G2 GPU code:** still built (wgpu eframe, atlas, instances) but **full  
+>   grid paint is OFF by default**. `RMUX_GPU_GRID=1` is experimental only.  
+> **Why:** fontdue atlas glyphs cannot match egui’s font stack (hinting, icon  
+>   fallback, LazyVim block art). Shipping wrong-looking text is not acceptable.  
+> **Latency wins already on this branch / main:** PTY wake, key repaint, etc.  
+> **Next paths that keep main-quality text:**  
+>   1. **Damage/dirty rows on egui path** (skip unchanged paint) — recommended  
+>   2. Hybrid: GPU backgrounds + egui glyphs  
+>   3. True GPU atlas only if quality parity is proven side-by-side
 
 If this approach fails, use the **fallback ladder** at the bottom — do not throw away VT work.
 
