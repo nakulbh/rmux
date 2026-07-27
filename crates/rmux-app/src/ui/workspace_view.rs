@@ -16,8 +16,14 @@ const SPLIT_BORDER: f32 = 1.0;
 const TAB_BAR_HEIGHT: f32 = 28.0;
 /// Max width of a single tab label before ellipsis.
 const TAB_MAX_WIDTH: f32 = 180.0;
+/// Minimum width a tab may shrink to when many tabs share the strip.
+const TAB_MIN_WIDTH: f32 = 56.0;
 /// Hit size for the per-tab close (×) control.
 const TAB_CLOSE_SIZE: f32 = 16.0;
+/// Width reserved for the trailing "+" new-tab control.
+const TAB_PLUS_WIDTH: f32 = 28.0;
+/// Left pad before the first tab.
+const TAB_BAR_PAD: f32 = 4.0;
 
 /// Actions emitted by the tab bar during rendering. They are collected
 /// into a `Vec` and applied to the [`WorkspaceManager`] after the
@@ -194,8 +200,15 @@ fn render_leaf(
         Vec2::new(rect.width(), (rect.height() - tab_bar_height).max(0.0_f32)),
     );
 
-    let mut child_ui = ui
-        .new_child(egui::UiBuilder::new().max_rect(terminal_rect).layout(egui::Layout::default()));
+    // Clip child paint/interaction to the terminal area so tab-bar and
+    // neighbouring splits never receive stray glyphs (GitHub #31).
+    let mut child_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(terminal_rect)
+            .layout(egui::Layout::default())
+            .id_salt(("leaf_term", pane_id.0)),
+    );
+    child_ui.set_clip_rect(terminal_rect);
 
     if let Some(pane) = leaf.active_terminal_mut() {
         // Sync keyboard-driven focus (FocusLeft/Right/Up/Down) into the pane
@@ -237,15 +250,19 @@ fn render_tab_bar(
     actions: &mut Vec<TabAction>,
 ) {
     let palette = theme::palette();
+    // Clip every tab paint/hit to the bar so tabs never bleed into the
+    // terminal body or neighbouring chrome (GitHub #31).
+    let painter = ui.painter().with_clip_rect(rect);
+
     // Near-black strip matching cmux terminal chrome (slightly darker than panel).
     let bar_bg = egui::Color32::from_rgb(
         palette.app_bg.r().saturating_sub(6),
         palette.app_bg.g().saturating_sub(6),
         palette.app_bg.b().saturating_sub(6),
     );
-    ui.painter().rect_filled(rect, 0.0_f32, bar_bg);
+    painter.rect_filled(rect, 0.0_f32, bar_bg);
     // Bottom hairline separating tabs from the terminal body.
-    ui.painter().hline(
+    painter.hline(
         rect.x_range(),
         rect.bottom() - 0.5_f32,
         egui::Stroke::new(1.0_f32, palette.chrome_border),
@@ -255,12 +272,21 @@ fn render_tab_bar(
     let surface_count = leaf.leaf_surfaces().len();
     let titles: Vec<String> = leaf.leaf_surfaces().iter().map(|s| s.display_title()).collect();
 
-    let mut x = rect.left() + 4.0_f32;
+    // Natural widths, then shrink proportionally so every tab + "+" fit.
+    let natural: Vec<f32> = titles.iter().map(|t| measure_tab_width(ui, t)).collect();
+    let tab_widths = fit_tab_widths(&natural, rect.width());
+
+    let mut x = rect.left() + TAB_BAR_PAD;
     let cy = rect.center().y;
 
     for (idx, title) in titles.iter().enumerate() {
         let is_current = idx == active_idx;
-        let tab_w = measure_tab_width(ui, title);
+        let tab_w = tab_widths.get(idx).copied().unwrap_or(TAB_MIN_WIDTH);
+        // Stop once we would overflow the bar (defensive; fit_tab_widths
+        // should already keep the sum under budget).
+        if x + tab_w > rect.right() - TAB_PLUS_WIDTH + 0.5_f32 {
+            break;
+        }
         let tab_rect =
             Rect::from_min_size(egui::pos2(x, rect.top()), Vec2::new(tab_w, rect.height()));
 
@@ -271,18 +297,18 @@ fn render_tab_bar(
         // Active: slightly lifted fill + accent underline (cmux).
         // Inactive: transparent; hover lifts text.
         if is_current {
-            ui.painter().rect_filled(
+            painter.rect_filled(
                 tab_rect.shrink2(Vec2::new(0.0_f32, 1.0_f32)),
                 egui::CornerRadius::ZERO,
                 palette.panel_active_bg,
             );
-            ui.painter().hline(
+            painter.hline(
                 tab_rect.x_range(),
                 tab_rect.bottom() - 1.5_f32,
                 egui::Stroke::new(2.0_f32, palette.accent),
             );
         } else if resp.hovered() {
-            ui.painter().rect_filled(
+            painter.rect_filled(
                 tab_rect.shrink2(Vec2::new(0.0_f32, 1.0_f32)),
                 egui::CornerRadius::ZERO,
                 palette.panel_bg,
@@ -303,11 +329,7 @@ fn render_tab_bar(
         job.wrap =
             egui::text::TextWrapping::truncate_at_width((text_right - text_left).max(0.0_f32));
         let galley = ui.fonts(|f| f.layout_job(job));
-        ui.painter().galley(
-            egui::pos2(text_left, cy - galley.size().y / 2.0_f32),
-            galley,
-            title_color,
-        );
+        painter.galley(egui::pos2(text_left, cy - galley.size().y / 2.0_f32), galley, title_color);
 
         // Close × — register hit target whenever multi-tab so the parent
         // tab click cannot steal the event. Paint when active or hovered.
@@ -337,13 +359,13 @@ fn render_tab_bar(
                     palette.text_disabled
                 };
                 if close.hovered() {
-                    ui.painter().circle_filled(
+                    painter.circle_filled(
                         close_center,
                         TAB_CLOSE_SIZE / 2.0_f32 - 1.0_f32,
                         palette.danger.gamma_multiply(0.2_f32),
                     );
                 }
-                ui.painter().text(
+                painter.text(
                     close_center,
                     egui::Align2::CENTER_CENTER,
                     "\u{00d7}",
@@ -361,8 +383,10 @@ fn render_tab_bar(
     }
 
     // Subtle "+" to open another terminal tab (same as Cmd+T).
+    // Pin to the right edge of the remaining bar so it never leaves the strip.
+    let plus_center_x = (x + 12.0_f32).min(rect.right() - TAB_PLUS_WIDTH * 0.5_f32);
     let plus_rect = Rect::from_center_size(
-        egui::pos2(x + 12.0_f32, cy),
+        egui::pos2(plus_center_x, cy),
         Vec2::new(22.0_f32, TAB_BAR_HEIGHT - 6.0_f32),
     );
     let plus = ui
@@ -371,9 +395,9 @@ fn render_tab_bar(
         .on_hover_text("New terminal (\u{2318}T)");
     let plus_color = if plus.hovered() { palette.text_primary } else { palette.text_muted };
     if plus.hovered() {
-        ui.painter().rect_filled(plus_rect, egui::CornerRadius::same(3), palette.panel_active_bg);
+        painter.rect_filled(plus_rect, egui::CornerRadius::same(3), palette.panel_active_bg);
     }
-    ui.painter().text(
+    painter.text(
         plus_rect.center(),
         egui::Align2::CENTER_CENTER,
         "+",
@@ -387,7 +411,7 @@ fn render_tab_bar(
     let _ = is_active; // pane-level active styling lives on the tab underline
 }
 
-/// Width of a tab chip for `title` (clamped).
+/// Width of a tab chip for `title` (clamped to the natural max).
 fn measure_tab_width(ui: &egui::Ui, title: &str) -> f32 {
     let galley = ui.painter().layout_no_wrap(
         title.to_owned(),
@@ -396,6 +420,51 @@ fn measure_tab_width(ui: &egui::Ui, title: &str) -> f32 {
     );
     // left pad + text + close slot + right pad
     (8.0_f32 + galley.size().x + TAB_CLOSE_SIZE + 6.0_f32).clamp(72.0_f32, TAB_MAX_WIDTH)
+}
+
+/// Shrink tab widths so `sum(widths) + pad + plus` fits in `bar_width`.
+///
+/// Tabs keep their natural size when there is room; otherwise every tab is
+/// scaled down proportionally, floored at [`TAB_MIN_WIDTH`]. This stops
+/// Cmd+T tabs from drawing over each other (GitHub #31).
+pub(crate) fn fit_tab_widths(natural: &[f32], bar_width: f32) -> Vec<f32> {
+    let n = natural.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let budget = (bar_width - TAB_BAR_PAD - TAB_PLUS_WIDTH).max(TAB_MIN_WIDTH);
+    let total: f32 = natural.iter().sum();
+    if total <= budget {
+        return natural.to_vec();
+    }
+    // Even floor if budget is tiny.
+    let even = (budget / n as f32).max(TAB_MIN_WIDTH);
+    if even * n as f32 > budget + 0.5_f32 {
+        // Still overflow at min width — give each min and let the bar clip.
+        return vec![TAB_MIN_WIDTH; n];
+    }
+    let scale = budget / total;
+    let mut widths: Vec<f32> = natural.iter().map(|w| (*w * scale).max(TAB_MIN_WIDTH)).collect();
+    // If flooring to min overshoots, rebalance by shaving the largest tabs.
+    let mut sum: f32 = widths.iter().sum();
+    if sum > budget {
+        // Prefer shrinking the widest tabs first.
+        let mut order: Vec<usize> = (0..n).collect();
+        order.sort_by(|a, b| {
+            widths[*b].partial_cmp(&widths[*a]).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        for idx in order {
+            if sum <= budget {
+                break;
+            }
+            let excess = sum - budget;
+            let reducible = (widths[idx] - TAB_MIN_WIDTH).max(0.0_f32);
+            let cut = reducible.min(excess);
+            widths[idx] -= cut;
+            sum -= cut;
+        }
+    }
+    widths
 }
 
 fn render_browser(
@@ -536,7 +605,7 @@ pub(crate) fn should_render_tab_bar(surface_count: usize) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::should_render_tab_bar;
+    use super::{TAB_MIN_WIDTH, fit_tab_widths, should_render_tab_bar};
 
     #[test]
     fn test_should_render_tab_bar_with_multiple_surfaces() {
@@ -544,6 +613,28 @@ mod tests {
         assert!(should_render_tab_bar(3));
         assert!(should_render_tab_bar(10));
         assert!(should_render_tab_bar(100));
+    }
+
+    #[test]
+    fn test_fit_tab_widths_keeps_natural_when_room() {
+        let natural = vec![100.0_f32, 120.0_f32, 80.0_f32];
+        let fitted = fit_tab_widths(&natural, 800.0_f32);
+        assert_eq!(fitted, natural);
+    }
+
+    #[test]
+    fn test_fit_tab_widths_shrinks_to_budget() {
+        let natural = vec![180.0_f32, 180.0_f32, 180.0_f32, 180.0_f32];
+        // bar 400 → budget ≈ 400 - pad - plus ≈ 368
+        let fitted = fit_tab_widths(&natural, 400.0_f32);
+        let sum: f32 = fitted.iter().sum();
+        assert!(sum <= 400.0_f32 - 4.0_f32 - 28.0_f32 + 1.0_f32, "sum={sum}");
+        assert!(fitted.iter().all(|w| *w >= TAB_MIN_WIDTH - 0.01));
+    }
+
+    #[test]
+    fn test_fit_tab_widths_empty() {
+        assert!(fit_tab_widths(&[], 400.0_f32).is_empty());
     }
 
     #[test]

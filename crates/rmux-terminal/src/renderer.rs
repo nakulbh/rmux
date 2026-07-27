@@ -560,29 +560,20 @@ impl TerminalRenderer {
 
         self.ensure_cell_size_measured(ui);
 
-        let painter = ui.painter();
+        // Clip all cell paint to the pane so multi-tab / split content never
+        // bleeds into a neighbour (GitHub #31).
+        let painter = ui.painter().with_clip_rect(rect);
         let cell_w = self.cell_size.x;
         let cell_h = self.cell_size.y;
         let opacity = self.bg_opacity;
         let unused_fill = with_alpha(snapshot.terminal_bg, opacity);
 
-        // Fill unused rows below the grid with terminal background
-        let used_height = snapshot.rows as f32 * cell_h;
-        if used_height < rect.height() {
-            let fill = Rect::from_min_max(
-                Pos2::new(rect.left(), rect.top() + used_height),
-                Pos2::new(rect.right(), rect.bottom()),
-            );
-            painter.rect_filled(fill, 0.0, unused_fill);
-        }
-        // Fill unused columns to the right
-        let used_width = snapshot.cols as f32 * cell_w;
-        if used_width < rect.width() {
-            let fill = Rect::from_min_max(
-                Pos2::new(rect.left() + used_width, rect.top()),
-                Pos2::new(rect.right(), rect.top() + used_height.min(rect.height())),
-            );
-            painter.rect_filled(fill, 0.0, unused_fill);
+        // Base fill over the whole pane so wallpaper shows evenly through
+        // empty space (including gaps from cell rounding). Without this,
+        // only per-cell paints apply and unused edges can look fully opaque
+        // or leave bare wallpaper (GitHub #30 / #32).
+        if unused_fill.a() > 0 {
+            painter.rect_filled(rect, 0.0, unused_fill);
         }
 
         let visible_cols = ((rect.width() / cell_w).floor() as u16).min(snapshot.cols);
@@ -609,16 +600,21 @@ impl TerminalRenderer {
                     Vec2::new(cell_w * span as f32, cell_h),
                 );
 
-                let paint_bg = cell_bg_paint(cell.bg, snapshot.terminal_bg, opacity);
-                // Skip fully transparent default fills so the workspace wallpaper shows.
-                if paint_bg.a() > 0 {
-                    painter.rect_filled(cell_rect, 0.0, paint_bg);
+                // Base pane fill already painted default terminal_bg. Only
+                // re-paint cells whose bg differs (TUI panels, selection).
+                // Re-painting default cells would stack alpha and hide the
+                // wallpaper (GitHub #30 / #32).
+                if !same_rgb(cell.bg, snapshot.terminal_bg) {
+                    let paint_bg = cell_bg_paint(cell.bg, snapshot.terminal_bg, opacity);
+                    if paint_bg.a() > 0 {
+                        painter.rect_filled(cell_rect, 0.0, paint_bg);
+                    }
                 }
 
                 if cell.c != ' ' {
                     if is_special_shape(cell.c) {
                         // Explicit geometry for TUI shapes (Ghostty/cmux solid look).
-                        paint_special_shape(painter, cell_rect, cell.c, cell.fg);
+                        paint_special_shape(&painter, cell_rect, cell.c, cell.fg);
                     } else {
                         let font_id =
                             if cell.bold { font_bold.clone() } else { font_regular.clone() };
@@ -628,7 +624,7 @@ impl TerminalRenderer {
                         // use geometry for symbol ranges instead.
                         let has_glyph = ui.fonts(|f| f.has_glyph(&font_id, cell.c));
                         if !has_glyph && is_symbol_range(cell.c) {
-                            paint_missing_symbol_fallback(painter, cell_rect, cell.c, cell.fg);
+                            paint_missing_symbol_fallback(&painter, cell_rect, cell.c, cell.fg);
                         } else {
                             let galley = ui
                                 .fonts(|f| f.layout_no_wrap(cell.c.to_string(), font_id, cell.fg));

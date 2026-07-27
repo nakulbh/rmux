@@ -105,6 +105,24 @@ pub struct TerminalPane {
     /// paste doesn't overwrite (and thus corrupt) the file a CLI tool may
     /// still be reading from the first paste.
     paste_counter: u64,
+
+    /// Pending scroll in **pixels** (Ghostty/cmux `pending_scroll_y`).
+    /// Accumulates until at least one cell height, then converts to lines.
+    scroll_accum_px: f32,
+
+    /// Command to type after the shell becomes ready (agent resume on session
+    /// restore). Cleared once sent.
+    pending_startup: Option<PendingStartup>,
+}
+
+/// Deferred shell input for session-restore agent resume.
+struct PendingStartup {
+    /// Full command line without trailing newline.
+    command: String,
+    /// Frames waited since queue (shell may need a moment to print PS1).
+    frames: u16,
+    /// True once any PTY output has been observed.
+    saw_output: bool,
 }
 
 impl TerminalPane {
@@ -193,7 +211,27 @@ impl TerminalPane {
             dimension_overlay_visible: false,
             dimension_overlay_timer: 0.0_f64,
             paste_counter: 0,
+            scroll_accum_px: 0.0_f32,
+            pending_startup: None,
         })
+    }
+
+    /// Queue a shell command to run once the PTY is ready (session agent resume).
+    ///
+    /// The command is typed + Enter after the shell prints some output, or
+    /// after a short frame budget — matching cmux's "initial input" resume.
+    pub fn queue_startup_command(&mut self, command: &str) {
+        let cmd = command.trim();
+        if cmd.is_empty() {
+            return;
+        }
+        self.pending_startup =
+            Some(PendingStartup { command: cmd.to_owned(), frames: 0, saw_output: false });
+    }
+
+    /// Full untruncated foreground process args (for agent resume capture).
+    pub fn foreground_process_args(&self) -> Option<String> {
+        self.backend.foreground_process_args()
     }
 
     /// Process any new PTY output from the background reader thread.
@@ -201,13 +239,19 @@ impl TerminalPane {
     /// Drains the channel and feeds bytes into the terminal state.
     /// Should be called once per frame before rendering.
     pub fn process_pty_output(&mut self) {
+        let mut got_output = false;
         while let Ok(data) = self.pty_rx.try_recv() {
             // OSC notification scanning is intentionally disabled: OSC 9 is also
             // used by iTerm2 progress bars (`OSC 9;4;…`), which produced junk
             // entries like "4;0;" in the notification panel. Re-enable only with
             // a tighter parser that rejects progress / non-notify sequences.
             self.state.feed_bytes(&data);
+            got_output = true;
         }
+        if got_output && let Some(pending) = self.pending_startup.as_mut() {
+            pending.saw_output = true;
+        }
+        self.try_flush_startup_command();
 
         // Check if the PTY process has exited; record a clean banner once.
         if !self.exited
@@ -235,6 +279,33 @@ impl TerminalPane {
         } else if self.last_cwd.is_none() {
             // First chance: populate immediately so new tabs aren't empty.
             self.refresh_title_sources();
+        }
+    }
+
+    /// Send a queued startup command once the shell looks ready.
+    ///
+    /// Waits until PTY output has been seen (prompt printed) **or** ~20 frames
+    /// (~330 ms at 60 fps) so slow shells still get the resume command.
+    fn try_flush_startup_command(&mut self) {
+        let Some(pending) = self.pending_startup.as_mut() else {
+            return;
+        };
+        pending.frames = pending.frames.saturating_add(1);
+        // Ready: saw shell output and waited a couple frames for PS1, or timeout.
+        let ready = (pending.saw_output && pending.frames >= 8) || pending.frames >= 45;
+        if !ready {
+            return;
+        }
+        let Some(pending) = self.pending_startup.take() else {
+            return;
+        };
+        let command = pending.command;
+        let mut payload = command.clone();
+        payload.push('\n');
+        if let Err(err) = self.backend.write(payload.as_bytes()) {
+            tracing::warn!(error = %err, "failed to write agent resume command to PTY");
+        } else {
+            tracing::info!(%command, "Sent agent resume command to restored terminal");
         }
     }
 
@@ -374,15 +445,10 @@ impl TerminalPane {
         // Mouse selection: drag selects cells; double-click word; triple line.
         self.handle_mouse_selection(ui, rect, &term_response);
 
-        // Handle scroll wheel for terminal scrollback
+        // Handle scroll wheel: scrollback, alternate-screen app scroll, or
+        // mouse-report wheel (agent TUIs / vim / less).
         if term_response.hovered() {
-            let scroll_delta = ui.input(|i| i.smooth_scroll_delta);
-            if scroll_delta.y != 0.0_f32 {
-                let lines = (-scroll_delta.y / self.renderer.cell_size().y) as i32;
-                if lines != 0 {
-                    self.state.scroll(lines);
-                }
-            }
+            self.handle_scroll_wheel(ui, rect);
         }
 
         // Keyboard: active terminal claims egui focus so Tab is not stolen for
@@ -417,7 +483,12 @@ impl TerminalPane {
         let now = ui.input(|i| i.time);
         self.show_cursor = cursor_blink_visible(now, self.has_focus);
 
-        self.show_title_bar(ui, rect);
+        // Only paint the floating shell badge in copy mode. Multi-tab leaves
+        // already show the title in the tab strip; an always-on "zsh" chip
+        // looked like content bleeding between panes (GitHub #31).
+        if self.copy_mode {
+            self.show_title_bar(ui, rect);
+        }
 
         // Take a snapshot of the terminal grid and render it
         let snapshot = self.state.snapshot();
@@ -615,6 +686,116 @@ impl TerminalPane {
             let _ = self.backend.write(&[0x03]);
             tracing::debug!("No selection; sent SIGINT (^C) to PTY");
         }
+    }
+
+    /// Convert wheel/trackpad delta into terminal scroll or PTY wheel events.
+    ///
+    /// Implements **Alacritty**’s `Processor::scroll_terminal` (the reference
+    /// client for `alacritty_terminal`), not Ghostty’s dual-multiplier path:
+    ///
+    /// 1. Convert this frame’s input to pixels  
+    ///    - `Line` → `delta * cell_size` (fractional ticks kept; no min-1 clamp)  
+    ///    - `Point` → raw points (trackpad)  
+    /// 2. Multiply by `scrolling.multiplier` (**3**, or **1** in mouse mode)  
+    /// 3. Accumulate; emit `floor(|accum| / cell_h)` lines; keep remainder  
+    /// 4. Prefer live `MouseWheel` events; fall back to `smooth_scroll_delta`
+    ///    so OS trackpad inertia still coasts across frames  
+    /// 5. Request an immediate repaint so the grid doesn’t lag the 16 ms tick
+    ///
+    /// Priority after line count is known (same as Alacritty):
+    /// 1. Mouse reporting → SGR/X10 wheel report  
+    /// 2. Alt screen + alternate-scroll → ESC O A/B  
+    /// 3. Else → `Scroll::Delta` on the grid
+    fn handle_scroll_wheel(&mut self, ui: &egui::Ui, rect: egui::Rect) {
+        // alacritty/src/config/scrolling.rs — default multiplier.
+        const SCROLL_MULTIPLIER: f32 = 3.0;
+
+        let cell = self.renderer.cell_size();
+        let cell_h = cell.y.max(1.0_f32);
+        let cell_w = cell.x.max(1.0_f32);
+
+        // Alacritty `mouse_wheel_input`: LineDelta → px via cell size; PixelDelta as-is.
+        // egui: positive Y = content moves down = into scrollback history.
+        let scroll_y_px = ui.input(|i| {
+            let mut y = 0.0_f32;
+            let mut had = false;
+            for event in &i.events {
+                let egui::Event::MouseWheel { unit, delta, .. } = event else {
+                    continue;
+                };
+                had = true;
+                match unit {
+                    egui::MouseWheelUnit::Line => {
+                        // Keep fractional line ticks (0.1, 0.3, …) — Alacritty
+                        // does not clamp to 1; that clamp made trackpads jumpy.
+                        y += delta.y * cell_h;
+                    }
+                    egui::MouseWheelUnit::Point => {
+                        y += delta.y;
+                    }
+                    egui::MouseWheelUnit::Page => {
+                        y += delta.y * cell_h * f32::from(self.rows);
+                    }
+                }
+            }
+            // Coast on inertia when the OS stopped sending discrete events but
+            // egui still has a smoothed residual (feels less sticky/laggy).
+            if !had {
+                y += i.smooth_scroll_delta.y;
+            }
+            y
+        });
+
+        if scroll_y_px == 0.0_f32 {
+            return;
+        }
+
+        // Alacritty: mouse-mode reporting uses mult 1; otherwise config mult.
+        let mult = if self.state.mouse_reporting() { 1.0_f32 } else { SCROLL_MULTIPLIER };
+
+        self.scroll_accum_px += scroll_y_px * mult;
+
+        // lines = trunc(accum / cell_h); remainder kept (alacritty `accum %= height`).
+        let lines = (self.scroll_accum_px / cell_h).trunc() as i32;
+        if lines == 0 {
+            return;
+        }
+        self.scroll_accum_px -= lines as f32 * cell_h;
+
+        // Cap runaway spikes (trackpad glitches); Alacritty has no cap but we
+        // keep a generous one so a single event can't jump the whole history.
+        let lines = lines.clamp(-128, 128);
+
+        if self.state.mouse_reporting() {
+            let (col, row) = ui
+                .input(|i| i.pointer.hover_pos())
+                .map(|pos| {
+                    let local = pos - rect.min;
+                    let col = (local.x / cell_w).floor().max(0.0) as u16;
+                    let row = (local.y / cell_h).floor().max(0.0) as u16;
+                    (col.min(self.cols.saturating_sub(1)), row.min(self.rows.saturating_sub(1)))
+                })
+                .unwrap_or((0, 0));
+            let bytes = self.state.mouse_wheel_report_bytes(col, row, lines);
+            if !bytes.is_empty() {
+                let _ = self.backend.write(&bytes);
+            }
+            ui.ctx().request_repaint();
+            return;
+        }
+
+        if self.state.is_alt_screen() && self.state.alternate_scroll() {
+            let bytes = rmux_terminal::TermState::alternate_scroll_bytes(lines);
+            if !bytes.is_empty() {
+                let _ = self.backend.write(&bytes);
+            }
+            ui.ctx().request_repaint();
+            return;
+        }
+
+        self.state.scroll(lines);
+        // Don't wait for the periodic 16 ms repaint — scroll should feel instant.
+        ui.ctx().request_repaint();
     }
 
     /// Drag / multi-click mouse selection over the grid.

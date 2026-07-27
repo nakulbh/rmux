@@ -165,6 +165,12 @@ impl PtyBackend {
         foreground_process_title(pid)
     }
 
+    /// Full untruncated args of the foreground non-shell child (agent resume).
+    pub fn foreground_process_args(&self) -> Option<String> {
+        let pid = self.process_id()?;
+        foreground_process_args(pid)
+    }
+
     /// Write input bytes to the PTY (keyboard input, paste, etc.).
     ///
     /// # Errors
@@ -360,9 +366,17 @@ const MAX_PROCESS_TITLE_CHARS: usize = 48;
 /// Uses a single `ps` snapshot so we avoid N subprocesses when scanning.
 /// Returns `None` on non-Unix platforms or when no interesting child exists.
 pub fn foreground_process_title(shell_pid: u32) -> Option<String> {
+    foreground_process_args(shell_pid).map(|args| clean_process_title(&args))
+}
+
+/// Full command line of the shell's foreground (non-shell) child, untruncated.
+///
+/// Used by session restore to rebuild agent resume commands (cmux-style).
+/// Returns `None` on non-Unix platforms or when no interesting child exists.
+pub fn foreground_process_args(shell_pid: u32) -> Option<String> {
     #[cfg(unix)]
     {
-        foreground_process_title_unix(shell_pid)
+        foreground_process_args_unix(shell_pid)
     }
     #[cfg(not(unix))]
     {
@@ -372,7 +386,7 @@ pub fn foreground_process_title(shell_pid: u32) -> Option<String> {
 }
 
 #[cfg(unix)]
-fn foreground_process_title_unix(shell_pid: u32) -> Option<String> {
+fn foreground_process_args_unix(shell_pid: u32) -> Option<String> {
     let output =
         std::process::Command::new("ps").args(["-ax", "-o", "pid=,ppid=,args="]).output().ok()?;
     if !output.status.success() {
@@ -380,7 +394,7 @@ fn foreground_process_title_unix(shell_pid: u32) -> Option<String> {
     }
     let text = String::from_utf8_lossy(&output.stdout);
     let rows = parse_ps_pid_ppid_args(&text);
-    pick_foreground_title(shell_pid, &rows)
+    pick_foreground_args(shell_pid, &rows)
 }
 
 /// Parse `ps -o pid=,ppid=,args=` lines into `(pid, ppid, args)`.
@@ -411,6 +425,11 @@ pub fn parse_ps_pid_ppid_args(stdout: &str) -> Vec<(u32, u32, String)> {
 /// Falls back to a deeper non-shell descendant so wrappers like `env` still
 /// surface something useful.
 pub fn pick_foreground_title(shell_pid: u32, rows: &[(u32, u32, String)]) -> Option<String> {
+    pick_foreground_args(shell_pid, rows).map(|args| clean_process_title(&args))
+}
+
+/// Full (untruncated) args of the foreground non-shell child under `shell_pid`.
+pub fn pick_foreground_args(shell_pid: u32, rows: &[(u32, u32, String)]) -> Option<String> {
     let mut by_parent: std::collections::HashMap<u32, Vec<&(u32, u32, String)>> =
         std::collections::HashMap::new();
     for row in rows {
@@ -437,9 +456,9 @@ pub fn pick_foreground_title(shell_pid: u32, rows: &[(u32, u32, String)]) -> Opt
             if is_shell_or_helper(token) {
                 continue;
             }
-            let cleaned = clean_process_title(args);
-            if !cleaned.is_empty() {
-                return Some(cleaned);
+            let collapsed: String = args.split_whitespace().collect::<Vec<_>>().join(" ");
+            if !collapsed.is_empty() {
+                return Some(collapsed);
             }
         }
     }
