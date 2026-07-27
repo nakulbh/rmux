@@ -1,3 +1,5 @@
+use crate::bg_batch::BgSpanAccumulator;
+use crate::glyph_cache::{GlyphCache, GlyphKey};
 use crate::state::GridSnapshot;
 use alacritty_terminal::vte::ansi::CursorShape;
 use egui::{Color32, FontFamily, FontId, Pos2, Rect, Stroke, Ui, Vec2};
@@ -516,12 +518,20 @@ pub struct TerminalRenderer {
     /// Opacity of default terminal background fills over a workspace wallpaper.
     /// `1.0` = fully opaque (classic solid terminal). Shared across all panes.
     bg_opacity: f32,
+    /// Per-glyph galley cache (avoids `layout_no_wrap` every cell every frame).
+    glyph_cache: GlyphCache,
 }
 
 impl TerminalRenderer {
     pub fn new(font_size: f32) -> Self {
         let cell_size = Self::estimate_cell_size(font_size);
-        Self { font_size, cell_size, cell_size_measured: false, bg_opacity: 1.0 }
+        Self {
+            font_size,
+            cell_size,
+            cell_size_measured: false,
+            bg_opacity: 1.0,
+            glyph_cache: GlyphCache::with_capacity(512),
+        }
     }
 
     /// Set background opacity for transparent wallpaper mode (`0.0`–`1.0`).
@@ -569,9 +579,7 @@ impl TerminalRenderer {
         let unused_fill = with_alpha(snapshot.terminal_bg, opacity);
 
         // Base fill over the whole pane so wallpaper shows evenly through
-        // empty space (including gaps from cell rounding). Without this,
-        // only per-cell paints apply and unused edges can look fully opaque
-        // or leave bare wallpaper (GitHub #30 / #32).
+        // empty space (including gaps from cell rounding).
         if unused_fill.a() > 0 {
             painter.rect_filled(rect, 0.0, unused_fill);
         }
@@ -579,118 +587,105 @@ impl TerminalRenderer {
         let visible_cols = ((rect.width() / cell_w).floor() as u16).min(snapshot.cols);
         let visible_rows = ((rect.height() / cell_h).floor() as u16).min(snapshot.rows);
 
+        // Pass 1: batched backgrounds only (breaks on default/transparent).
+        {
+            let mut bg = BgSpanAccumulator::default();
+            for row in 0..visible_rows {
+                let mut col = 0_u16;
+                while col < visible_cols {
+                    let cell = &snapshot.cells[row as usize][col as usize];
+                    let span = if cell.wide && col + 1 < visible_cols { 2 } else { 1 };
+                    let color = if !same_rgb(cell.bg, snapshot.terminal_bg) {
+                        let paint = cell_bg_paint(cell.bg, snapshot.terminal_bg, opacity);
+                        Some(paint)
+                    } else {
+                        None
+                    };
+                    if let Some(finished) = bg.push(row, col, span, color) {
+                        finished.paint(&painter, rect, cell_w, cell_h);
+                    }
+                    col += span;
+                }
+                if let Some(finished) = bg.take() {
+                    finished.paint(&painter, rect, cell_w, cell_h);
+                }
+            }
+        }
+
+        // Pass 2: glyphs / native shapes / underlines (cell-aligned X).
         let font_regular = FontId::monospace(self.font_size);
         let font_bold = FontId::new(self.font_size, FontFamily::Name("JetBrainsMonoBold".into()));
 
         for row in 0..visible_rows {
+            let row_y = rect.top() + row as f32 * cell_h;
             let mut col = 0_u16;
             while col < visible_cols {
                 let cell = &snapshot.cells[row as usize][col as usize];
-
-                // Double-width cells (CJK, many emoji, some ambiguous-width
-                // symbols) span this column and the next. Widen this cell's
-                // rect to cover both and skip the next column entirely — if
-                // we painted it separately, its own opaque background fill
-                // would land on top of (and clip) the right half of this
-                // cell's glyph, since text isn't clipped per-cell.
                 let span = if cell.wide && col + 1 < visible_cols { 2 } else { 1 };
-
                 let cell_rect = Rect::from_min_size(
-                    Pos2::new(rect.left() + col as f32 * cell_w, rect.top() + row as f32 * cell_h),
+                    Pos2::new(rect.left() + col as f32 * cell_w, row_y),
                     Vec2::new(cell_w * span as f32, cell_h),
                 );
 
-                // Base pane fill already painted default terminal_bg. Only
-                // re-paint cells whose bg differs (TUI panels, selection).
-                // Re-painting default cells would stack alpha and hide the
-                // wallpaper (GitHub #30 / #32).
-                if !same_rgb(cell.bg, snapshot.terminal_bg) {
-                    let paint_bg = cell_bg_paint(cell.bg, snapshot.terminal_bg, opacity);
-                    if paint_bg.a() > 0 {
-                        painter.rect_filled(cell_rect, 0.0, paint_bg);
-                    }
-                }
-
-                if cell.c != ' ' {
+                if cell.c != ' ' && cell.c != '\t' && cell.c != '\0' {
                     if is_special_shape(cell.c) {
-                        // Explicit geometry for TUI shapes (Ghostty/cmux solid look).
                         paint_special_shape(&painter, cell_rect, cell.c, cell.fg);
                     } else {
-                        let font_id =
-                            if cell.bold { font_bold.clone() } else { font_regular.clone() };
+                        let use_fallback = if cell.c.is_ascii() {
+                            false
+                        } else {
+                            let font_id =
+                                if cell.bold { font_bold.clone() } else { font_regular.clone() };
+                            let has = ui.fonts(|f| f.has_glyph(&font_id, cell.c));
+                            !has && is_symbol_range(cell.c)
+                        };
 
-                        // General anti-tofu: if *no* font in the cascade has
-                        // this codepoint, don't paint a hollow □ replacement —
-                        // use geometry for symbol ranges instead.
-                        let has_glyph = ui.fonts(|f| f.has_glyph(&font_id, cell.c));
-                        if !has_glyph && is_symbol_range(cell.c) {
+                        if use_fallback {
                             paint_missing_symbol_fallback(&painter, cell_rect, cell.c, cell.fg);
                         } else {
-                            let galley = ui
-                                .fonts(|f| f.layout_no_wrap(cell.c.to_string(), font_id, cell.fg));
+                            let key = GlyphKey::new(cell.c, cell.bold, self.font_size, cell.fg);
+                            let galley =
+                                self.glyph_cache.get_or_layout(ui, key, &font_regular, &font_bold);
                             let gw = galley.size().x;
                             let gh = galley.size().y;
-
                             let x = if is_nerd_icon(cell.c) {
-                                // Center nerd icons in the cell (Ghostty-style).
                                 cell_rect.left() + (cell_rect.width() - gw) * 0.5
                             } else {
                                 cell_rect.left()
                             };
-                            // Slight top bias keeps the Latin baseline closer to
-                            // native terminal metrics than pure vertical center,
-                            // which made text look "floaty" vs cmux.
                             let y = cell_rect.top() + (cell_rect.height() - gh) * 0.35;
-
                             painter.galley(Pos2::new(x, y), galley, cell.fg);
                         }
                     }
 
                     if cell.underline {
                         let line_y = cell_rect.bottom() - 1.5;
-                        let underline_rect = Rect::from_min_max(
-                            Pos2::new(cell_rect.left(), line_y),
-                            Pos2::new(cell_rect.right(), cell_rect.bottom() - 0.5),
+                        painter.rect_filled(
+                            Rect::from_min_max(
+                                Pos2::new(cell_rect.left(), line_y),
+                                Pos2::new(cell_rect.right(), cell_rect.bottom() - 0.5),
+                            ),
+                            0.0,
+                            cell.fg,
                         );
-                        painter.rect_filled(underline_rect, 0.0, cell.fg);
-                    }
-                }
-
-                if cell.is_cursor && cursor_visible {
-                    match snapshot.cursor_shape {
-                        CursorShape::Block | CursorShape::HollowBlock => {
-                            let overlay_color =
-                                cursor_color(CURSOR_BLOCK_ALPHA, snapshot.cursor_color);
-                            painter.rect_filled(cell_rect, 0.0, overlay_color);
-                        }
-                        CursorShape::Underline => {
-                            let underline_rect = Rect::from_min_max(
-                                Pos2::new(cell_rect.left(), cell_rect.bottom() - 2.0),
-                                Pos2::new(cell_rect.right(), cell_rect.bottom()),
-                            );
-                            painter.rect_filled(
-                                underline_rect,
-                                0.0,
-                                cursor_color(CURSOR_LINE_ALPHA, snapshot.cursor_color),
-                            );
-                        }
-                        CursorShape::Beam => {
-                            let beam_rect = Rect::from_min_max(
-                                Pos2::new(cell_rect.left(), cell_rect.top()),
-                                Pos2::new(cell_rect.left() + 2.0, cell_rect.bottom()),
-                            );
-                            painter.rect_filled(
-                                beam_rect,
-                                0.0,
-                                cursor_color(CURSOR_LINE_ALPHA, snapshot.cursor_color),
-                            );
-                        }
-                        CursorShape::Hidden => {}
                     }
                 }
 
                 col += span;
             }
+        }
+
+        // Pass 3: cursor from snapshot metadata (not a per-cell scan).
+        if cursor_visible {
+            paint_cursor_overlay(
+                &painter,
+                rect,
+                cell_w,
+                cell_h,
+                snapshot,
+                visible_cols,
+                visible_rows,
+            );
         }
     }
 
@@ -698,6 +693,7 @@ impl TerminalRenderer {
         self.font_size = font_size;
         self.cell_size = Self::estimate_cell_size(font_size);
         self.cell_size_measured = false;
+        self.glyph_cache.clear();
     }
 
     fn estimate_cell_size(font_size: f32) -> Vec2 {
@@ -714,6 +710,61 @@ impl TerminalRenderer {
         let cols = (rect.width() / self.cell_size.x).floor() as u16;
         let rows = (rect.height() / self.cell_size.y).floor() as u16;
         (cols.max(1), rows.max(1))
+    }
+}
+
+/// Paint the caret using snapshot cursor position (pass 3).
+fn paint_cursor_overlay(
+    painter: &egui::Painter,
+    pane: Rect,
+    cell_w: f32,
+    cell_h: f32,
+    snapshot: &GridSnapshot,
+    visible_cols: u16,
+    visible_rows: u16,
+) {
+    let row = snapshot.cursor_row;
+    let col = snapshot.cursor_col;
+    if row >= visible_rows || col >= visible_cols {
+        return;
+    }
+    let wide =
+        snapshot.cells.get(row as usize).and_then(|r| r.get(col as usize)).is_some_and(|c| c.wide);
+    let span = if wide && col + 1 < visible_cols { 2 } else { 1 };
+    let cell_rect = Rect::from_min_size(
+        Pos2::new(pane.left() + col as f32 * cell_w, pane.top() + row as f32 * cell_h),
+        Vec2::new(cell_w * span as f32, cell_h),
+    );
+
+    match snapshot.cursor_shape {
+        CursorShape::Block | CursorShape::HollowBlock => {
+            painter.rect_filled(
+                cell_rect,
+                0.0,
+                cursor_color(CURSOR_BLOCK_ALPHA, snapshot.cursor_color),
+            );
+        }
+        CursorShape::Underline => {
+            painter.rect_filled(
+                Rect::from_min_max(
+                    Pos2::new(cell_rect.left(), cell_rect.bottom() - 2.0),
+                    Pos2::new(cell_rect.right(), cell_rect.bottom()),
+                ),
+                0.0,
+                cursor_color(CURSOR_LINE_ALPHA, snapshot.cursor_color),
+            );
+        }
+        CursorShape::Beam => {
+            painter.rect_filled(
+                Rect::from_min_max(
+                    Pos2::new(cell_rect.left(), cell_rect.top()),
+                    Pos2::new(cell_rect.left() + 2.0, cell_rect.bottom()),
+                ),
+                0.0,
+                cursor_color(CURSOR_LINE_ALPHA, snapshot.cursor_color),
+            );
+        }
+        CursorShape::Hidden => {}
     }
 }
 
@@ -769,14 +820,12 @@ mod tests {
     }
 
     #[test]
-    fn test_set_font_size_resets_measurement() {
+    fn test_set_font_size_clears_glyph_cache_and_measurement() {
         let mut renderer = TerminalRenderer::new(14.0);
         let original = renderer.cell_size();
-
         renderer.set_font_size(20.0);
         assert_eq!(renderer.font_size, 20.0);
         assert!(!renderer.cell_size_measured);
-
         let updated = renderer.cell_size();
         assert!(updated.x > original.x);
         assert!(updated.y > original.y);

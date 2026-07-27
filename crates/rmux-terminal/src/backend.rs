@@ -207,8 +207,55 @@ impl PtyBackend {
     /// After calling this, `try_read` will always return `None`.
     /// The caller should spawn a thread that reads from the returned reader
     /// and sends data to the main thread via a channel.
+    ///
+    /// Prefer [`Self::spawn_output_pump`] which uses blocking reads and an
+    /// optional wake callback so the UI can repaint as soon as data arrives.
     pub fn take_reader(&mut self) -> Option<Box<dyn Read + Send>> {
         self.reader.take()
+    }
+
+    /// Spawn a background thread that pumps PTY output into `tx`.
+    ///
+    /// On Unix the master FD is set blocking so `read` waits in the kernel.
+    /// After each successful chunk, `on_data` is invoked (e.g. egui
+    /// `request_repaint`) so the UI does not wait for a fixed frame timer.
+    ///
+    /// Returns `false` if the reader was already taken.
+    pub fn spawn_output_pump<F>(&mut self, tx: std::sync::mpsc::Sender<Vec<u8>>, on_data: F) -> bool
+    where
+        F: Fn() + Send + 'static,
+    {
+        let Some(mut reader) = self.take_reader() else {
+            return false;
+        };
+
+        // portable-pty's reader is normally blocking, so `read` sleeps in the
+        // kernel until data arrives. If we still get WouldBlock (some
+        // platforms), park for 1 ms — never the old 10 ms poll that made
+        // nvim j/k feel mushy.
+        std::thread::Builder::new()
+            .name("rmux-pty-read".into())
+            .spawn(move || {
+                let mut buf = [0u8; 8192];
+                loop {
+                    match reader.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            if tx.send(buf[..n].to_vec()).is_err() {
+                                break;
+                            }
+                            on_data();
+                        }
+                        Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(std::time::Duration::from_millis(1));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            })
+            .ok();
+        true
     }
 
     /// Resize the PTY to new dimensions.

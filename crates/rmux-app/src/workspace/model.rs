@@ -210,8 +210,10 @@ impl Workspace {
     }
 
     /// Process PTY output for all panes in this workspace.
-    pub fn process_pty_outputs(&mut self) {
-        self.root.process_pty_outputs();
+    ///
+    /// Returns `true` if any pane applied new PTY bytes.
+    pub fn process_pty_outputs(&mut self) -> bool {
+        self.root.process_pty_outputs()
     }
 
     /// Split the specified pane to the right (horizontal split).
