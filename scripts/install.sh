@@ -89,16 +89,23 @@ ensure_rust
 install_linux_build_deps() {
   [[ "$OS" == linux ]] || return 0
 
-  local sudo_cmd=(sudo)
+  # Resolve sudo for package installs:
+  #   passwordless (-n) → askpass when SUDO_ASKPASS is set (-A) →
+  #   interactive plain sudo when a controlling TTY exists → else skip.
+  # Do not probe `sudo -A true` (can pop a GUI password dialog just to test).
+  # curl|bash has no TTY on stdin, but sudo can still prompt on /dev/tty.
+  local sudo_cmd=()
   if ! have sudo; then
     warn "sudo not found; skipping Linux build dependencies"
     return 0
   elif sudo -n true 2>/dev/null; then
     sudo_cmd=(sudo -n)
-  elif sudo -A true 2>/dev/null; then
+  elif [[ -n "${SUDO_ASKPASS:-}" ]]; then
     sudo_cmd=(sudo -A)
+  elif [[ -r /dev/tty ]]; then
+    sudo_cmd=(sudo)
   else
-    warn "sudo needs a password but no askpass helper is available; skipping Linux build dependencies"
+    warn "sudo needs a password but no TTY/askpass is available; skipping Linux build dependencies"
     return 0
   fi
 
