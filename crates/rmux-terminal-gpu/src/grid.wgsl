@@ -104,9 +104,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     {
         let atlas_uv = mix(in.atlas_uv_min, in.atlas_uv_max, in.glyph_local);
         let sample = textureSampleLevel(atlas_tex, atlas_samp, atlas_uv, 0.0);
-        let cov = sample.a;
+        // Coverage already gamma-lifted in the atlas; keep a soft floor so
+        // anti-aliased edges do not vanish on busy wallpapers.
+        let cov = clamp(sample.a * 1.05, 0.0, 1.0);
         rgb = rgb * (1.0 - cov) + in.fg.rgb * cov;
-        a = a * (1.0 - cov) + in.fg.a * cov;
+        a = max(a * (1.0 - cov) + in.fg.a * cov, cov);
     }
 
     if ((in.flags & 1u) != 0u && in.cell_uv.y > 0.88) {

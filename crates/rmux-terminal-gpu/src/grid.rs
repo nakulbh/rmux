@@ -80,13 +80,14 @@ impl GridGpu {
         wgpu_render_state: &RenderState,
         font_regular: &[u8],
         font_bold: &[u8],
+        font_symbols: Option<&[u8]>,
         font_size: f32,
     ) -> Result<(), String> {
         let device = &wgpu_render_state.device;
         let queue = &wgpu_render_state.queue;
         let target_format = wgpu_render_state.target_format;
 
-        let atlas = GlyphAtlas::new(font_regular, font_bold, font_size)?;
+        let atlas = GlyphAtlas::new(font_regular, font_bold, font_symbols, font_size)?;
         let (aw, ah) = atlas.dimensions();
 
         let atlas_texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -277,6 +278,7 @@ impl GridGpu {
 struct GridPaintCallback {
     pane_id: u64,
     font_size: f32,
+    pixels_per_point: f32,
     pane_w: f32,
     pane_h: f32,
     cells: Vec<CpuCell>,
@@ -299,6 +301,7 @@ impl egui_wgpu::CallbackTrait for GridPaintCallback {
 
         gpu.begin_frame_if_needed(self.frame_epoch);
         gpu.atlas.set_font_size(self.font_size);
+        gpu.atlas.set_pixels_per_point(self.pixels_per_point);
 
         let cell_w = gpu.atlas.cell_w.max(1.0);
         let cell_h = gpu.atlas.cell_h.max(1.0);
@@ -431,9 +434,10 @@ pub fn paint_grid(
     }
 
     let opacity = opacity.clamp(0.0, 1.0);
-    // Keep terminal glass readable: never fully disappear into wallpaper.
-    let bg_opacity = opacity.max(0.35);
+    // Readable glass: higher floor so body text is not washed out by wallpaper.
+    let bg_opacity = opacity.max(0.55);
     let term_bg = snapshot.terminal_bg;
+    let ppp = ui.ctx().pixels_per_point();
     let mut cells = Vec::with_capacity(visible_cols as usize * visible_rows as usize);
 
     for row in 0..visible_rows {
@@ -445,9 +449,12 @@ pub fn paint_grid(
                 with_opacity(term_bg, bg_opacity)
             } else {
                 // Custom cell backgrounds (nvim, TUIs) stay nearly solid.
-                with_opacity(cell.bg, bg_opacity.max(0.92))
+                with_opacity(cell.bg, bg_opacity.max(0.94))
             };
             let cursor = cursor_visible && row == snapshot.cursor_row && col == snapshot.cursor_col;
+            // Fully opaque ink — transparent fg makes stems muddy on wallpaper.
+            let mut fg = rgba_straight(cell.fg);
+            fg[3] = 1.0;
             cells.push(CpuCell {
                 col,
                 row,
@@ -456,7 +463,7 @@ pub fn paint_grid(
                 bold: cell.bold,
                 underline: cell.underline,
                 cursor,
-                fg: rgba_straight(cell.fg),
+                fg,
                 bg: rgba_straight(bg),
             });
             col += span;
@@ -468,6 +475,7 @@ pub fn paint_grid(
         GridPaintCallback {
             pane_id,
             font_size,
+            pixels_per_point: ppp,
             pane_w: rect.width().max(1.0),
             pane_h: rect.height().max(1.0),
             cells,

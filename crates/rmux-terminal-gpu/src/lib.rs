@@ -35,6 +35,8 @@ pub fn is_ready() -> bool {
 pub struct FontSetup<'a> {
     pub regular: &'a [u8],
     pub bold: &'a [u8],
+    /// Optional Nerd / symbols font for file-tree icons, powerline, etc.
+    pub symbols: Option<&'a [u8]>,
     pub size: f32,
 }
 
@@ -58,7 +60,13 @@ pub fn init(cc: &eframe::CreationContext<'_>, fonts: FontSetup<'_>) -> bool {
     }
     GPU_READY.store(true, Ordering::Relaxed);
 
-    match grid::GridGpu::install(wgpu_render_state, fonts.regular, fonts.bold, fonts.size) {
+    match grid::GridGpu::install(
+        wgpu_render_state,
+        fonts.regular,
+        fonts.bold,
+        fonts.symbols,
+        fonts.size,
+    ) {
         Ok(()) => {
             tracing::info!("rmux-terminal-gpu: G0–G2 surface ready (wgpu + glyph atlas)");
             true

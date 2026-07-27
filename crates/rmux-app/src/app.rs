@@ -129,11 +129,13 @@ impl RmuxApp {
         // Atlas font size is updated per frame when panes paint; init uses default.
         const FONT_REGULAR: &[u8] = include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf");
         const FONT_BOLD: &[u8] = include_bytes!("../assets/fonts/JetBrainsMono-Bold.ttf");
+        const FONT_NERD: &[u8] = include_bytes!("../assets/fonts/SymbolsNerdFontMono-Regular.ttf");
         let _gpu_ready = rmux_terminal_gpu::init(
             cc,
             rmux_terminal_gpu::FontSetup {
                 regular: FONT_REGULAR,
                 bold: FONT_BOLD,
+                symbols: Some(FONT_NERD),
                 size: DEFAULT_FONT_SIZE,
             },
         );
