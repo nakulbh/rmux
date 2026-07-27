@@ -519,11 +519,7 @@ impl HelpMenu {
                             (&format!("{mod_label}⇧D"), "Split down"),
                             (&format!("{mod_label}T"), "New terminal tab"),
                             (
-                                if cfg!(target_os = "macos") {
-                                    "⌘⌥←/→/↑/↓"
-                                } else {
-                                    "Ctrl+Shift+←/→/↑/↓"
-                                },
+                                crate::shortcut_manager::focus_pane_chord_label(),
                                 "Focus adjacent pane",
                             ),
                         ],
