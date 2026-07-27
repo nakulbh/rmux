@@ -89,6 +89,26 @@ ensure_rust
 install_linux_build_deps() {
   [[ "$OS" == linux ]] || return 0
 
+  # Resolve sudo for package installs:
+  #   passwordless (-n) → askpass when SUDO_ASKPASS is set (-A) →
+  #   interactive plain sudo when a controlling TTY exists → else skip.
+  # Do not probe `sudo -A true` (can pop a GUI password dialog just to test).
+  # curl|bash has no TTY on stdin, but sudo can still prompt on /dev/tty.
+  local sudo_cmd=()
+  if ! have sudo; then
+    warn "sudo not found; skipping Linux build dependencies"
+    return 0
+  elif sudo -n true 2>/dev/null; then
+    sudo_cmd=(sudo -n)
+  elif [[ -n "${SUDO_ASKPASS:-}" ]]; then
+    sudo_cmd=(sudo -A)
+  elif [[ -r /dev/tty ]]; then
+    sudo_cmd=(sudo)
+  else
+    warn "sudo needs a password but no TTY/askpass is available; skipping Linux build dependencies"
+    return 0
+  fi
+
   local pkgs=(
     build-essential pkg-config
     libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
@@ -99,20 +119,19 @@ install_linux_build_deps() {
     libsoup-3.0-dev libgdk-pixbuf-2.0-dev
   )
 
-  if have apt-get && have sudo; then
+  if have apt-get; then
     info "Installing Linux build dependencies (apt)"
-    sudo apt-get update -qq
-    # shellcheck disable=SC2068
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ${pkgs[@]} || \
+    "${sudo_cmd[@]}" apt-get update -qq || warn "apt-get update failed; build may still succeed"
+    "${sudo_cmd[@]}" DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${pkgs[@]}" || \
       warn "some apt packages failed to install; build may still succeed"
-  elif have dnf && have sudo; then
+  elif have dnf; then
     info "Installing Linux build dependencies (dnf)"
-    sudo dnf install -y gcc pkgconf-pkg-config openssl-devel \
+    "${sudo_cmd[@]}" dnf install -y gcc pkgconf-pkg-config openssl-devel \
       gtk3-devel webkit2gtk4.1-devel || \
       warn "some dnf packages failed to install; build may still succeed"
-  elif have pacman && have sudo; then
+  elif have pacman; then
     info "Installing Linux build dependencies (pacman)"
-    sudo pacman -S --needed --noconfirm base-devel openssl gtk3 webkit2gtk-4.1 || \
+    "${sudo_cmd[@]}" pacman -S --needed --noconfirm base-devel openssl gtk3 webkit2gtk-4.1 || \
       warn "some pacman packages failed to install; build may still succeed"
   else
     warn "could not detect a package manager; ensure GUI/WebKit dev libs are installed"
