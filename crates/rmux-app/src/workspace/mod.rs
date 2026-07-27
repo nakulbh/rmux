@@ -323,10 +323,14 @@ impl WorkspaceManager {
     }
 
     /// Process PTY output for all panes across all workspaces.
-    pub fn process_all_panes(&mut self) {
+    ///
+    /// Returns `true` if any pane applied new PTY bytes (request a repaint).
+    pub fn process_all_panes(&mut self) -> bool {
+        let mut any = false;
         for workspace in &mut self.workspaces {
-            workspace.process_pty_outputs();
+            any |= workspace.process_pty_outputs();
         }
+        any
     }
 
     /// Close terminals whose process has exited.

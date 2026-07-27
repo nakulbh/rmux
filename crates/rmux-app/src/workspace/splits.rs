@@ -271,21 +271,26 @@ impl PaneNode {
     ///
     /// OSC → notification generation is disabled (iTerm2 progress OSC 9;4
     /// was mis-parsed as junk notifications).
-    pub fn process_pty_outputs(&mut self) {
+    /// Returns `true` if any pane consumed PTY output this call.
+    pub fn process_pty_outputs(&mut self) -> bool {
         match self {
             Self::Leaf { terminal, surfaces, .. } => {
+                let mut any = false;
                 if let Some(t) = terminal.as_mut() {
-                    t.process_pty_output();
+                    any |= t.process_pty_output();
                 }
                 for surface in surfaces.iter_mut() {
-                    surface.terminal.process_pty_output();
+                    any |= surface.terminal.process_pty_output();
                 }
+                any
             }
-            Self::Browser { .. } => {}
+            Self::Browser { .. } => false,
             Self::Split { children, .. } => {
+                let mut any = false;
                 for child in children.iter_mut() {
-                    child.process_pty_outputs();
+                    any |= child.process_pty_outputs();
                 }
+                any
             }
         }
     }

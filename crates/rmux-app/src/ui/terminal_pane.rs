@@ -11,8 +11,32 @@ use rmux_terminal::{
 };
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 
 use crate::ui::theme;
+
+/// Thread-safe hook so the PTY reader can wake the egui event loop.
+#[derive(Clone, Default)]
+struct RepaintHandle {
+    ctx: Arc<Mutex<Option<egui::Context>>>,
+}
+
+impl RepaintHandle {
+    fn bind(&self, ctx: &egui::Context) {
+        if let Ok(mut slot) = self.ctx.lock() {
+            // Always refresh — Context is cheap to clone and may be recreated.
+            *slot = Some(ctx.clone());
+        }
+    }
+
+    fn request(&self) {
+        if let Ok(slot) = self.ctx.lock()
+            && let Some(ctx) = slot.as_ref()
+        {
+            ctx.request_repaint();
+        }
+    }
+}
 
 /// The default font size for terminal text.
 pub const DEFAULT_FONT_SIZE: f32 = 14.0;
@@ -47,6 +71,8 @@ pub struct TerminalPane {
     input_mapper: InputMapper,
     /// Channel receiver for PTY output from background thread.
     pty_rx: mpsc::Receiver<Vec<u8>>,
+    /// Lets the PTY reader thread request an immediate UI frame.
+    repaint: RepaintHandle,
     /// Whether this pane currently has keyboard focus.
     has_focus: bool,
     /// Whether to show the blinking cursor.
@@ -149,29 +175,10 @@ impl TerminalPane {
 
         // Channel for PTY output from background thread
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
-
-        // Spawn background thread for reading PTY output
-        if let Some(reader) = backend.take_reader() {
-            let mut reader = reader;
-            std::thread::spawn(move || {
-                let mut buf = [0u8; 4096];
-                loop {
-                    match reader.read(&mut buf) {
-                        Ok(0) => break, // EOF: process exited
-                        Ok(n) => {
-                            if tx.send(buf[..n].to_vec()).is_err() {
-                                break; // receiver dropped
-                            }
-                        }
-                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            // No data available, sleep briefly to avoid busy loop
-                            std::thread::sleep(std::time::Duration::from_millis(10));
-                        }
-                        Err(_) => break,
-                    }
-                }
-            });
-        }
+        let repaint = RepaintHandle::default();
+        let wake = repaint.clone();
+        // Blocking read (Unix) + wake UI as soon as bytes arrive — not a 10 ms poll.
+        backend.spawn_output_pump(tx, move || wake.request());
 
         // Determine the display name
         let name = std::env::var("SHELL")
@@ -187,6 +194,7 @@ impl TerminalPane {
             renderer,
             input_mapper,
             pty_rx: rx,
+            repaint,
             has_focus: false,
             show_cursor: true,
             name,
@@ -245,7 +253,9 @@ impl TerminalPane {
     ///
     /// Drains the channel and feeds bytes into the terminal state.
     /// Should be called once per frame before rendering.
-    pub fn process_pty_output(&mut self) {
+    ///
+    /// Returns `true` if any PTY bytes were applied (caller may request repaint).
+    pub fn process_pty_output(&mut self) -> bool {
         let mut got_output = false;
         while let Ok(data) = self.pty_rx.try_recv() {
             // OSC notification scanning is intentionally disabled: OSC 9 is also
@@ -278,15 +288,17 @@ impl TerminalPane {
             }
         }
 
-        // Refresh cwd / process title / git branch ~every 45 frames (~0.7s at
-        // 60fps) for tab labels and cmux-style workspace auto-titles.
+        // Title probes shell out to `ps` / `lsof` / `git` / `gh` — never do
+        // that on the hot path while the user is typing in this pane.
         self.cwd_tick = self.cwd_tick.wrapping_add(1);
-        if self.cwd_tick.is_multiple_of(45) {
-            self.refresh_title_sources();
-        } else if self.last_cwd.is_none() {
-            // First chance: populate immediately so new tabs aren't empty.
-            self.refresh_title_sources();
+        let probe_every = if self.has_focus { 120 } else { 45 };
+        if self.last_cwd.is_none() {
+            self.refresh_title_sources(false);
+        } else if self.cwd_tick.is_multiple_of(probe_every) {
+            self.refresh_title_sources(self.has_focus);
         }
+
+        got_output
     }
 
     /// Send a queued startup command once the shell looks ready.
@@ -317,12 +329,16 @@ impl TerminalPane {
     }
 
     /// Probe cwd, foreground process, and git branch (throttled by caller).
-    fn refresh_title_sources(&mut self) {
+    ///
+    /// When `skip_slow` is true (focused typing), skip `git`/`gh`/`ps`-heavy
+    /// work that can stall the UI thread for tens–hundreds of ms.
+    fn refresh_title_sources(&mut self, skip_slow: bool) {
         let mut cwd_changed = false;
         if let Some(cwd) = self.backend.working_directory() {
             cwd_changed = self.last_cwd.as_ref() != Some(&cwd);
             self.last_cwd = Some(cwd);
-            if (cwd_changed || self.last_git_branch.is_none())
+            if !skip_slow
+                && (cwd_changed || self.last_git_branch.is_none())
                 && let Some(ref path) = self.last_cwd
             {
                 self.last_git_branch = crate::workspace::title::git_branch_for_cwd(path);
@@ -331,11 +347,13 @@ impl TerminalPane {
             self.last_cwd = self.backend.working_directory();
         }
 
-        self.last_fg_title = self.backend.foreground_process_title();
+        if !skip_slow {
+            self.last_fg_title = self.backend.foreground_process_title();
+        }
 
         // PR probe ~every 180 frames (~3s) or when cwd changes — `gh` is slow.
         self.pr_tick = self.pr_tick.wrapping_add(1);
-        if cwd_changed || self.pr_tick.is_multiple_of(180) {
+        if !skip_slow && (cwd_changed || self.pr_tick.is_multiple_of(180)) {
             if let Some(ref path) = self.last_cwd {
                 self.last_pull_request =
                     crate::workspace::sidebar_snapshot::pull_request_for_cwd(path);
@@ -411,8 +429,13 @@ impl TerminalPane {
     /// and shows the cursor. When the find bar is active, it appears
     /// at the bottom of the pane.
     pub fn show(&mut self, ui: &mut egui::Ui) {
-        // Process any new PTY output
-        self.process_pty_output();
+        // Reader thread can wake us; keep Context current for that path.
+        self.repaint.bind(ui.ctx());
+
+        // Process any new PTY output (also done at app level for all panes).
+        if self.process_pty_output() {
+            ui.ctx().request_repaint();
+        }
 
         // Determine available space, reserving room for find bar if visible
         let available = ui.available_size();
@@ -598,6 +621,7 @@ impl TerminalPane {
     /// Handle keyboard input events when this pane is focused.
     fn handle_keyboard_input(&mut self, ui: &mut egui::Ui) {
         let events: Vec<egui::Event> = ui.input(|i| i.events.clone());
+        let mut wrote = false;
 
         for event in &events {
             // egui-winit intercepts ⌘/Ctrl+C/V and emits Copy/Paste events
@@ -609,6 +633,7 @@ impl TerminalPane {
                 }
                 egui::Event::Paste(text) => {
                     self.paste_text(text);
+                    wrote = true;
                     continue;
                 }
                 egui::Event::Cut => {
@@ -661,7 +686,9 @@ impl TerminalPane {
                 if let Some(data) = bytes {
                     // Typing clears the visual selection (standard terminal UX).
                     self.state.clear_selection();
-                    self.backend.write(&data).ok();
+                    if self.backend.write(&data).is_ok() {
+                        wrote = true;
+                    }
                 }
             }
 
@@ -671,11 +698,17 @@ impl TerminalPane {
                 self.state.clear_selection();
                 for c in text.chars() {
                     let bytes = self.input_mapper.map_char(c, false, false);
-                    if !bytes.is_empty() {
-                        self.backend.write(&bytes).ok();
+                    if !bytes.is_empty() && self.backend.write(&bytes).is_ok() {
+                        wrote = true;
                     }
                 }
             }
+        }
+
+        // Don't wait for the 16 ms periodic timer — key→PTY needs the next
+        // frame ASAP so nvim/shell output can paint (same as scroll).
+        if wrote {
+            ui.ctx().request_repaint();
         }
     }
 

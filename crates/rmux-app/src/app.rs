@@ -440,7 +440,11 @@ impl eframe::App for RmuxApp {
 
         // Process PTY output for all terminal panes (exit detection, grid).
         // OSC → notification generation is disabled for now.
-        self.workspace_manager.process_all_panes();
+        // Wake immediately when bytes arrived so key→nvim paint is not gated
+        // solely on the 16 ms cursor-blink timer.
+        if self.workspace_manager.process_all_panes() {
+            ctx.request_repaint();
+        }
         // cmux-style dynamic sidebar titles from focused process / path.
         self.workspace_manager.refresh_auto_titles();
 
