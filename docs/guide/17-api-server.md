@@ -2,7 +2,10 @@
 
 rmux has socket API. CLI sends JSON-RPC. App answers on main thread.
 
-Files: `rmux-api/src/server.rs`, `rmux-cli/src/commands.rs`, `rmux-app/src/app.rs`.
+Files: `rmux-api/src/server.rs`, `rmux-cli/src/commands/`, `rmux-app/src/api_dispatch.rs`.
+
+CLI is hierarchical by domain (`system`, `workspace`, `surface`, …) with a
+`call` escape hatch. See [docs/CLI.md](../CLI.md) for the full command tree.
 
 ## Server job
 

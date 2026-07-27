@@ -234,6 +234,18 @@ cross-platform Rust application targeting Linux, macOS, and Windows with a stric
 - [x] **3.7** Implement event streaming:
   - `events.stream` socket method for real-time event feed
   - Events: pane created/closed, notification, workspace changed
+- [x] **3.8** Extensible hierarchical `rmux-cli` control plane:
+  - Domain command groups: `system`, `workspace`, `surface`, `notification`,
+    `sidebar`, `browser`, `app`, `events`
+  - Escape hatch: `rmux-cli call <method> [params_json]`
+  - Global `--json` / `--socket` flags; Phase 3 flat aliases retained
+  - Full coverage of all socket methods from typed subcommands
+- [x] **3.9** Extended socket methods for full app control:
+  - `workspace.rename`
+  - `surface.close`, `surface.new`
+  - `browser.open`, `browser.navigate`, `browser.back`, `browser.forward`,
+    `browser.reload`, `browser.url`
+  - `app.set_font_size`, `app.set_theme`
 
 ### Deliverables
 
@@ -241,6 +253,8 @@ cross-platform Rust application targeting Linux, macOS, and Windows with a stric
 - `rmux list-workspaces --json` returns workspace data
 - `rmux send "ls\n"` types into active pane
 - Agents can integrate via the socket API
+- `rmux-cli` controls workspaces, panes, notifications, sidebar, browser, theme/font
+- `rmux-cli events stream` prints live NDJSON events
 
 ### Milestone
 

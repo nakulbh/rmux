@@ -1,55 +1,25 @@
 //! Integration tests for the blocking socket client.
 //!
-//! Spawns a `UnixListener` on a temp path in a background thread that
-//! answers one request with a canned `JsonRpcResponse`, then drives
-//! `rmux_cli::socket::call` against it and asserts the roundtrip.
+//! Spawns a `UnixListener` on a temp path that answers canned
+//! `JsonRpcResponse`s, then drives `rmux_cli::socket::{call,stream_events_to}`.
 #![cfg(unix)]
 
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixListener;
-use std::path::{Path, PathBuf};
-use std::thread::JoinHandle;
+mod common;
 
-use rmux_api::protocol::{JsonRpcError, JsonRpcRequest, JsonRpcResponse};
+use rmux_api::methods;
+use rmux_api::protocol::{JsonRpcError, JsonRpcResponse};
 use rmux_cli::socket;
 use serde_json::json;
 
-/// Build a unique socket path in the system temp directory.
-fn temp_socket_path(name: &str) -> PathBuf {
-    let mut path = std::env::temp_dir();
-    path.push(format!("rmux-cli-test-{}-{name}.sock", std::process::id()));
-    let _ = std::fs::remove_file(&path);
-    path
-}
-
-/// Bind a listener and answer exactly one request with `response`.
-///
-/// Returns a handle yielding the request the fake server received.
-fn spawn_one_shot_server(path: &Path, response: JsonRpcResponse) -> JoinHandle<JsonRpcRequest> {
-    let listener = UnixListener::bind(path).expect("bind test socket");
-    std::thread::spawn(move || {
-        let (stream, _) = listener.accept().expect("accept connection");
-        let mut reader = BufReader::new(&stream);
-        let mut line = String::new();
-        reader.read_line(&mut line).expect("read request line");
-        let request: JsonRpcRequest = serde_json::from_str(line.trim()).expect("parse request");
-        let mut reply = serde_json::to_string(&response).expect("serialize response");
-        reply.push('\n');
-        (&stream).write_all(reply.as_bytes()).expect("write response");
-        request
-    })
-}
+use common::{
+    ok_response, spawn_event_stream_error_server, spawn_event_stream_server, spawn_one_shot_server,
+    temp_socket_path,
+};
 
 #[test]
 fn call_roundtrips_a_successful_response() {
     let path = temp_socket_path("ok");
-    let response = JsonRpcResponse {
-        id: json!(1),
-        ok: true,
-        result: Some(json!({ "pong": true })),
-        error: None,
-    };
-    let server = spawn_one_shot_server(&path, response);
+    let server = spawn_one_shot_server(&path, ok_response(json!({ "pong": true })));
 
     let result = socket::call(&path, "system.ping", json!({})).expect("call succeeds");
     assert_eq!(result, json!({ "pong": true }));
@@ -96,13 +66,7 @@ fn call_reports_connect_error_when_socket_is_missing() {
 #[test]
 fn call_sends_params_through_unchanged() {
     let path = temp_socket_path("params");
-    let response = JsonRpcResponse {
-        id: json!(1),
-        ok: true,
-        result: Some(json!({ "id": "p2" })),
-        error: None,
-    };
-    let server = spawn_one_shot_server(&path, response);
+    let server = spawn_one_shot_server(&path, ok_response(json!({ "id": "p2" })));
 
     let params = json!({ "text": "ls\n" });
     let result = socket::call(&path, "surface.send_text", params.clone()).expect("call succeeds");
@@ -113,4 +77,68 @@ fn call_sends_params_through_unchanged() {
     assert_eq!(request.params, params);
 
     let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn call_treats_missing_result_as_null() {
+    let path = temp_socket_path("null-result");
+    let response = JsonRpcResponse { id: json!(1), ok: true, result: None, error: None };
+    let server = spawn_one_shot_server(&path, response);
+
+    let result = socket::call(&path, "workspace.select", json!({ "index": 0 })).expect("ok");
+    assert!(result.is_null());
+    let _ = server.join();
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn stream_events_to_reads_ack_and_event_lines() {
+    let path = temp_socket_path("stream-ok");
+    let events = vec![
+        json!({ "event": "pane.created", "data": { "pane_id": 1 } }),
+        json!({ "event": "workspace.changed", "data": { "id": 2 } }),
+    ];
+    let server = spawn_event_stream_server(&path, events.clone());
+
+    let mut buf = Vec::new();
+    socket::stream_events_to(&path, &mut buf).expect("stream completes");
+
+    let request = server.join().expect("server thread");
+    assert_eq!(request.method, methods::EVENTS_STREAM);
+    assert_eq!(request.params, json!({}));
+
+    let output = String::from_utf8(buf).expect("utf8");
+    let lines: Vec<&str> = output.lines().collect();
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0], events[0].to_string());
+    assert_eq!(lines[1], events[1].to_string());
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn stream_events_to_propagates_failed_ack() {
+    let path = temp_socket_path("stream-err");
+    let server = spawn_event_stream_error_server(&path);
+
+    let mut buf = Vec::new();
+    let err = socket::stream_events_to(&path, &mut buf).expect_err("failed ack");
+    let server_err = err.downcast_ref::<socket::ServerError>().expect("ServerError");
+    assert_eq!(server_err.code, -32000);
+    assert_eq!(server_err.message, "stream denied");
+    assert!(buf.is_empty());
+
+    let request = server.join().expect("server");
+    assert_eq!(request.method, methods::EVENTS_STREAM);
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn stream_events_to_reports_connect_error() {
+    let path = temp_socket_path("stream-missing");
+    let mut buf = Vec::new();
+    let err = socket::stream_events_to(&path, &mut buf).expect_err("no listener");
+    let connect = err.downcast_ref::<socket::ConnectError>().expect("ConnectError");
+    assert_eq!(connect.path, path);
 }
