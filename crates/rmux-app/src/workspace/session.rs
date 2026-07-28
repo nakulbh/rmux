@@ -486,8 +486,10 @@ fn capture_terminal_surface(
     title_is_custom: bool,
     term: &TerminalPane,
 ) -> SurfaceSnapshot {
+    // Cached (probe-thread) value — capture runs on the UI thread, so it must
+    // not fork `ps` here.
     let (agent_kind, resume_command) = match term.foreground_process_args() {
-        Some(args) => match super::agent_resume::resume_from_process_args(&args) {
+        Some(args) => match super::agent_resume::resume_from_process_args(args) {
             Some(r) => (Some(r.kind.to_owned()), Some(r.command)),
             None => (None, None),
         },

@@ -36,6 +36,16 @@ impl RepaintHandle {
             ctx.request_repaint();
         }
     }
+
+    /// Schedule a frame `delay` from now (used for deadlines that must fire
+    /// even when the PTY stays silent).
+    fn request_after(&self, delay: std::time::Duration) {
+        if let Ok(slot) = self.ctx.lock()
+            && let Some(ctx) = slot.as_ref()
+        {
+            ctx.request_repaint_after(delay);
+        }
+    }
 }
 
 /// The default font size for terminal text.
@@ -67,6 +77,8 @@ pub struct TerminalPane {
     state: TermState,
     /// The terminal grid renderer.
     renderer: TerminalRenderer,
+    /// Reused grid snapshot buffer (avoids reallocating the cell grid per frame).
+    snapshot: rmux_terminal::GridSnapshot,
     /// Input mapper for keyboard events.
     input_mapper: InputMapper,
     /// Channel receiver for PTY output from background thread.
@@ -88,19 +100,17 @@ pub struct TerminalPane {
     exit_message: Option<String>,
     /// Whether the process exited successfully (code 0, no signal).
     exit_success: bool,
-    /// Cached shell cwd for tab titles (refreshed periodically; avoids
-    /// calling `lsof` / reading `/proc` every frame).
+    /// Cached shell cwd for tab titles. Filled by the background probe
+    /// worker — never by a `lsof` / `/proc` read on the UI thread.
     last_cwd: Option<PathBuf>,
-    /// Frame counter used to throttle cwd / process-title refreshes.
-    cwd_tick: u16,
     /// Cached foreground process title (`cargo run …`), when the shell is busy.
     last_fg_title: Option<String>,
+    /// Cached full foreground command line (session agent-resume capture).
+    last_fg_args: Option<String>,
     /// Cached git branch for the shell cwd (idle workspace title).
     last_git_branch: Option<String>,
-    /// Cached PR chip for the shell cwd (throttled; cmux pull-request row).
+    /// Cached PR chip for the shell cwd (cmux pull-request row).
     last_pull_request: Option<crate::workspace::sidebar_snapshot::PullRequestDisplay>,
-    /// Frames since last PR probe (PR probe is slower than cwd/`ps`).
-    pr_tick: u16,
 
     // Find bar state
     /// Whether the find/search bar is currently visible.
@@ -145,11 +155,19 @@ pub struct TerminalPane {
 struct PendingStartup {
     /// Full command line without trailing newline.
     command: String,
-    /// Frames waited since queue (shell may need a moment to print PS1).
-    frames: u16,
+    /// When the command was queued. Wall-clock rather than a frame count: the
+    /// app no longer repaints at a fixed 60 Hz, so "45 frames" was no longer a
+    /// meaningful delay for a shell that prints nothing.
+    queued_at: std::time::Instant,
     /// True once any PTY output has been observed.
     saw_output: bool,
 }
+
+/// Grace period after the shell's first output before typing a resume command.
+const STARTUP_CMD_GRACE: std::time::Duration = std::time::Duration::from_millis(140);
+
+/// Hard deadline for sending a resume command even if the shell stays silent.
+const STARTUP_CMD_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(750);
 
 impl TerminalPane {
     /// Spawn a new terminal pane with a shell process (default `$HOME` cwd).
@@ -192,6 +210,7 @@ impl TerminalPane {
             backend,
             state,
             renderer,
+            snapshot: rmux_terminal::GridSnapshot::default(),
             input_mapper,
             pty_rx: rx,
             repaint,
@@ -205,11 +224,10 @@ impl TerminalPane {
             // Prefer the spawn cwd so tab labels are correct before the first
             // process-query refresh.
             last_cwd: cwd.map(Path::to_path_buf),
-            cwd_tick: 0,
             last_fg_title: None,
+            last_fg_args: None,
             last_git_branch: None,
             last_pull_request: None,
-            pr_tick: 0,
             find_visible: false,
             find_query: String::new(),
             find_results: Vec::new(),
@@ -240,13 +258,39 @@ impl TerminalPane {
         if cmd.is_empty() {
             return;
         }
-        self.pending_startup =
-            Some(PendingStartup { command: cmd.to_owned(), frames: 0, saw_output: false });
+        self.pending_startup = Some(PendingStartup {
+            command: cmd.to_owned(),
+            queued_at: std::time::Instant::now(),
+            saw_output: false,
+        });
     }
 
-    /// Full untruncated foreground process args (for agent resume capture).
-    pub fn foreground_process_args(&self) -> Option<String> {
-        self.backend.foreground_process_args()
+    /// OS pid of this pane's shell, for the background probe worker.
+    pub fn shell_pid(&self) -> Option<u32> {
+        self.backend.process_id()
+    }
+
+    /// Cached full foreground command line (agent resume capture).
+    ///
+    /// Read-only: filled by [`Self::apply_probe`]. Session capture used to call
+    /// straight into `ps` here, which — combined with the autosave timer bug —
+    /// forked a process per pane *per frame*.
+    pub fn foreground_process_args(&self) -> Option<&str> {
+        self.last_fg_args.as_deref()
+    }
+
+    /// Adopt fresh metadata from the background probe worker.
+    ///
+    /// Only overwrites `cwd` when the probe produced one, so a pane keeps its
+    /// spawn directory if the process query transiently fails.
+    pub fn apply_probe(&mut self, probe: &crate::workspace::probe::PaneProbe) {
+        if probe.cwd.is_some() {
+            self.last_cwd = probe.cwd.clone();
+        }
+        self.last_fg_title = probe.fg_title.clone();
+        self.last_fg_args = probe.fg_args.clone();
+        self.last_git_branch = probe.git_branch.clone();
+        self.last_pull_request = probe.pull_request.clone();
     }
 
     /// Process any new PTY output from the background reader thread.
@@ -288,31 +332,33 @@ impl TerminalPane {
             }
         }
 
-        // Title probes shell out to `ps` / `lsof` / `git` / `gh` — never do
-        // that on the hot path while the user is typing in this pane.
-        self.cwd_tick = self.cwd_tick.wrapping_add(1);
-        let probe_every = if self.has_focus { 120 } else { 45 };
-        if self.last_cwd.is_none() {
-            self.refresh_title_sources(false);
-        } else if self.cwd_tick.is_multiple_of(probe_every) {
-            self.refresh_title_sources(self.has_focus);
-        }
+        // Title metadata (`ps` / `lsof` / `git` / `gh`) is produced by the
+        // background probe worker and handed over via [`Self::apply_probe`] —
+        // this function must never fork a process.
 
         got_output
     }
 
     /// Send a queued startup command once the shell looks ready.
     ///
-    /// Waits until PTY output has been seen (prompt printed) **or** ~20 frames
-    /// (~330 ms at 60 fps) so slow shells still get the resume command.
+    /// Waits until PTY output has been seen (prompt printed) plus a short grace
+    /// period, or until [`STARTUP_CMD_TIMEOUT`] so silent shells still get it.
     fn try_flush_startup_command(&mut self) {
-        let Some(pending) = self.pending_startup.as_mut() else {
+        let Some(pending) = self.pending_startup.as_ref() else {
             return;
         };
-        pending.frames = pending.frames.saturating_add(1);
-        // Ready: saw shell output and waited a couple frames for PS1, or timeout.
-        let ready = (pending.saw_output && pending.frames >= 8) || pending.frames >= 45;
+        let waited = pending.queued_at.elapsed();
+        let ready =
+            (pending.saw_output && waited >= STARTUP_CMD_GRACE) || waited >= STARTUP_CMD_TIMEOUT;
         if !ready {
+            // Own a wake-up so the deadline still fires for a silent shell —
+            // the app loop no longer ticks every 16 ms.
+            let next = if pending.saw_output {
+                STARTUP_CMD_GRACE.saturating_sub(waited)
+            } else {
+                STARTUP_CMD_TIMEOUT.saturating_sub(waited)
+            };
+            self.repaint.request_after(next.max(std::time::Duration::from_millis(10)));
             return;
         }
         let Some(pending) = self.pending_startup.take() else {
@@ -328,46 +374,12 @@ impl TerminalPane {
         }
     }
 
-    /// Probe cwd, foreground process, and git branch (throttled by caller).
-    ///
-    /// When `skip_slow` is true (focused typing), skip `git`/`gh`/`ps`-heavy
-    /// work that can stall the UI thread for tens–hundreds of ms.
-    fn refresh_title_sources(&mut self, skip_slow: bool) {
-        let mut cwd_changed = false;
-        if let Some(cwd) = self.backend.working_directory() {
-            cwd_changed = self.last_cwd.as_ref() != Some(&cwd);
-            self.last_cwd = Some(cwd);
-            if !skip_slow
-                && (cwd_changed || self.last_git_branch.is_none())
-                && let Some(ref path) = self.last_cwd
-            {
-                self.last_git_branch = crate::workspace::title::git_branch_for_cwd(path);
-            }
-        } else if self.last_cwd.is_none() {
-            self.last_cwd = self.backend.working_directory();
-        }
-
-        if !skip_slow {
-            self.last_fg_title = self.backend.foreground_process_title();
-        }
-
-        // PR probe ~every 180 frames (~3s) or when cwd changes — `gh` is slow.
-        self.pr_tick = self.pr_tick.wrapping_add(1);
-        if !skip_slow && (cwd_changed || self.pr_tick.is_multiple_of(180)) {
-            if let Some(ref path) = self.last_cwd {
-                self.last_pull_request =
-                    crate::workspace::sidebar_snapshot::pull_request_for_cwd(path);
-            } else {
-                self.last_pull_request = None;
-            }
-        }
-    }
-
     /// Best-effort current working directory of this pane's shell.
     ///
-    /// Used when spawning a sibling tab/split so the new shell opens in
-    /// the same directory the user has already navigated to. Prefers the
-    /// cached value, falling back to a live query.
+    /// Used when spawning a sibling tab/split so the new shell opens in the
+    /// directory the user has already navigated to. Prefers the probed value;
+    /// the live fallback only runs when nothing has been probed yet (a brand
+    /// new pane), because on macOS it shells out to `lsof`.
     pub fn working_directory(&self) -> Option<PathBuf> {
         self.last_cwd.clone().or_else(|| self.backend.working_directory())
     }
@@ -519,13 +531,15 @@ impl TerminalPane {
             self.show_title_bar(ui, rect);
         }
 
-        // Take a snapshot of the terminal grid and render it
-        let snapshot = self.state.snapshot();
-        self.renderer.draw(ui, rect, &snapshot, self.show_cursor);
+        // Snapshot the grid into the pane's reusable buffer, then render it.
+        self.state.snapshot_into(&mut self.snapshot);
+        self.renderer.draw(ui, rect, &self.snapshot, self.show_cursor);
 
         // Highlight find matches in the terminal
         if self.find_visible && !self.find_query.is_empty() {
+            let snapshot = std::mem::take(&mut self.snapshot);
             self.highlight_matches(ui, rect, &snapshot);
+            self.snapshot = snapshot;
         }
 
         // Focus is indicated by dimming *inactive* panes in the workspace
@@ -1166,7 +1180,15 @@ pub fn format_cwd_tab_title(cwd: &Path) -> String {
 }
 
 /// `user@hostname` for home-directory tabs (matches cmux default title).
+///
+/// Computed once — this runs from `tab_label()`, i.e. potentially every frame
+/// for every pane, and the fallback branch forks `hostname`.
 fn user_host_title() -> String {
+    static CACHED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    CACHED.get_or_init(compute_user_host_title).clone()
+}
+
+fn compute_user_host_title() -> String {
     let user = std::env::var("USER")
         .or_else(|_| std::env::var("LOGNAME"))
         .unwrap_or_else(|_| "user".to_owned());
@@ -1581,6 +1603,11 @@ impl TerminalPane {
 
 /// Half-period of the terminal caret blink, in seconds (on + off ≈ 1 s).
 const CURSOR_BLINK_HALF_PERIOD_SECS: f64 = 0.5;
+
+/// [`CURSOR_BLINK_HALF_PERIOD_SECS`] as a [`std::time::Duration`], used by the
+/// app loop to pick its idle repaint interval.
+pub const CURSOR_BLINK_HALF_PERIOD: std::time::Duration =
+    std::time::Duration::from_millis((CURSOR_BLINK_HALF_PERIOD_SECS * 1000.0) as u64);
 
 /// Whether the terminal caret should be painted this frame.
 ///

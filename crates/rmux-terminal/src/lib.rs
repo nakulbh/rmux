@@ -26,6 +26,7 @@ mod theme;
 pub use backend::{
     PtyBackend, PtyError, PtyResult, clean_process_title, foreground_process_args,
     foreground_process_title, parse_ps_pid_ppid_args, pick_foreground_args, pick_foreground_title,
+    process_cwd, process_table,
 };
 pub use coalesced_size::CoalescedSize;
 pub use input::InputMapper;

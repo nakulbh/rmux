@@ -434,14 +434,40 @@ pub fn foreground_process_args(shell_pid: u32) -> Option<String> {
 
 #[cfg(unix)]
 fn foreground_process_args_unix(shell_pid: u32) -> Option<String> {
-    let output =
-        std::process::Command::new("ps").args(["-ax", "-o", "pid=,ppid=,args="]).output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&output.stdout);
-    let rows = parse_ps_pid_ppid_args(&text);
+    let rows = process_table();
     pick_foreground_args(shell_pid, &rows)
+}
+
+/// One `ps` snapshot of the whole process table as `(pid, ppid, args)`.
+///
+/// Forking `ps` costs tens of milliseconds on a busy machine, so callers that
+/// need titles for several shells must take **one** snapshot and feed it to
+/// [`pick_foreground_args`] per pid instead of probing each pid separately.
+/// Never call this from the UI thread — see `rmux_app::workspace::probe`.
+pub fn process_table() -> Vec<(u32, u32, String)> {
+    #[cfg(unix)]
+    {
+        let Ok(output) =
+            std::process::Command::new("ps").args(["-ax", "-o", "pid=,ppid=,args="]).output()
+        else {
+            return Vec::new();
+        };
+        if !output.status.success() {
+            return Vec::new();
+        }
+        parse_ps_pid_ppid_args(&String::from_utf8_lossy(&output.stdout))
+    }
+    #[cfg(not(unix))]
+    {
+        Vec::new()
+    }
+}
+
+/// Best-effort cwd of an arbitrary process (see [`cwd_of_process`]).
+///
+/// Exposed for the background probe worker; blocking on macOS (`lsof`).
+pub fn process_cwd(pid: u32) -> Option<PathBuf> {
+    cwd_of_process(pid)
 }
 
 /// Parse `ps -o pid=,ppid=,args=` lines into `(pid, ppid, args)`.

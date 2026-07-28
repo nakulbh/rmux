@@ -631,14 +631,15 @@ impl TerminalRenderer {
                     if is_special_shape(cell.c) {
                         paint_special_shape(&painter, cell_rect, cell.c, cell.fg);
                     } else {
-                        let use_fallback = if cell.c.is_ascii() {
-                            false
-                        } else {
-                            let font_id =
-                                if cell.bold { font_bold.clone() } else { font_regular.clone() };
-                            let has = ui.fonts(|f| f.has_glyph(&font_id, cell.c));
-                            !has && is_symbol_range(cell.c)
-                        };
+                        let use_fallback = !cell.c.is_ascii()
+                            && is_symbol_range(cell.c)
+                            && !self.glyph_cache.has_glyph(
+                                ui,
+                                cell.c,
+                                cell.bold,
+                                &font_regular,
+                                &font_bold,
+                            );
 
                         if use_fallback {
                             paint_missing_symbol_fallback(&painter, cell_rect, cell.c, cell.fg);
