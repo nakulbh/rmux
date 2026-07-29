@@ -166,12 +166,28 @@ impl TermState {
     /// which can be safely used for rendering without holding a borrow
     /// on the terminal state.
     pub fn snapshot(&self) -> GridSnapshot {
+        let mut out = GridSnapshot::default();
+        self.snapshot_into(&mut out);
+        out
+    }
+
+    /// Snapshot the visible grid into an existing [`GridSnapshot`].
+    ///
+    /// Identical to [`Self::snapshot`] but reuses `out`'s row buffers instead of
+    /// allocating `rows` fresh `Vec`s every frame. A 200×50 grid is 10k cells,
+    /// so the allocating form churned a few hundred KB per pane per frame.
+    pub fn snapshot_into(&self, out: &mut GridSnapshot) {
         let cols = self.term.columns() as u16;
         let rows = self.term.screen_lines() as u16;
         let display_offset = self.term.grid().display_offset();
 
-        let mut cells: Vec<Vec<GridCell>> = Vec::with_capacity(rows as usize);
-        for _ in 0..rows {
+        let cells = &mut out.cells;
+        cells.truncate(rows as usize);
+        for row in cells.iter_mut() {
+            row.clear();
+            row.resize(cols as usize, GridCell::default());
+        }
+        while cells.len() < rows as usize {
             cells.push(vec![GridCell::default(); cols as usize]);
         }
 
@@ -239,20 +255,15 @@ impl TermState {
             cursor_point.line.0.max(0) as u16
         };
 
-        let cursor_col = cursor_point.column.0 as u16;
-
-        GridSnapshot {
-            cols,
-            rows,
-            cells,
-            cursor_row,
-            cursor_col,
-            cursor_shape,
-            display_offset,
-            terminal_bg,
-            terminal_fg,
-            cursor_color,
-        }
+        out.cols = cols;
+        out.rows = rows;
+        out.cursor_row = cursor_row;
+        out.cursor_col = cursor_point.column.0 as u16;
+        out.cursor_shape = cursor_shape;
+        out.display_offset = display_offset;
+        out.terminal_bg = terminal_bg;
+        out.terminal_fg = terminal_fg;
+        out.cursor_color = cursor_color;
     }
 
     /// Resize the terminal to new dimensions.
@@ -564,6 +575,23 @@ fn default_named_color(named: NamedColor, theme: &TerminalTheme) -> Rgb {
     }
 }
 
+impl Default for GridSnapshot {
+    fn default() -> Self {
+        Self {
+            cols: 0,
+            rows: 0,
+            cells: Vec::new(),
+            cursor_row: 0,
+            cursor_col: 0,
+            cursor_shape: CursorShape::Block,
+            display_offset: 0,
+            terminal_bg: Color32::BLACK,
+            terminal_fg: Color32::WHITE,
+            cursor_color: Color32::WHITE,
+        }
+    }
+}
+
 impl Default for GridCell {
     fn default() -> Self {
         Self {
@@ -606,6 +634,49 @@ mod tests {
         assert_eq!(snapshot.cells[0][2].c, 'l');
         assert_eq!(snapshot.cells[0][3].c, 'l');
         assert_eq!(snapshot.cells[0][4].c, 'o');
+    }
+
+    #[test]
+    fn test_snapshot_into_reuses_buffer_across_resizes() {
+        let mut state = TermState::new(80, 24, 1000);
+        state.feed_bytes(b"Hello");
+        let mut buf = GridSnapshot::default();
+        state.snapshot_into(&mut buf);
+        assert_eq!((buf.cols, buf.rows), (80, 24));
+        assert_eq!(buf.cells[0][0].c, 'H');
+
+        // Shrink: stale rows/cols must be dropped, not left behind.
+        state.resize(20, 5);
+        state.snapshot_into(&mut buf);
+        assert_eq!((buf.cols, buf.rows), (20, 5));
+        assert_eq!(buf.cells.len(), 5);
+        assert!(buf.cells.iter().all(|r| r.len() == 20));
+
+        // Grow again: rows are re-added and old content does not leak.
+        state.resize(100, 30);
+        state.snapshot_into(&mut buf);
+        assert_eq!((buf.cols, buf.rows), (100, 30));
+        assert_eq!(buf.cells.len(), 30);
+        assert!(buf.cells.iter().all(|r| r.len() == 100));
+        assert!(buf.cells[29].iter().all(|c| c.c == ' '), "grown rows must start blank");
+    }
+
+    #[test]
+    fn test_snapshot_matches_snapshot_into() {
+        let mut state = TermState::new(40, 10, 500);
+        state.feed_bytes(b"abc\r\ndef");
+        let owned = state.snapshot();
+        let mut buf = GridSnapshot::default();
+        state.snapshot_into(&mut buf);
+        assert_eq!(owned.cols, buf.cols);
+        assert_eq!(owned.rows, buf.rows);
+        assert_eq!(owned.cursor_row, buf.cursor_row);
+        assert_eq!(owned.cursor_col, buf.cursor_col);
+        for (a, b) in owned.cells.iter().zip(buf.cells.iter()) {
+            let a: Vec<char> = a.iter().map(|c| c.c).collect();
+            let b: Vec<char> = b.iter().map(|c| c.c).collect();
+            assert_eq!(a, b);
+        }
     }
 
     #[test]

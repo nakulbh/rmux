@@ -31,15 +31,42 @@ impl GlyphKey {
 #[derive(Default)]
 pub(crate) struct GlyphCache {
     map: HashMap<GlyphKey, Arc<Galley>>,
+    /// Memoised `has_glyph` answers per `(char, bold)`.
+    coverage: HashMap<(char, bool), bool>,
 }
 
 impl GlyphCache {
     pub(crate) fn with_capacity(cap: usize) -> Self {
-        Self { map: HashMap::with_capacity(cap) }
+        Self { map: HashMap::with_capacity(cap), coverage: HashMap::with_capacity(cap) }
     }
 
     pub(crate) fn clear(&mut self) {
         self.map.clear();
+        self.coverage.clear();
+    }
+
+    /// Whether the font cascade can render `c`, cached across frames.
+    ///
+    /// `Fonts::has_glyph` takes the shared font lock and walks the family's
+    /// fallback chain. Box-drawing borders (agent prompt boxes) and Nerd Font
+    /// icons (nvim file tree) are non-ASCII, so the uncached version ran that
+    /// lookup for hundreds of cells *per frame* — the single largest cost in
+    /// the paint loop for exactly the two workloads users report as laggy.
+    pub(crate) fn has_glyph(
+        &mut self,
+        ui: &Ui,
+        c: char,
+        bold: bool,
+        font_regular: &FontId,
+        font_bold: &FontId,
+    ) -> bool {
+        if let Some(&known) = self.coverage.get(&(c, bold)) {
+            return known;
+        }
+        let font_id = if bold { font_bold } else { font_regular };
+        let has = ui.fonts(|f| f.has_glyph(font_id, c));
+        self.coverage.insert((c, bold), has);
+        has
     }
 
     pub(crate) fn get_or_layout(

@@ -83,6 +83,8 @@ pub struct RmuxApp {
     pub(crate) config: Config,
     /// Shared workspace wallpaper (one image behind every pane).
     pub(crate) wallpaper: Wallpaper,
+    /// Background worker for `ps` / `git` / `gh` / cwd probes.
+    title_probe: crate::workspace::probe::TitleProbe,
 }
 
 /// Peek at the saved session's window size before the egui window opens.
@@ -214,6 +216,7 @@ impl RmuxApp {
             pending_window_size,
             config,
             wallpaper: Wallpaper::new(),
+            title_probe: crate::workspace::probe::TitleProbe::spawn(),
         };
 
         // Load wallpaper texture early if configured.
@@ -264,6 +267,14 @@ impl RmuxApp {
         if self.is_applying_session_restore {
             return;
         }
+        // Stamp the attempt *before* any early return. Previously this was only
+        // set after a successful write, so once the fingerprint stabilised (the
+        // steady state — nothing about the layout changes while you type) the
+        // interval check passed on every single frame and `capture_session` ran
+        // at 60 Hz. Capture walks every pane, which used to fork `ps` per pane,
+        // so the UI thread spent whole frames waiting on subprocesses and the
+        // OS flagged the app as unresponsive.
+        self.last_session_save_at = Instant::now();
         let inner_size = ctx
             .map(|c| {
                 let rect = c.input(|i| i.screen_rect());
@@ -287,7 +298,6 @@ impl RmuxApp {
         match self.session_store.save(&snap) {
             Ok(()) => {
                 self.last_session_fingerprint = Some(fp);
-                self.last_session_save_at = Instant::now();
                 tracing::debug!(
                     workspaces = snap.workspaces.len(),
                     path = %self.session_store.primary_path().display(),
@@ -356,6 +366,18 @@ impl RmuxApp {
             Err(err) => tracing::error!(error = %err, "Failed to apply session snapshot"),
         }
         self.is_applying_session_restore = false;
+    }
+
+    /// How long the loop may idle before the next animated frame is needed.
+    ///
+    /// Currently driven only by the cursor blink; a session autosave tick is
+    /// also honoured so the timer can never delay a pending write past its
+    /// interval.
+    fn next_animation_frame_delay(&self) -> Duration {
+        let blink = crate::ui::CURSOR_BLINK_HALF_PERIOD;
+        let autosave = Duration::from_secs(self.session_autosave_secs.max(2));
+        let until_autosave = autosave.saturating_sub(self.last_session_save_at.elapsed());
+        blink.min(until_autosave).max(Duration::from_millis(16))
     }
 
     fn maybe_autosave_session(&mut self, ctx: &egui::Context) {
@@ -445,8 +467,16 @@ impl eframe::App for RmuxApp {
         if self.workspace_manager.process_all_panes() {
             ctx.request_repaint();
         }
-        // cmux-style dynamic sidebar titles from focused process / path.
-        self.workspace_manager.refresh_auto_titles();
+
+        // cmux-style dynamic sidebar titles. The underlying `ps` / `git` / `gh`
+        // work happens on the probe thread; here we only adopt its results and
+        // recompute the (string-only) sidebar aggregates when they change.
+        if let Some(probes) = self.title_probe.take_fresh()
+            && self.workspace_manager.apply_probe_results(&probes)
+        {
+            self.workspace_manager.refresh_auto_titles();
+        }
+        self.title_probe.maybe_request(self.workspace_manager.all_shell_pids());
 
         // Consume app shortcuts BEFORE UI so reserved chords never reach the
         // terminal PTY. On Linux egui sets both `ctrl` and `command` for Ctrl;
@@ -496,8 +526,17 @@ impl eframe::App for RmuxApp {
         // Handle any pending socket API requests on the main thread
         self.process_api_requests();
 
-        // Request continuous repaints for terminal updates (PTY output, cursor blink)
-        ctx.request_repaint_after(std::time::Duration::from_millis(16));
+        // Keep the caret blinking without pinning the app at 60 fps forever.
+        //
+        // A blanket `request_repaint_after(16ms)` meant rmux re-applied the
+        // theme, re-snapshotted every visible grid and rebuilt sidebar strings
+        // sixty times a second even when the screen was completely static —
+        // one core of pure overhead, and enough contention to add jitter to
+        // key→screen latency. PTY output already wakes the loop immediately
+        // (the reader thread calls `request_repaint`), keyboard/scroll request
+        // their own repaint, and a pending reflow owns frames while it settles.
+        // So the only thing left needing a timer is the blink.
+        ctx.request_repaint_after(self.next_animation_frame_delay());
 
         // Render the top bar and status bar first so they span the full
         // window width (egui panel order: top/bottom before side panels).
@@ -881,6 +920,10 @@ impl RmuxApp {
             self.last_active_workspace = id;
             let index = self.workspace_manager.active_index();
             self.publish_event("workspace.changed", json!({ "id": id, "index": index }));
+            // Titles otherwise only refresh when a probe batch lands (~1 s);
+            // recompute now so a switch updates the sidebar immediately. This
+            // is pure string work over already-cached probe data.
+            self.workspace_manager.refresh_auto_titles();
         }
     }
 
