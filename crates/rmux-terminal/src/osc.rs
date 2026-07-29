@@ -209,11 +209,27 @@ impl OscScanner {
 fn parse_notification(code: u32, payload: &[u8]) -> Option<OscNotification> {
     let text = String::from_utf8_lossy(payload);
     match code {
+        9 if is_iterm2_progress_payload(&text) => None,
         9 => Some(OscNotification { title: text.into_owned(), body: None, kind: OscKind::Simple9 }),
         99 => Some(parse_rich99(&text)),
         777 => parse_legacy777(&text),
         _ => None,
     }
+}
+
+/// Whether an OSC 9 payload is actually an iTerm2/ConEmu progress-bar update
+/// (`OSC 9;4;st[;pr]`, e.g. `4;1;42`) rather than free-text notification body.
+///
+/// OSC 9 is overloaded: most tools use it for plain notification text, but
+/// iTerm2 and ConEmu also use it for build/task progress bars, where the
+/// payload is `4;<state>` or `4;<state>;<percent>` (state 0-4, percent
+/// 0-100). Without this filter those progress updates surfaced as junk
+/// notifications like "4;0;" every time a percentage changed.
+fn is_iterm2_progress_payload(payload: &str) -> bool {
+    let Some(rest) = payload.strip_prefix("4;") else {
+        return false;
+    };
+    rest.split(';').all(|segment| segment.is_empty() || segment.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// Parse an OSC 99 payload: `;`-separated `k=v` segments where `p=` carries
@@ -413,6 +429,23 @@ mod tests {
         // and never panic.
         let _ = scanner.feed(&garbage);
         assert!(scanner.buf.len() <= MAX_PAYLOAD);
+    }
+
+    #[test]
+    fn test_iterm2_progress_sequences_produce_no_notification() {
+        assert!(scan(b"\x1b]9;4;0\x07").is_empty());
+        assert!(scan(b"\x1b]9;4;1;42\x07").is_empty());
+        assert!(scan(b"\x1b]9;4;1;100\x1b\\").is_empty());
+        assert!(scan(b"\x1b]9;4;\x07").is_empty());
+    }
+
+    #[test]
+    fn test_osc9_text_starting_with_four_is_not_mistaken_for_progress() {
+        // Only the exact `4;<digits>[;<digits>]` shape is progress; real
+        // notification text that happens to start with "4" must still fire.
+        let found = scan(b"\x1b]9;4 builds finished\x07");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].title, "4 builds finished");
     }
 
     #[test]

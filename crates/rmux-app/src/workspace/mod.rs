@@ -327,13 +327,21 @@ impl WorkspaceManager {
 
     /// Process PTY output for all panes across all workspaces.
     ///
-    /// Returns `true` if any pane applied new PTY bytes (request a repaint).
-    pub fn process_all_panes(&mut self) -> bool {
+    /// Returns `(any_output, notifications)`: `any_output` is `true` if any
+    /// pane applied new PTY bytes (request a repaint); `notifications` is
+    /// every OSC notification completed this call, tagged with the raw
+    /// `(workspace_id, pane_id)` of the pane that raised it.
+    pub fn process_all_panes(&mut self) -> (bool, Vec<(u64, u64, rmux_terminal::OscNotification)>) {
         let mut any = false;
+        let mut notifications = Vec::new();
         for workspace in &mut self.workspaces {
-            any |= workspace.process_pty_outputs();
+            let (got, ws_notes) = workspace.process_pty_outputs();
+            any |= got;
+            let workspace_id = workspace.id.0;
+            notifications
+                .extend(ws_notes.into_iter().map(|(pane_id, note)| (workspace_id, pane_id, note)));
         }
-        any
+        (any, notifications)
     }
 
     /// Shell pids of every terminal in every workspace (probe batch input).

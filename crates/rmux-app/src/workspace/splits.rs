@@ -5,6 +5,7 @@
 
 #![allow(dead_code)]
 
+use rmux_terminal::OscNotification;
 use thiserror::Error;
 
 use super::surface::Surface;
@@ -269,28 +270,38 @@ impl PaneNode {
     /// Walks both the legacy `terminal` slot and every multi-surface tab
     /// so exit detection works for Cmd+T terminals too.
     ///
-    /// OSC → notification generation is disabled (iTerm2 progress OSC 9;4
-    /// was mis-parsed as junk notifications).
-    /// Returns `true` if any pane consumed PTY output this call.
-    pub fn process_pty_outputs(&mut self) -> bool {
+    /// Returns `(any_output, notifications)`: `any_output` is `true` if any
+    /// pane consumed PTY output this call; `notifications` tags each OSC
+    /// notification with the raw id of the leaf pane that raised it (a
+    /// multi-surface leaf tags every tab's notifications with the shared
+    /// leaf id — surfaces don't have their own notification routing yet).
+    pub fn process_pty_outputs(&mut self) -> (bool, Vec<(u64, OscNotification)>) {
         match self {
-            Self::Leaf { terminal, surfaces, .. } => {
+            Self::Leaf { id, terminal, surfaces, .. } => {
                 let mut any = false;
+                let mut notes = Vec::new();
                 if let Some(t) = terminal.as_mut() {
-                    any |= t.process_pty_output();
+                    let (got, found) = t.process_pty_output();
+                    any |= got;
+                    notes.extend(found.into_iter().map(|n| (id.0, n)));
                 }
                 for surface in surfaces.iter_mut() {
-                    any |= surface.terminal.process_pty_output();
+                    let (got, found) = surface.terminal.process_pty_output();
+                    any |= got;
+                    notes.extend(found.into_iter().map(|n| (id.0, n)));
                 }
-                any
+                (any, notes)
             }
-            Self::Browser { .. } => false,
+            Self::Browser { .. } => (false, Vec::new()),
             Self::Split { children, .. } => {
                 let mut any = false;
+                let mut notes = Vec::new();
                 for child in children.iter_mut() {
-                    any |= child.process_pty_outputs();
+                    let (got, found) = child.process_pty_outputs();
+                    any |= got;
+                    notes.extend(found);
                 }
-                any
+                (any, notes)
             }
         }
     }

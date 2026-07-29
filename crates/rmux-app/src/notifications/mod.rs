@@ -63,7 +63,17 @@ impl DesktopNotifier for SystemNotifier {
             // Best-effort: a failed desktop notification must never
             // crash the app (e.g. no notification daemon on Linux).
             let outcome = std::panic::catch_unwind(|| {
+                #[cfg(target_os = "macos")]
+                ensure_macos_identity();
+
                 let mut notification = notify_rust::Notification::new();
+                // No-op on macOS (both notify-rust backends silently ignore
+                // `appname`) but required on Linux/XDG so the banner groups
+                // under "rmux" — matching the `rmux.desktop` entry / icon
+                // name `scripts/install.sh` installs — instead of a blank
+                // or PID-derived app name.
+                notification.appname("rmux");
+                notification.icon("rmux");
                 notification.summary(&title);
                 if let Some(body) = &body {
                     notification.body(body);
@@ -79,5 +89,35 @@ impl DesktopNotifier for SystemNotifier {
         if let Err(err) = spawned {
             tracing::warn!("failed to spawn desktop notification thread: {err}");
         }
+    }
+}
+
+/// Give rmux its own macOS Notification Center identity instead of silently
+/// posting as `com.apple.Finder`.
+///
+/// `notify-rust`/`mac-notification-sys` require a registered bundle
+/// identifier to post through `NSUserNotificationCenter`. When the running
+/// binary isn't inside a proper `.app` bundle (any debug build, `cargo run`,
+/// or a `cargo install`ed binary), the crate silently falls back to
+/// `com.apple.Finder`'s identity on first send. Notifications then land in
+/// Notification Center's history — proving delivery "worked" — but never
+/// pop up as a banner, because Finder posts constant low-priority ejects/
+/// trash notifications and most users have long since muted its alert style.
+///
+/// `com.nakulbh.rmux` matches the `CFBundleIdentifier` `scripts/install.sh`
+/// registers for `~/Applications/rmux.app`. Launch Services keys identity by
+/// bundle id, not by which binary is currently executing, so this succeeds
+/// even from a raw dev binary as long as that `.app` has been installed once.
+/// If it hasn't (fresh clone, never ran the installer), fall back to
+/// `com.apple.Terminal` — always registered, and a more sensible identity for
+/// a terminal multiplexer than Finder in the meantime.
+///
+/// Idempotent and cheap to call repeatedly: `mac_notification_sys` guards the
+/// underlying `setApplication` call with a process-wide `Once`, so only the
+/// very first call (across every notification ever sent) does any work.
+#[cfg(target_os = "macos")]
+fn ensure_macos_identity() {
+    if notify_rust::set_application("com.nakulbh.rmux").is_err() {
+        let _ = notify_rust::set_application("com.apple.Terminal");
     }
 }

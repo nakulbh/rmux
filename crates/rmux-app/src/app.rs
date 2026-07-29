@@ -460,12 +460,16 @@ impl eframe::App for RmuxApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(size[0], size[1])));
         }
 
-        // Process PTY output for all terminal panes (exit detection, grid).
-        // OSC → notification generation is disabled for now.
+        // Process PTY output for all terminal panes (exit detection, grid,
+        // OSC 9/99/777 notifications like "Claude is waiting for your input").
         // Wake immediately when bytes arrived so key→nvim paint is not gated
         // solely on the 16 ms cursor-blink timer.
-        if self.workspace_manager.process_all_panes() {
+        let (any_output, osc_notifications) = self.workspace_manager.process_all_panes();
+        if any_output {
             ctx.request_repaint();
+        }
+        for (workspace_id, pane_id, notification) in osc_notifications {
+            self.add_pane_notification(workspace_id, pane_id, notification);
         }
 
         // cmux-style dynamic sidebar titles. The underlying `ps` / `git` / `gh`
@@ -699,6 +703,36 @@ impl RmuxApp {
     /// send errors just mean nobody is listening).
     pub(crate) fn publish_event(&self, event: &str, data: serde_json::Value) {
         let _ = self.api_event_tx.send(ApiEvent::new(event, data));
+    }
+
+    /// Store an OSC-derived notification and publish it (agent "waiting for
+    /// input" style messages, build-finished banners, etc).
+    ///
+    /// Shares the exact same [`NotificationManager::add`] path as the CLI's
+    /// `notification.create` method, so it stores the row, fires the desktop
+    /// notification, and updates unread counts identically either way.
+    fn add_pane_notification(
+        &mut self,
+        workspace_id: u64,
+        pane_id: u64,
+        notification: rmux_terminal::OscNotification,
+    ) {
+        let id = self.notifications.add(
+            notification.title.clone(),
+            notification.body.clone(),
+            Some(pane_id),
+            Some(workspace_id),
+        );
+        self.publish_event(
+            "notification",
+            json!({
+                "id": id,
+                "title": notification.title,
+                "body": notification.body,
+                "pane_id": pane_id,
+                "workspace_id": workspace_id,
+            }),
+        );
     }
 
     /// Create a workspace with a live terminal in its initial pane.
