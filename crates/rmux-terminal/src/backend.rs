@@ -463,7 +463,7 @@ pub fn process_table() -> Vec<(u32, u32, String)> {
     }
 }
 
-/// Best-effort cwd of an arbitrary process (see [`cwd_of_process`]).
+/// Best-effort working directory of an arbitrary process by PID.
 ///
 /// Exposed for the background probe worker; blocking on macOS (`lsof`).
 pub fn process_cwd(pid: u32) -> Option<PathBuf> {
