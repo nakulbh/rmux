@@ -299,6 +299,7 @@ impl WorkspaceManager {
         let ws = &mut self.workspaces[index];
         let active = ws.active_pane_id();
         let new_id = ws.split_right(active, &mut self.next_pane_id, &mut self.next_split_id)?;
+        ws.active_pane = new_id;
         self.check_pane_guardrail();
         Ok(new_id)
     }
@@ -311,6 +312,7 @@ impl WorkspaceManager {
         let ws = &mut self.workspaces[index];
         let active = ws.active_pane_id();
         let new_id = ws.split_down(active, &mut self.next_pane_id, &mut self.next_split_id)?;
+        ws.active_pane = new_id;
         self.check_pane_guardrail();
         Ok(new_id)
     }
@@ -787,6 +789,7 @@ mod tests {
         let new_id = manager.split_active_right().unwrap();
         assert_eq!(manager.total_pane_count(), 2);
         assert!(new_id.0 > 0);
+        assert_eq!(manager.active().active_pane, new_id);
     }
 
     #[test]
@@ -797,6 +800,7 @@ mod tests {
         let new_id = manager.split_active_down().unwrap();
         assert_eq!(manager.total_pane_count(), 2);
         assert!(new_id.0 > 0);
+        assert_eq!(manager.active().active_pane, new_id);
     }
 
     #[test]
@@ -1095,6 +1099,7 @@ mod tests {
         let mut manager = WorkspaceManager::new();
         let original_pane = manager.active().active_pane;
         manager.split_active_right().expect("split ok");
+        manager.focus_pane_global(original_pane);
         manager.new_surface_in_active(None).unwrap();
         manager.new_surface_in_active(None).unwrap();
         manager.close_surface_in_active_with_capture(None).expect("close should succeed");
