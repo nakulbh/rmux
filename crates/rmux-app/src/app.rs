@@ -755,6 +755,15 @@ impl RmuxApp {
             cwd.as_deref(),
             bg_opacity,
         );
+        if let Some(terminal) = self
+            .workspace_manager
+            .active_mut()
+            .root
+            .find_pane_mut(new_id)
+            .and_then(|pane| pane.active_terminal_mut())
+        {
+            terminal.set_focus(true);
+        }
         let workspace_id = self.workspace_manager.active().id.0;
         self.publish_event(
             "pane.created",
