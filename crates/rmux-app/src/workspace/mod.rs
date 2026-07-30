@@ -11,6 +11,7 @@
 
 pub mod agent_resume;
 pub mod model;
+pub mod probe;
 pub mod session;
 pub mod sidebar_snapshot;
 pub mod splits;
@@ -331,6 +332,42 @@ impl WorkspaceManager {
         let mut any = false;
         for workspace in &mut self.workspaces {
             any |= workspace.process_pty_outputs();
+        }
+        any
+    }
+
+    /// Shell pids of every terminal in every workspace (probe batch input).
+    pub fn all_shell_pids(&self) -> Vec<u32> {
+        let mut pids = Vec::new();
+        for workspace in &self.workspaces {
+            workspace.root.for_each_terminal(&mut |term| {
+                if let Some(pid) = term.shell_pid() {
+                    pids.push(pid);
+                }
+            });
+        }
+        pids
+    }
+
+    /// Push background probe results into the panes they belong to.
+    ///
+    /// Returns `true` when at least one pane was updated, so the caller can
+    /// refresh sidebar aggregates only when something actually changed.
+    pub fn apply_probe_results(
+        &mut self,
+        results: &std::collections::HashMap<u32, probe::PaneProbe>,
+    ) -> bool {
+        if results.is_empty() {
+            return false;
+        }
+        let mut any = false;
+        for workspace in &mut self.workspaces {
+            workspace.root.for_each_terminal_mut(&mut |term| {
+                if let Some(probe) = term.shell_pid().and_then(|pid| results.get(&pid)) {
+                    term.apply_probe(probe);
+                    any = true;
+                }
+            });
         }
         any
     }
