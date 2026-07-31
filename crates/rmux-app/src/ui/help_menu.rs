@@ -584,7 +584,8 @@ impl HelpMenu {
             _ => None,
         };
 
-        let response = egui::Area::new(egui::Id::new("rmux_update_toast"))
+        let mut clicked = false;
+        egui::Area::new(egui::Id::new("rmux_update_toast"))
             .order(egui::Order::Foreground)
             .anchor(egui::Align2::CENTER_BOTTOM, egui::Vec2::new(0.0_f32, -48.0_f32))
             .show(ctx, |ui| match toast {
@@ -601,7 +602,7 @@ impl HelpMenu {
                     spinner_toast(ui, &p, &text);
                 }
                 UpdateToast::Done { result, .. } => {
-                    let (fill, label, stroke, text_color, hover) = match result {
+                    let (fill, label, stroke, text_color, tip) = match result {
                         ToastResult::NoUpdates => (
                             p.accent,
                             "No Updates Available".to_string(),
@@ -621,7 +622,7 @@ impl HelpMenu {
                             format!("Updated to {installed_ref}  ·  Restart required"),
                             egui::Stroke::NONE,
                             p.accent_fg,
-                            Some("Open the restart dialog to quit and reopen rmux"),
+                            Some("Quit and reopen rmux to use the new version"),
                         ),
                         ToastResult::Failed { message } => (
                             p.panel_bg,
@@ -632,33 +633,23 @@ impl HelpMenu {
                         ),
                     };
 
-                    let frame_resp = egui::Frame::NONE
-                        .fill(fill)
-                        .stroke(stroke)
-                        .corner_radius(egui::CornerRadius::same(20))
-                        .inner_margin(egui::Margin::symmetric(14, 8))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                paint_info_icon(ui, text_color, 14.0_f32);
-                                ui.add_space(4.0_f32);
-                                ui.label(
-                                    egui::RichText::new(label)
-                                        .size(13.0_f32)
-                                        .color(text_color)
-                                        .strong(),
-                                );
-                            });
-                        });
-                    if let Some(tip) = hover {
-                        frame_resp
-                            .response
-                            .on_hover_cursor(egui::CursorIcon::PointingHand)
-                            .on_hover_text(tip);
+                    // Full-capsule button: the entire pill is the hit target
+                    // (not just the label), with hover/press feedback.
+                    let clickable = click.is_some();
+                    let response =
+                        capsule_toast_button(ui, &label, fill, text_color, stroke, clickable);
+                    let response = if let Some(tip) = tip {
+                        response.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tip)
+                    } else {
+                        response
+                    };
+                    if response.clicked() {
+                        clicked = true;
                     }
                 }
             });
 
-        if !response.response.clicked() {
+        if !clicked {
             return;
         }
         match click {
@@ -777,6 +768,107 @@ fn spinner_toast(ui: &mut egui::Ui, p: &theme::Palette, text: &str) {
         });
 }
 
+/// Horizontal padding inside the update capsule button.
+const CAPSULE_PAD_X: f32 = 14.0_f32;
+/// Vertical padding inside the update capsule button.
+const CAPSULE_PAD_Y: f32 = 8.0_f32;
+/// Info-icon diameter inside the capsule.
+const CAPSULE_ICON: f32 = 14.0_f32;
+/// Gap between the info icon and the label.
+const CAPSULE_ICON_GAP: f32 = 4.0_f32;
+/// Corner radius so the capsule reads as a pill button.
+const CAPSULE_RADIUS: u8 = 20;
+
+/// Full-width hit-target capsule for update toast results.
+///
+/// Unlike a non-interactive `Frame` + `Label` (which only accidentally
+/// received clicks via the parent `Area`), this allocates the entire pill
+/// with `Sense::click` when interactive, paints hover/press feedback, and
+/// returns a real button `Response`.
+fn capsule_toast_button(
+    ui: &mut egui::Ui,
+    label: &str,
+    fill: egui::Color32,
+    text_color: egui::Color32,
+    stroke: egui::Stroke,
+    clickable: bool,
+) -> egui::Response {
+    let font = egui::FontId::proportional(13.0_f32);
+    let galley = ui.painter().layout_no_wrap(label.to_owned(), font.clone(), text_color);
+    let height = (galley.size().y + CAPSULE_PAD_Y * 2.0_f32).max(32.0_f32);
+    let width = CAPSULE_PAD_X + CAPSULE_ICON + CAPSULE_ICON_GAP + galley.size().x + CAPSULE_PAD_X;
+    let desired = egui::Vec2::new(width, height);
+    let sense = if clickable { egui::Sense::click() } else { egui::Sense::hover() };
+    let (rect, response) = ui.allocate_exact_size(desired, sense);
+
+    if ui.is_rect_visible(rect) {
+        let mut bg = fill;
+        if clickable {
+            if response.is_pointer_button_down_on() {
+                // Pressed: darken slightly so the whole capsule reads as a button.
+                bg = egui::Color32::from_rgba_unmultiplied(
+                    bg.r().saturating_sub(18),
+                    bg.g().saturating_sub(18),
+                    bg.b().saturating_sub(18),
+                    bg.a(),
+                );
+            } else if response.hovered() {
+                // Hover: lighten slightly.
+                bg = egui::Color32::from_rgba_unmultiplied(
+                    bg.r().saturating_add(16),
+                    bg.g().saturating_add(16),
+                    bg.b().saturating_add(16),
+                    bg.a(),
+                );
+            }
+        }
+
+        let painter = ui.painter();
+        painter.rect(
+            rect,
+            egui::CornerRadius::same(CAPSULE_RADIUS),
+            bg,
+            stroke,
+            egui::StrokeKind::Inside,
+        );
+
+        // Icon + label, vertically centered inside the pill.
+        let content_left = rect.left() + CAPSULE_PAD_X;
+        let icon_rect = egui::Rect::from_min_size(
+            egui::Pos2::new(content_left, rect.center().y - CAPSULE_ICON * 0.5_f32),
+            egui::Vec2::splat(CAPSULE_ICON),
+        );
+        paint_info_icon_at(painter, icon_rect, text_color);
+
+        let text_pos =
+            egui::Pos2::new(content_left + CAPSULE_ICON + CAPSULE_ICON_GAP, rect.center().y);
+        painter.text(text_pos, egui::Align2::LEFT_CENTER, label, font, text_color);
+    }
+
+    response
+}
+
+/// Paint the Lucide-style info icon into an already-allocated rect.
+fn paint_info_icon_at(painter: &egui::Painter, rect: egui::Rect, color: egui::Color32) {
+    let size = rect.width().min(rect.height());
+    let c = rect.center();
+    // Scale from Lucide's 24×24 viewBox (r=10 → ~41.7% of half-size).
+    let r = size * 0.42_f32;
+    let stroke = egui::Stroke::new((size * 0.085_f32).clamp(1.25_f32, 2.0_f32), color);
+
+    painter.circle_stroke(c, r, stroke);
+
+    // Stem: M12 16v-4 → from ~2/3 down to center.
+    let stem_top = egui::Pos2::new(c.x, c.y - r * 0.05_f32);
+    let stem_bot = egui::Pos2::new(c.x, c.y + r * 0.45_f32);
+    painter.line_segment([stem_top, stem_bot], stroke);
+
+    // Top dot: M12 8h.01 — small filled circle near the top of the ring.
+    let dot_y = c.y - r * 0.42_f32;
+    let dot_r = (size * 0.07_f32).max(1.1_f32);
+    painter.circle_filled(egui::Pos2::new(c.x, dot_y), dot_r, color);
+}
+
 fn toast_result_from_outcome(outcome: UpdateCheckOutcome) -> ToastResult {
     match outcome.status {
         UpdateStatus::UpToDate => ToastResult::NoUpdates,
@@ -810,33 +902,6 @@ enum HelpAction {
 enum MenuTrailing {
     Label(&'static str),
     External,
-}
-
-/// Paint a Lucide-style info icon (circle + stem + top dot) without relying
-/// on a font glyph. Matches:
-/// `<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>`
-fn paint_info_icon(ui: &mut egui::Ui, color: egui::Color32, size: f32) {
-    let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(size), egui::Sense::hover());
-    if !ui.is_rect_visible(rect) {
-        return;
-    }
-    let c = rect.center();
-    // Scale from Lucide's 24×24 viewBox (r=10 → ~41.7% of half-size).
-    let r = size * 0.42_f32;
-    let stroke = egui::Stroke::new((size * 0.085_f32).clamp(1.25_f32, 2.0_f32), color);
-    let painter = ui.painter();
-
-    painter.circle_stroke(c, r, stroke);
-
-    // Stem: M12 16v-4 → from ~2/3 down to center.
-    let stem_top = egui::Pos2::new(c.x, c.y - r * 0.05_f32);
-    let stem_bot = egui::Pos2::new(c.x, c.y + r * 0.45_f32);
-    painter.line_segment([stem_top, stem_bot], stroke);
-
-    // Top dot: M12 8h.01 — small filled circle near the top of the ring.
-    let dot_y = c.y - r * 0.42_f32;
-    let dot_r = (size * 0.07_f32).max(1.1_f32);
-    painter.circle_filled(egui::Pos2::new(c.x, dot_y), dot_r, color);
 }
 
 fn menu_item(ui: &mut egui::Ui, label: &str, trailing: Option<MenuTrailing>) -> egui::Response {
