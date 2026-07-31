@@ -9,12 +9,12 @@ use egui::{Color32, FontFamily, FontId, Pos2, Rect, Stroke, Ui, Vec2};
 const CURSOR_BLOCK_ALPHA: u8 = 200;
 const CURSOR_LINE_ALPHA: u8 = 255;
 
-/// Extra vertical padding factor applied on top of measured glyph height so
-/// descenders ("gypq") and combining marks don't clip, while still keeping
-/// cells tight enough that box-drawing / block-element TUIs (LazyVim logo,
-/// borders) tile without visible gaps. Ghostty/cmux use a similar tight
-/// line height around JetBrains Mono.
-const LINE_HEIGHT_PAD: f32 = 1.15;
+/// Rough row-height guess used only until the real font metric is available
+/// (see [`TerminalRenderer::ensure_cell_size_measured`]) — the very first
+/// frame a pane paints, and for one frame after a font-size change. `1.0`
+/// matches JetBrains Mono's tight actual line height closely enough that the
+/// one-frame gap between this guess and the real measurement is imperceptible.
+const ESTIMATED_LINE_HEIGHT_FACTOR: f32 = 1.0;
 
 fn cursor_color(alpha: u8, theme_color: Color32) -> Color32 {
     Color32::from_rgba_unmultiplied(theme_color.r(), theme_color.g(), theme_color.b(), alpha)
@@ -99,6 +99,12 @@ fn paint_missing_symbol_fallback(painter: &egui::Painter, cell: Rect, c: char, f
 ///   so without this path those render as hollow □ tofu boxes.
 /// - Common geometric triangles/squares (U+25B2–U+25C5, etc.) for a solid
 ///   cmux/Ghostty-like look independent of font coverage.
+/// - Light box-drawing lines (U+2500 ─ family) used for TUI window borders
+///   and tree connectors (nvim splits, nvim-tree, lazygit, btop). Drawing
+///   these as geometry — instead of relying on the font's own glyph metrics
+///   for where the stroke sits inside its em-box — keeps them exact
+///   regardless of the row height derived from the loaded font (see
+///   [`TerminalRenderer::ensure_cell_size_measured`]).
 fn is_special_shape(c: char) -> bool {
     matches!(
         c,
@@ -119,7 +125,40 @@ fn is_special_shape(c: char) -> bool {
         | '\u{2713}' | '\u{2714}' | '\u{2717}' | '\u{2718}'
         // Powerline solid arrows (common in prompts)
         | '\u{E0B0}'..='\u{E0B3}'
+        // Light box-drawing: ─ │ ┌ ┐ └ ┘ ├ ┤ ┬ ┴ ┼
+        | '\u{2500}' | '\u{2502}' | '\u{250C}' | '\u{2510}' | '\u{2514}' | '\u{2518}'
+        | '\u{251C}' | '\u{2524}' | '\u{252C}' | '\u{2534}' | '\u{253C}'
     )
+}
+
+/// Draw a light box-drawing joint: a stroke from the cell center out to each
+/// edge whose direction flag is set. Adjacent cells each draw their own half,
+/// so a run of `─` connects seamlessly regardless of the exact cell size.
+#[allow(clippy::too_many_arguments)]
+fn paint_box_line(
+    painter: &egui::Painter,
+    cell: Rect,
+    fg: Color32,
+    up: bool,
+    down: bool,
+    left: bool,
+    right: bool,
+) {
+    let thickness = (cell.width().min(cell.height()) * 0.09).max(1.0);
+    let stroke = Stroke::new(thickness, fg);
+    let center = cell.center();
+    if up {
+        painter.line_segment([center, Pos2::new(center.x, cell.top())], stroke);
+    }
+    if down {
+        painter.line_segment([center, Pos2::new(center.x, cell.bottom())], stroke);
+    }
+    if left {
+        painter.line_segment([center, Pos2::new(cell.left(), center.y)], stroke);
+    }
+    if right {
+        painter.line_segment([center, Pos2::new(cell.right(), center.y)], stroke);
+    }
 }
 
 /// Draw a filled right-pointing triangle inset in `cell`.
@@ -471,6 +510,19 @@ fn paint_special_shape(painter: &egui::Painter, cell: Rect, c: char, fg: Color32
             }
         }
 
+        // ── Light box-drawing (window borders, tree connectors) ────────
+        '\u{2500}' => paint_box_line(painter, cell, fg, false, false, true, true), // ─
+        '\u{2502}' => paint_box_line(painter, cell, fg, true, true, false, false), // │
+        '\u{250C}' => paint_box_line(painter, cell, fg, false, true, false, true), // ┌
+        '\u{2510}' => paint_box_line(painter, cell, fg, false, true, true, false), // ┐
+        '\u{2514}' => paint_box_line(painter, cell, fg, true, false, false, true), // └
+        '\u{2518}' => paint_box_line(painter, cell, fg, true, false, true, false), // ┘
+        '\u{251C}' => paint_box_line(painter, cell, fg, true, true, false, true),  // ├
+        '\u{2524}' => paint_box_line(painter, cell, fg, true, true, true, false),  // ┤
+        '\u{252C}' => paint_box_line(painter, cell, fg, false, true, true, true),  // ┬
+        '\u{2534}' => paint_box_line(painter, cell, fg, true, false, true, true),  // ┴
+        '\u{253C}' => paint_box_line(painter, cell, fg, true, true, true, true),   // ┼
+
         _ => return false,
     }
     true
@@ -546,18 +598,32 @@ impl TerminalRenderer {
 
     /// Measure cell size from the actual loaded font on the first call.
     /// Subsequent calls are a no-op.
+    ///
+    /// Row height used to be a flat `font_size * 1.15` guess. That guess ran
+    /// ~13-15% taller than JetBrains Mono's real line height, so
+    /// `cols_rows_for_rect` (driven by this same `cell_size`) always counted
+    /// fewer rows — and sometimes columns — than the pane actually had pixels
+    /// for. A full-screen TUI queries its size once at startup and only
+    /// redraws on `SIGWINCH`, so it latched onto the undercounted geometry
+    /// and left a visible strip of pane background (or wallpaper, if
+    /// transparency is on) below and sometimes beside its content. Using the
+    /// font's own measured row height fits the real number of rows/cols —
+    /// the original guess existed to avoid glyphs (esp. block elements)
+    /// visually overlapping between rows, which is now handled directly by
+    /// rendering block elements and light box-drawing lines as geometry
+    /// sized to the cell (see [`is_special_shape`]) rather than depending on
+    /// how a specific font's glyphs sit inside its own line metrics.
     fn ensure_cell_size_measured(&mut self, ui: &Ui) {
         if self.cell_size_measured {
             return;
         }
         let font_id = FontId::monospace(self.font_size);
-        let glyph_width = ui.fonts(|f| {
-            f.layout("M".to_string(), font_id.clone(), Color32::WHITE, f32::INFINITY).size().x
+        let (glyph_width, row_height) = ui.fonts(|f| {
+            let width =
+                f.layout("M".to_string(), font_id.clone(), Color32::WHITE, f32::INFINITY).size().x;
+            let height = f.row_height(&font_id);
+            (width, height)
         });
-        // Prefer a tight height derived from the font size rather than
-        // egui's paragraph `row_height`, which includes extra leading that
-        // leaves visible gaps between block-element rows (LazyVim logo).
-        let row_height = self.font_size * LINE_HEIGHT_PAD;
 
         self.cell_size = Vec2::new(glyph_width.max(1.0), row_height.max(1.0));
         self.cell_size_measured = true;
@@ -569,6 +635,10 @@ impl TerminalRenderer {
         }
 
         self.ensure_cell_size_measured(ui);
+        // Guards against stale galleys after egui rebuilds its font texture
+        // atlas (DPI change, or GPU context recreated after sleep/wake) —
+        // otherwise cached glyphs paint garbage from the new atlas's layout.
+        self.glyph_cache.ensure_fresh(ui);
 
         // Clip all cell paint to the pane so multi-tab / split content never
         // bleeds into a neighbour (GitHub #31).
@@ -698,9 +768,9 @@ impl TerminalRenderer {
     }
 
     fn estimate_cell_size(font_size: f32) -> Vec2 {
-        // JetBrains Mono advance ≈ 0.6 × em; height uses the same pad factor
-        // as the measured path so resize math stays stable before first paint.
-        Vec2::new(font_size * 0.6, font_size * LINE_HEIGHT_PAD)
+        // JetBrains Mono advance ≈ 0.6 × em; corrected to the real measured
+        // value on the first `draw()` call.
+        Vec2::new(font_size * 0.6, font_size * ESTIMATED_LINE_HEIGHT_FACTOR)
     }
 
     pub fn cell_size(&self) -> Vec2 {
@@ -838,6 +908,37 @@ mod tests {
         assert!(is_special_shape('▄'));
         assert!(is_special_shape('▀'));
         assert!(!is_special_shape('A'));
+    }
+
+    #[test]
+    fn test_light_box_drawing_recognized_as_geometry() {
+        for c in ['─', '│', '┌', '┐', '└', '┘', '├', '┤', '┬', '┴', '┼'] {
+            assert!(is_special_shape(c), "{c} should be geometry-drawn");
+        }
+        // Heavy/double variants are intentionally out of scope for now and
+        // still fall through to font rendering.
+        assert!(!is_special_shape('━'));
+        assert!(!is_special_shape('║'));
+    }
+
+    #[test]
+    fn test_paint_box_line_draws_expected_segment_count() {
+        // Smoke test: every direction combination must paint without
+        // panicking, on a degenerate (zero-size) cell too.
+        let painter = egui::Painter::new(
+            egui::Context::default(),
+            egui::LayerId::debug(),
+            Rect::from_min_size(Pos2::ZERO, Vec2::splat(20.0)),
+        );
+        let cell = Rect::from_min_size(Pos2::ZERO, Vec2::splat(20.0));
+        for (up, down, left, right) in [
+            (false, false, true, true),
+            (true, true, false, false),
+            (false, true, false, true),
+            (true, true, true, true),
+        ] {
+            paint_box_line(&painter, cell, Color32::WHITE, up, down, left, right);
+        }
     }
 
     #[test]

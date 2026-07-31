@@ -42,6 +42,13 @@ pub fn with_system_notifier() -> Self {
 
 Boxed trait means tests can use fake notifier.
 
+On macOS, `SystemNotifier` also claims a real Notification Center identity
+(`com.nakulbh.rmux`, falling back to `com.apple.Terminal`) before the first
+send. Without this, `mac-notification-sys` silently posts every notification
+as `com.apple.Finder` — delivery "succeeds" (the notification lands in
+Notification Center's history) but no banner ever pops up, since most users
+have long since muted Finder's routine trash/eject alerts.
+
 ## Add notification
 
 `add()` assigns id, emits desktop notification, stores row.
@@ -120,11 +127,23 @@ pub fn mark_read(&mut self, id: u64) {
 TerminalPane scans shell output. App collects parsed notifications in `update()`.
 
 ```rust
-let osc_notifications = self.workspace_manager.process_all_panes();
+let (any_output, osc_notifications) = self.workspace_manager.process_all_panes();
+if any_output {
+    ctx.request_repaint();
+}
 for (workspace_id, pane_id, notification) in osc_notifications {
     self.add_pane_notification(workspace_id, pane_id, notification);
 }
 ```
+
+`TerminalPane` runs its own [`OscScanner`](07-osc-notifications.md) over the
+same bytes it feeds to `TermState` — scanning never mutates the stream, it
+only watches. OSC 9 is overloaded: iTerm2/ConEmu also use it for progress
+bars (`OSC 9;4;<state>[;<percent>]`), so the scanner's `parse_notification`
+recognizes and drops that exact shape before it ever reaches here — real
+notification text starting with a literal "4" (rare, but possible) still
+gets through, since only the strict `4;<digits>[;<digits>]` form is treated
+as progress.
 
 App stores and publishes event:
 

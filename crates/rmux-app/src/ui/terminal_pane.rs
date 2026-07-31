@@ -7,7 +7,8 @@ use anyhow::Result;
 use image::ImageEncoder;
 use image::codecs::png::PngEncoder;
 use rmux_terminal::{
-    CoalescedSize, InputMapper, PtyBackend, PtyError, TermState, TerminalRenderer,
+    CoalescedSize, InputMapper, OscNotification, OscScanner, PtyBackend, PtyError, TermState,
+    TerminalRenderer,
 };
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -83,6 +84,8 @@ pub struct TerminalPane {
     input_mapper: InputMapper,
     /// Channel receiver for PTY output from background thread.
     pty_rx: mpsc::Receiver<Vec<u8>>,
+    /// Scans raw PTY bytes for OSC 9/99/777 notification sequences.
+    osc_scanner: OscScanner,
     /// Lets the PTY reader thread request an immediate UI frame.
     repaint: RepaintHandle,
     /// Whether this pane currently has keyboard focus.
@@ -213,6 +216,7 @@ impl TerminalPane {
             snapshot: rmux_terminal::GridSnapshot::default(),
             input_mapper,
             pty_rx: rx,
+            osc_scanner: OscScanner::new(),
             repaint,
             has_focus: false,
             show_cursor: true,
@@ -295,17 +299,18 @@ impl TerminalPane {
 
     /// Process any new PTY output from the background reader thread.
     ///
-    /// Drains the channel and feeds bytes into the terminal state.
-    /// Should be called once per frame before rendering.
+    /// Drains the channel, feeds bytes into the terminal state, and scans the
+    /// same bytes for OSC 9/99/777 notification sequences. Should be called
+    /// once per frame before rendering.
     ///
-    /// Returns `true` if any PTY bytes were applied (caller may request repaint).
-    pub fn process_pty_output(&mut self) -> bool {
+    /// Returns `(got_output, notifications)`: `got_output` is `true` if any
+    /// PTY bytes were applied (caller may request repaint); `notifications`
+    /// holds any OSC notifications completed in this call.
+    pub fn process_pty_output(&mut self) -> (bool, Vec<OscNotification>) {
         let mut got_output = false;
+        let mut notifications = Vec::new();
         while let Ok(data) = self.pty_rx.try_recv() {
-            // OSC notification scanning is intentionally disabled: OSC 9 is also
-            // used by iTerm2 progress bars (`OSC 9;4;…`), which produced junk
-            // entries like "4;0;" in the notification panel. Re-enable only with
-            // a tighter parser that rejects progress / non-notify sequences.
+            notifications.extend(self.osc_scanner.feed(&data));
             self.state.feed_bytes(&data);
             got_output = true;
         }
@@ -336,7 +341,7 @@ impl TerminalPane {
         // background probe worker and handed over via [`Self::apply_probe`] —
         // this function must never fork a process.
 
-        got_output
+        (got_output, notifications)
     }
 
     /// Send a queued startup command once the shell looks ready.
@@ -444,8 +449,10 @@ impl TerminalPane {
         // Reader thread can wake us; keep Context current for that path.
         self.repaint.bind(ui.ctx());
 
-        // Process any new PTY output (also done at app level for all panes).
-        if self.process_pty_output() {
+        // Process any new PTY output (also done at app level for all panes,
+        // which is the authoritative pass for OSC notifications — this call
+        // will almost always find the channel already drained).
+        if self.process_pty_output().0 {
             ui.ctx().request_repaint();
         }
 

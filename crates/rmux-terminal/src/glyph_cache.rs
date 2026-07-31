@@ -33,16 +33,53 @@ pub(crate) struct GlyphCache {
     map: HashMap<GlyphKey, Arc<Galley>>,
     /// Memoised `has_glyph` answers per `(char, bold)`.
     coverage: HashMap<(char, bool), bool>,
+    /// Identity of the font texture atlas the cached entries were produced
+    /// against (see [`Self::ensure_fresh`]). `None` before the first frame.
+    atlas_identity: Option<usize>,
 }
 
 impl GlyphCache {
     pub(crate) fn with_capacity(cap: usize) -> Self {
-        Self { map: HashMap::with_capacity(cap), coverage: HashMap::with_capacity(cap) }
+        Self {
+            map: HashMap::with_capacity(cap),
+            coverage: HashMap::with_capacity(cap),
+            atlas_identity: None,
+        }
     }
 
     pub(crate) fn clear(&mut self) {
         self.map.clear();
         self.coverage.clear();
+    }
+
+    /// Drop every cached entry if egui recreated its font texture atlas
+    /// since the last call. Call this once per `draw()`, before looking
+    /// anything up.
+    ///
+    /// egui rebuilds the whole atlas (and its own internal galley cache)
+    /// when `pixels_per_point` changes, `max_texture_side` changes, or the
+    /// atlas fills past ~80% (`epaint::text::Fonts::begin_pass`). Any of
+    /// those can happen after a display/DPI change, and in practice also
+    /// after the OS suspends and resumes the GPU context — eframe rebuilds
+    /// font textures on the way back up. Our own cached `Arc<Galley>`s bake
+    /// in mesh UV coordinates for the *old* atlas packing; painting them
+    /// against a freshly repacked atlas samples whatever now happens to
+    /// live at those old coordinates, which is exactly what "all the text
+    /// scrambled up after sleep" looks like. Comparing the atlas's `Arc`
+    /// identity (not its contents) catches every recreation reason at once,
+    /// on any platform, without needing to special-case sleep/wake events.
+    pub(crate) fn ensure_fresh(&mut self, ui: &Ui) {
+        let identity = ui.fonts(|f| Arc::as_ptr(&f.texture_atlas()) as *const () as usize);
+        self.invalidate_if_changed(identity);
+    }
+
+    /// Core of [`Self::ensure_fresh`], split out so the invalidation logic
+    /// is testable without a live `egui::Ui`.
+    fn invalidate_if_changed(&mut self, atlas_identity: usize) {
+        if self.atlas_identity.replace(atlas_identity) != Some(atlas_identity) {
+            self.map.clear();
+            self.coverage.clear();
+        }
     }
 
     /// Whether the font cascade can render `c`, cached across frames.
@@ -111,6 +148,52 @@ mod tests {
         assert_ne!(a, b);
         assert_ne!(a, c);
         assert_eq!(a, d);
+    }
+
+    #[test]
+    fn same_atlas_identity_keeps_cached_entries() {
+        let mut cache = GlyphCache::with_capacity(8);
+        // Establish the baseline identity first — the very first call always
+        // "changes" it (from `None`), which would otherwise wipe the entries
+        // inserted below before the real assertion even runs.
+        cache.invalidate_if_changed(0xDEAD_BEEF);
+        cache.map.insert(GlyphKey::new('a', false, 14.0, Color32::WHITE), fake_galley());
+        cache.coverage.insert(('a', false), true);
+
+        cache.invalidate_if_changed(0xDEAD_BEEF);
+
+        assert_eq!(cache.map.len(), 1, "same atlas identity must not evict entries");
+        assert_eq!(cache.coverage.len(), 1);
+    }
+
+    #[test]
+    fn atlas_identity_change_clears_cache() {
+        // A resized/recreated font atlas (DPI change, or the GPU context
+        // rebuilt after sleep/wake) invalidates every cached galley's UVs —
+        // this is the guard against "scrambled text after resume".
+        let mut cache = GlyphCache::with_capacity(8);
+        cache.map.insert(GlyphKey::new('a', false, 14.0, Color32::WHITE), fake_galley());
+        cache.coverage.insert(('a', false), true);
+        cache.invalidate_if_changed(0x1111_1111);
+
+        cache.invalidate_if_changed(0x2222_2222);
+
+        assert!(cache.map.is_empty(), "atlas swap must evict stale galleys");
+        assert!(cache.coverage.is_empty());
+    }
+
+    #[test]
+    fn first_call_does_not_panic_on_empty_cache() {
+        let mut cache = GlyphCache::with_capacity(8);
+        cache.invalidate_if_changed(0x1234);
+        assert!(cache.map.is_empty());
+    }
+
+    fn fake_galley() -> Arc<Galley> {
+        let ctx = egui::Context::default();
+        // Fonts aren't initialized until the first frame runs.
+        let _ = ctx.run(Default::default(), |_| {});
+        ctx.fonts(|f| f.layout_no_wrap("x".to_string(), FontId::monospace(14.0), Color32::WHITE))
     }
 
     #[test]

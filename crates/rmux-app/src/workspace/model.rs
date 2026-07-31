@@ -211,8 +211,8 @@ impl Workspace {
 
     /// Process PTY output for all panes in this workspace.
     ///
-    /// Returns `true` if any pane applied new PTY bytes.
-    pub fn process_pty_outputs(&mut self) -> bool {
+    /// Returns `(any_output, notifications)` — see [`PaneNode::process_pty_outputs`].
+    pub fn process_pty_outputs(&mut self) -> (bool, Vec<(u64, rmux_terminal::OscNotification)>) {
         self.root.process_pty_outputs()
     }
 

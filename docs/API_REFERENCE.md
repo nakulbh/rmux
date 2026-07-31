@@ -508,7 +508,7 @@ All return `anyhow::Result<()>`:
 | `WorkspaceManager::split_active_right()` | fn | `Result<PaneId>` — Horizontal split |
 | `WorkspaceManager::split_active_down()` | fn | `Result<PaneId>` — Vertical split |
 | `WorkspaceManager::close_active_pane()` | fn | `Result<()>` |
-| `WorkspaceManager::process_all_panes()` | fn | Drain PTY output everywhere. Returns `Vec<(u64, u64, OscNotification)>` |
+| `WorkspaceManager::process_all_panes()` | fn | Drain PTY output everywhere. Returns `(bool, Vec<(u64, u64, OscNotification)>)` — any output applied, and every completed OSC notification tagged `(workspace_id, pane_id)` |
 | `WorkspaceManager::close_exited_panes()` | fn | Auto-close panes with dead processes |
 | `WorkspaceManager::rename_workspace(id, name)` | fn | Rename workspace |
 | `WorkspaceManager::close_active_workspace()` | fn | `Result<WorkspaceId>` — Error if last |
