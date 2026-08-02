@@ -249,10 +249,21 @@ fn notification_create(app: &mut RmuxApp, params: Value) -> Result<Value, JsonRp
         (Some(subtitle), None) => Some(subtitle),
         (None, body) => body,
     };
-    let id = app.notifications.add(params.title.clone(), body.clone(), None, None);
+    let id = app.notifications.add(
+        params.title.clone(),
+        body.clone(),
+        params.pane_id,
+        params.workspace_id,
+    );
     app.publish_event(
         "notification",
-        json!({ "id": id, "title": params.title, "body": body, "pane_id": null, "workspace_id": null }),
+        json!({
+            "id": id,
+            "title": params.title,
+            "body": body,
+            "pane_id": params.pane_id,
+            "workspace_id": params.workspace_id,
+        }),
     );
     Ok(json!({ "id": id }))
 }

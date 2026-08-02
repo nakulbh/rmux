@@ -53,6 +53,26 @@ fn run(cli: Cli) -> anyhow::Result<()> {
 }
 
 fn main() -> ExitCode {
+    // Multi-call: when installed/symlinked as `cmux`, accept cmux argv shape.
+    if is_invoked_as_cmux() {
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        let socket_path = rmux_cli::cmux_compat::effective_socket_path(None);
+        return match rmux_cli::cmux_compat::run(&socket_path, &args) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                if let Some(connect) = err.downcast_ref::<socket::ConnectError>() {
+                    eprintln!(
+                        "error: cannot connect to rmux at {} — is rmux running?",
+                        connect.path.display()
+                    );
+                    return ExitCode::from(2);
+                }
+                eprintln!("error: {err:#}");
+                ExitCode::from(1)
+            }
+        };
+    }
+
     let cli = Cli::parse();
     match run(cli) {
         Ok(()) => ExitCode::SUCCESS,
@@ -72,6 +92,16 @@ fn main() -> ExitCode {
             }
         }
     }
+}
+
+fn is_invoked_as_cmux() -> bool {
+    std::env::args()
+        .next()
+        .as_deref()
+        .map(std::path::Path::new)
+        .and_then(|p| p.file_name())
+        .and_then(|s| s.to_str())
+        == Some("cmux")
 }
 
 #[cfg(test)]

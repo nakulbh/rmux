@@ -23,6 +23,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 rmux-terminal = { path = "../rmux-terminal" }
 rmux-api = { path = "../rmux-api" }
+rmux-cli = { path = "../rmux-cli" }
 rmux-config = { path = "../rmux-config" }
 wry = { workspace = true }
 arboard = "3"

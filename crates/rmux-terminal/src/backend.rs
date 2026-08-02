@@ -91,6 +91,24 @@ impl PtyBackend {
     /// Returns [`PtyError::OpenPty`] if the PTY could not be created.
     /// Returns [`PtyError::SpawnProcess`] if the shell process could not be spawned.
     pub fn spawn_with_cwd(cols: u16, rows: u16, cwd: Option<&Path>) -> PtyResult<Self> {
+        Self::spawn_with_env(cols, rows, cwd, &[])
+    }
+
+    /// Spawn a shell like [`Self::spawn_with_cwd`], also injecting `extra_env`.
+    ///
+    /// Used by the app to export `RMUX_*` / `CMUX_*` so agent notify plugins
+    /// (OpenCode kdco-notify, etc.) can route notifications back to this pane
+    /// without falling back to external tools like `alerter`.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::spawn_with_cwd`].
+    pub fn spawn_with_env(
+        cols: u16,
+        rows: u16,
+        cwd: Option<&Path>,
+        extra_env: &[(String, String)],
+    ) -> PtyResult<Self> {
         // Determine which shell to use
         let shell = std::env::var("SHELL").unwrap_or_else(|_| {
             #[cfg(unix)]
@@ -120,6 +138,10 @@ impl PtyBackend {
             if let Ok(home) = std::env::var("HOME") {
                 cmd.cwd(home);
             }
+        }
+
+        for (key, value) in extra_env {
+            cmd.env(key, value);
         }
 
         let child = pair.slave.spawn_command(cmd).map_err(PtyError::SpawnProcess)?;

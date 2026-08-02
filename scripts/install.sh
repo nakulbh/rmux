@@ -159,11 +159,15 @@ elif git rev-parse --verify "${RMUX_VERSION}" >/dev/null 2>&1; then
 fi
 
 info "Building rmux (release) — this may take a few minutes"
-cargo build --release -p rmux-app --bin rmux
+cargo build --release -p rmux-app --bin rmux -p rmux-cli --bin rmux-cli
 
 mkdir -p "${RMUX_INSTALL_DIR}"
 install -m 755 target/release/rmux "${RMUX_INSTALL_DIR}/rmux"
+install -m 755 target/release/rmux-cli "${RMUX_INSTALL_DIR}/rmux-cli"
+# cmux-compatible name so OpenCode notify plugins call us instead of alerter
+ln -sfn rmux-cli "${RMUX_INSTALL_DIR}/cmux"
 info "Installed binary → ${RMUX_INSTALL_DIR}/rmux"
+info "Installed CLI    → ${RMUX_INSTALL_DIR}/rmux-cli (+ cmux shim)"
 
 # Ensure PATH hint
 case ":${PATH}:" in

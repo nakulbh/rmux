@@ -294,6 +294,12 @@ pub struct NotificationCreateParams {
     /// Optional body text.
     #[serde(default)]
     pub body: Option<String>,
+    /// Optional workspace id (cmux / agent routing).
+    #[serde(default)]
+    pub workspace_id: Option<u64>,
+    /// Optional pane id (cmux surface / agent routing).
+    #[serde(default)]
+    pub pane_id: Option<u64>,
 }
 
 /// Result of [`NOTIFICATION_CREATE`].

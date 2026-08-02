@@ -9,9 +9,11 @@
 //!
 //! - [`socket`] — socket path resolution and the blocking line-protocol client
 //! - [`commands`] — hierarchical domain commands + back-compat aliases
+//! - [`cmux_compat`] — cmux CLI shim (`notify` / `set-status` / `clear-status`)
 //! - [`output`] — shared stdout formatting (`--json` / tables)
 //! - [`util`] — escape interpretation and id extraction
 
+pub mod cmux_compat;
 pub mod commands;
 pub mod output;
 pub mod socket;

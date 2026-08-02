@@ -62,6 +62,13 @@ pub enum Command {
     Events(EventsCommand),
     /// Invoke any socket method with raw JSON params (escape hatch)
     Call(CallCommand),
+    /// cmux CLI compatibility for agent notify plugins (PATH shim target)
+    #[command(name = "__cmux-compat", hide = true)]
+    CmuxCompat {
+        /// cmux argv after the program name (`notify …`, `set-status …`, …)
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Back-compat flat aliases from the Phase 3 CLI
     #[command(flatten)]
     Alias(AliasCommand),
@@ -83,6 +90,7 @@ pub fn run(command: Command, socket_path: &Path, opts: OutputOpts) -> Result<()>
         Command::App(cmd) => app_cmd::run(cmd, socket_path, opts),
         Command::Events(cmd) => events::run(cmd, socket_path, opts),
         Command::Call(cmd) => call::run(cmd, socket_path, opts),
+        Command::CmuxCompat { args } => crate::cmux_compat::run(socket_path, &args),
         Command::Alias(cmd) => aliases::run(cmd, socket_path, opts),
     }
 }
